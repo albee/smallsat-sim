@@ -1,0 +1,6 @@
+casadi==3.6.5
+numpy==1.26
+
+
+wheel==0.43.0
+pybullet==3.2.6
