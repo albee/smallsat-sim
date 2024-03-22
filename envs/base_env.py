@@ -26,3 +26,5 @@ class BaseEnv(object):
         """
         Creates a viewer to visualize simulation
         """
+
+    # Rewards should be in here as well
