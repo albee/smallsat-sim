@@ -4,6 +4,8 @@ from mujoco import mjx
 import numpy as np
 import time
 
+from utils.helpers import get_args
+
 xml="""
 <mujoco model="space_cube">
     <option gravity="0 0 0"/> <!-- Sets gravity to zero to simulate space -->
@@ -30,6 +32,9 @@ xml="""
 </mujoco>
 
 """
+
+# parse arguments
+args = get_args()
 
 # create model and data objects
 model = mujoco.MjModel.from_xml_string(xml)
