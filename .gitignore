@@ -3,3 +3,6 @@
 
 # vscode files
 .vscode/
+
+# python artifacts
+__pycache__/
