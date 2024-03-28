@@ -6,3 +6,6 @@
 
 # python artifacts
 __pycache__/
+
+# os specific files
+.DS_Store
