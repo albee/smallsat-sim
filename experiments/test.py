@@ -4,7 +4,7 @@ from mujoco import mjx
 import numpy as np
 import time
 
-from utils.helpers import get_args
+from smallsat_sim.utils.helpers import get_args
 
 xml="""
 <mujoco model="space_cube">
