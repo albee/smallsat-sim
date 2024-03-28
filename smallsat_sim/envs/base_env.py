@@ -1,6 +1,8 @@
 import numpy as np
 import yaml
 import os
+import mujoco
+import mujoco.viewer
 
 from smallsat_sim import SMALLSAT_SIM_ENVS_DIR
 from smallsat_sim import SMALLSAT_SIM_ROOT_DIR
@@ -32,9 +34,9 @@ class BaseEnv(object):
         """
         Creates a viewer to visualize simulation
         """
-        pass
+        self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
 
-    def _load_cfg(self, env_name: str) -> None:
+    def _load_cfg(self, env_name: str) -> dict:
         """
         Loads the config parameters from the file located in cfg/config.yaml    
         """
@@ -44,9 +46,11 @@ class BaseEnv(object):
         # load from yaml file
         with open(cfg_path) as file:
             try:
-                self.cfg = yaml.safe_load(file)
+                cfg = yaml.safe_load(file)
+                return cfg
             except yaml.YAMLError as exc:
                 print(exc)
+
 
     # Rewards should be in here as well
     
