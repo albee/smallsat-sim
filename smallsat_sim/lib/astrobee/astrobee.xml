@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="cubesat">
+    <visual>
+        <headlight ambient="0.5 0.5 0.5" specular="0.1 0.1 0.1" diffuse="0.5 0.5 0.5"/>
+    </visual>
+    <option gravity="0 0 0"/>
+    <asset>
+        <mesh name="pmc" file="meshes/pmc.stl"/>
+        <mesh name="pmc_bumper" file="meshes/pmc_bumper.stl"/>
+        <mesh name="pmc_skin_honey" file="meshes/pmc_skin_honey.stl"/>
+        <mesh name="body" file="meshes/body.stl"/>
+        <texture name="skin_honey" file="meshes/skin_honey.png"/>
+        <material name="skin_honey" texture="skin_honey"/>
+    </asset>
+    <worldbody>
+        <body name="cubesat" pos="0 0 0" quat="1 0 0 0">
+            <freejoint/>
+            <light name="body_light" ambient="1 1 1"/>
+            <geom type="mesh" mesh="body" pos="0 0 0" euler="0 0 0"/>
+            <geom type="mesh" mesh="pmc" pos="0 0 0" euler="0 0 0"/>
+            <geom type="mesh" mesh="pmc" pos="0 0 0" euler="0 180 180"/>
+            <geom type="mesh" mesh="pmc_bumper" pos="0 0 0" euler="0 0 0"/>
+            <geom type="mesh" mesh="pmc_bumper" pos="0 0 0" euler="0 180 180"/>
+            <geom type="mesh" mesh="pmc_skin_honey" material="skin_honey" pos="0 0 0" euler="0 0 0"/>
+            <geom type="mesh" mesh="pmc_skin_honey" material="skin_honey" pos="0 0 0" euler="0 180 180"/>
+            <site name="thruster1" pos="0.1 0.05 0" size="0.02"/>
+            <site name="thruster2" pos="0.1 -0.05 0" size="0.02"/>
+            <site name="thruster3" pos="-0.1 0.05 0" size="0.02"/>
+            <site name="thruster4" pos="-0.1 -0.05 0" size="0.02"/>
+            <site name="thruster5" pos="0.05 0.1 0" size="0.02"/>
+            <site name="thruster6" pos="-0.05 0.1 0" size="0.02"/>
+            <site name="thruster7" pos="0.05 -0.1 0" size="0.02"/>
+            <site name="thruster8" pos="-0.05 -0.1 0" size="0.02"/>
+            <site name="thruster9" pos="0.05 0 0.1" size="0.02"/>
+            <site name="thruster10" pos="-0.05 0 0.1" size="0.02"/>
+            <site name="thruster11" pos="0 0.05 -0.1" size="0.02"/>
+            <site name="thruster12" pos="0 -0.05 -0.1" size="0.02"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <general name="thruster1"
+            site="thruster1"
+            gear="-1 0 0"
+            forcerange="-100 100"
+            ctrlrange="-100 100"
+            forcelimited="true"
+        />
+        <general name="thruster2"
+            site="thruster2"
+            gear="-1 0 0"
+            forcerange="-100 100"
+            ctrlrange="-100 100"
+            forcelimited="true"
+        />
+        <general name="thruster3"
+            site="thruster3"
+            gear="1 0 0"
+            forcerange="-100 100"
+            ctrlrange="-100 100"
+            forcelimited="true"
+        />
+        <general name="thruster4"
+            site="thruster4"
+            gear="1 0 0"
+            forcerange="-100 100"
+            ctrlrange="-100 100"
+            forcelimited="true"
+        />
+        <general name="thruster5"
+            site="thruster5"
+            gear="0 -1 0"
+            forcerange="-100 100"
+            ctrlrange="-100 100"
+            forcelimited="true"
+        />
+        <general name="thruster6"
+            site="thruster6"
+            gear="0 -1 0"
+            forcerange="-100 100"
+            ctrlrange="-100 100"
+            forcelimited="true"
+        />
+        <general name="thruster7"
+            site="thruster7"
+            gear="0 1 0"
+            forcerange="-100 100"
+            ctrlrange="-100 100"
+            forcelimited="true"
+        />
+        <general name="thruster8"
+            site="thruster8"
+            gear="0 1 0"
+            forcerange="-100 100"
+            ctrlrange="-100 100"
+            forcelimited="true"
+        />
+        <general name="thruster9"
+            site="thruster9"
+            gear="0 0 -1"
+            forcerange="-100 100"
+            ctrlrange="-100 100"
+            forcelimited="true"
+        />
+        <general name="thruster10"
+            site="thruster10"
+            gear="0 0 -1"
+            forcerange="-100 100"
+            ctrlrange="-100 100"
+            forcelimited="true"
+        />
+        <general name="thruster11"
+            site="thruster11"
+            gear="0 0 1"
+            forcerange="-100 100"
+            ctrlrange="-100 100"
+            forcelimited="true"
+        />
+        <general name="thruster12"
+            site="thruster12"
+            gear="0 0 1"
+            forcerange="-100 100"
+            ctrlrange="-100 100"
+            forcelimited="true"
+        />
+    </actuator>
+</mujoco>

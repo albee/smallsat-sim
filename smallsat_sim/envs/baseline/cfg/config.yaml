@@ -1,2 +1,5 @@
 test:
   var: 42
+
+smallsat:
+  name: "baseline"
