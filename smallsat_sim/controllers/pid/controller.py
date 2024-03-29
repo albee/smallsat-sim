@@ -1,6 +1,6 @@
-from controllers.base_controller import BaseController
+from smallsat_sim.controllers.base_controller import BaseController
 
-class PID(BaseController):
+class PIDController(BaseController):
     def __init__(self) -> None:
         super().__init__()
 

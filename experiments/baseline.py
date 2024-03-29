@@ -1,5 +1,5 @@
-from smallsat_sim.controllers.open_loop.open_loop import OpenLoop
-from smallsat_sim.envs.baseline.baseline_env import BaselineEnv
+from smallsat_sim.controllers.open_loop.controller import OpenLoopController
+from smallsat_sim.envs.baseline.env import BaselineEnv
 from smallsat_sim.utils.helpers import get_args
 
 import time
@@ -11,7 +11,7 @@ args = get_args()
 env = BaselineEnv()
 
 # Create controller
-ctrl = OpenLoop()
+ctrl = OpenLoopController()
 
 # Define start time
 start_time = time.time()
