@@ -16,3 +16,12 @@ class BaselineEnv(BaseEnv):
         self.model = mujoco.MjModel.from_xml_path(xml)
         self.data = mujoco.MjData(self.model)
         self._create_viewer()
+
+    def step(self) -> None:
+        # Step simulation
+        # Controller callback is called internally to retrieve inputs
+        # See: https://mujoco.readthedocs.io/en/latest/APIreference/APIglobals.html#mjcb-control
+        mujoco.mj_step(self.model,self.data)
+
+        # Update renderer
+        self.viewer.sync()
