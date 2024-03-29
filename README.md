@@ -36,13 +36,13 @@ python -m venv .venv
 Activate the virutal environment, where `smallsat-sim` is the name of your virtual environment:
 
 ```bash
-source .venv/bin/activate` && source ~/.bashrc
+source .venv/bin/activate && source ~/.bashrc
 ```
 
 Afterwards install all necessary packages:
 
 ```bash
-`pip install -r requirements.txt`.  
+`pip install -e .` 
 ```
 
 To check if the installation was successful, try the test script:
@@ -70,7 +70,9 @@ TODO
 
 ## Development Practices
 
-Please develop significant features on separate branches named `feature/FEATURE_NAME`, branching off of `main`. For small changes, committing directly to main is fine; for larger changes merqe requests are encouraged. We will be using a "git flow" style and branching off of main for feature adds.
+We will be using a "git flow" style and branching off of main for feature adds.
+
+Please develop significant features on separate branches named `feature/FEATURE_NAME`, branching off of `main`. For small changes, committing directly to `main` is fine; for larger changes merqe requests are encouraged.
 
 
 ## License

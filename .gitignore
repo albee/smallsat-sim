@@ -1,3 +1,6 @@
+# mujoco artifacts
+*MUJOCO_LOG*
+
 # virtual environment
 .venv/
 
@@ -6,3 +9,6 @@
 
 # python artifacts
 __pycache__/
+
+# os specific files
+.DS_Store
