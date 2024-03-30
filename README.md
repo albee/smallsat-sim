@@ -42,17 +42,25 @@ source .venv/bin/activate && source ~/.bashrc
 Afterwards install all necessary packages:
 
 ```bash
-`pip install -e .` 
+pip install -e .
 ```
 
 To check if the installation was successful, try the test script:
 
 ```bash
 cd experiments
-python3 test.py`
+python3 test.py
 ```
 
 This should show R2D2 dropping from the sky onto the ground. Happy coding!
+
+***Note for Ubuntu VMs on Mac M1!***
+
+You will need to load the correct OpenGL interface libraries for visualization to work. Add the following lines to your `~.bashrc`:
+
+```bash
+  export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libGLEW.so:/usr/lib/aarch64-linux-gnu/libGLX_mesa.so.0
+```
 
 
 ## Usage
