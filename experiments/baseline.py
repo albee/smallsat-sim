@@ -8,7 +8,7 @@ import time
 args = get_args()
 
 # Create environment
-env = BaselineEnv()
+env = BaselineEnv(args=args)
 
 # Create controller
 ctrl = OpenLoopController()
