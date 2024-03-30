@@ -1,6 +1,6 @@
 # smallsat-sim
 
-Simulation environment for SmallSat Steward. The simulation envrionment provides capabilities for:
+Simulation environment for SmallSat Steward. The simulation environment provides capabilities for:
 
 - Satellite dynamics modeling
   - From a physics simulation engine (MuJoCo)
@@ -33,7 +33,7 @@ Next, create a virtual environment in `<smallsat-sim`:
 python -m venv .venv
 ```
 
-Activate the virutal environment, where `smallsat-sim` is the name of your virtual environment:
+Activate the virtual environment, where `smallsat-sim` is the name of your virtual environment:
 
 ```bash
 source .venv/bin/activate && source ~/.bashrc
@@ -52,7 +52,7 @@ cd experiments
 python3 test.py
 ```
 
-This should show R2D2 dropping from the sky onto the ground. Happy coding!
+This should show a cube with two thrusters moving periodically from the left to the right. Happy coding!
 
 ***Note for Ubuntu VMs on Mac M1!***
 
