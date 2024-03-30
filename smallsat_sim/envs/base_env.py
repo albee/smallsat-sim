@@ -54,7 +54,8 @@ class BaseEnv(object):
     def _setup_sim(self, args):
         """
         This method sets up the correct simulation backend.
-        Checks for args.use_mujoco
+        Checks for args.use_casadi.
+        Creates a viewer depending on headless flag.
         """
         # Dynamically bind self.step() method
         if args.sim_casadi:
@@ -71,7 +72,12 @@ class BaseEnv(object):
         self.data = mujoco.MjData(self.model)
 
         # Launch the viewer
-        self._create_viewer()
+        if not args.headless:
+            self._create_viewer()
+        else:
+            # If sim is run in headless mode, set the update_viewer method
+            # to a lambda function which essentially does nothing
+            self._update_viewer = lambda *args, **kwargs: None
     
     def _step_mujoco(self) -> None:
         """
@@ -82,12 +88,18 @@ class BaseEnv(object):
         # See: https://mujoco.readthedocs.io/en/latest/APIreference/APIglobals.html#mjcb-control
         mujoco.mj_step(self.model,self.data)
 
-        # Update renderer
-        self.viewer.sync()
+        # Update viewer
+        self._update_viewer()
 
     def _step_casadi(self) -> None:
         """
         Uses casadi to simulate system forward in time
         """
         raise NotImplementedError("This function hasn't been implemented yet.")
+    
+    def _update_viewer(self):
+        """
+        Updates the viewer
+        """
+        self.viewer.sync()
     

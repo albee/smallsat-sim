@@ -16,6 +16,7 @@ def get_args() -> argparse.Namespace:
     # Add arguments
     parser.add_argument('--sim_casadi', action='store_true', help='Use casadi backend for simulation')
     parser.add_argument('--num_envs', type=int, help='Number of envs run in parallel', default=1)
+    parser.add_argument('--headless', action='store_true', help='Run in headless mode')
 
     # Parse the arguments
     args = parser.parse_args()
