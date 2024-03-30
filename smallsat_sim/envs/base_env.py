@@ -72,27 +72,6 @@ class BaseEnv(object):
 
         # Launch the viewer
         self._create_viewer()
-
-    def _init_mujoco(self) -> None:
-        """
-        Sets up the simulation with the mujoco backend
-        """
-        # Load the correct xml file
-        smallsat = self.cfg['smallsat']['name']
-        xml = os.path.join(SMALLSAT_SIM_LIB_DIR, smallsat, smallsat + ".xml")
-
-        # Create model and data instances
-        self.model = mujoco.MjModel.from_xml_path(xml)
-        self.data = mujoco.MjData(self.model)
-
-        # Launch the viewer
-        self._create_viewer()
-
-    def _init_casadi(self) -> None:
-        """
-        Sets up the simulation with the casadi backend
-        """
-        raise NotImplementedError("This function hasn't been implemented yet.")
     
     def _step_mujoco(self) -> None:
         """
