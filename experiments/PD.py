@@ -1,17 +1,16 @@
-from smallsat_sim.controllers.open_loop.controller import OpenLoopController
-from smallsat_sim.envs.baseline.env import BaselineEnv
-from smallsat_sim.utils.helpers import get_args
-
 import time
+from smallsat_sim.utils.helpers import get_args
+from smallsat_sim.controllers.pd.controller import PDController
+from smallsat_sim.envs.astrobee.env import AstrobeeEnv
 
 # Get arguments for script execution
 args = get_args()
 
 # Create environment
-env = BaselineEnv()
+env = AstrobeeEnv()
 
 # Create controller
-ctrl = OpenLoopController()
+ctrl = PDController()
 
 # Define start time
 start_time = time.time()

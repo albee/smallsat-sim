@@ -16,7 +16,7 @@
     <actuator>
         <general name="thruster0"
                  site="thruster_site0"
-                 gear="1 0 0"
+                 gear="-1 0 0"
                  forcerange="0 0.1"
                  ctrlrange="0 1"
                  forcelimited="true"
