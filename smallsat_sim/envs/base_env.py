@@ -57,7 +57,7 @@ class BaseEnv(object):
         Checks for args.use_mujoco
         """
         # Dynamically bind self.step() method
-        if args.use_mujoco:
+        if args.sim_mujoco:
             self.step = self._step_mujoco
         else:
             self.step = self._step_casadi
