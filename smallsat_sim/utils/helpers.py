@@ -14,8 +14,8 @@ def get_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Parse command line inputs')
 
     # Add arguments
-    parser.add_argument('--sim_mujoco', type=int, help='test variable', default=1)
-    parser.add_argument('--num_envs', type=int, help='number of envs run in parallel', default=1)
+    parser.add_argument('--sim_casadi', action='store_true', help='Use casadi backend for simulation')
+    parser.add_argument('--num_envs', type=int, help='Number of envs run in parallel', default=1)
 
     # Parse the arguments
     args = parser.parse_args()

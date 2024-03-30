@@ -57,10 +57,10 @@ class BaseEnv(object):
         Checks for args.use_mujoco
         """
         # Dynamically bind self.step() method
-        if args.sim_mujoco:
-            self.step = self._step_mujoco
-        else:
+        if args.sim_casadi:
             self.step = self._step_casadi
+        else:
+            self.step = self._step_mujoco
 
         # Load the correct xml file
         smallsat = self.cfg['smallsat']['name']
