@@ -12,6 +12,9 @@ env = AstrobeeEnv(args=args)
 # Create controller
 ctrl = PDController()
 
+# Set a reference (Tentative code for demonstration purposes)
+ctrl.x_ref[0] = 1
+
 # Define start time
 start_time = time.time()
 
@@ -23,7 +26,8 @@ while True:
     sim_time = env.data.time
 
     if sim_time < real_time:
-    # Take step in environment
-    # Controller callback is executed internally
-        env.step()
+        # Calculate control action (open-loop)
+        ctrl_input = ctrl.get_control_input(env)
         
+        # Advance simulation
+        env.step(input=ctrl_input)

@@ -3,13 +3,15 @@ import os
 
 from smallsat_sim import SMALLSAT_SIM_CONTROLLERS_DIR
 
+from smallsat_sim.envs.base_env import BaseEnv
+
 class BaseController(object):
     def __init__(self) -> None:
         pass
 
-    def controller_callback(self) -> None:
+    def get_control_input(self, env: BaseEnv) -> None:
         """
-        Defines the controller callback for the simulation step.
+        Returns the control input
         """
 
     def _load_cfg(self, controller_name: str) -> dict:

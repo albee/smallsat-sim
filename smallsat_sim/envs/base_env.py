@@ -7,6 +7,7 @@ import mujoco.viewer
 from smallsat_sim import SMALLSAT_SIM_ENVS_DIR
 from smallsat_sim import SMALLSAT_SIM_LIB_DIR
 
+from argparse import Namespace
 
 class BaseEnv(object):
     def __init__(self, args) -> None:
@@ -18,7 +19,7 @@ class BaseEnv(object):
         """
         pass
 
-    def step(self) -> None:
+    def step(self, input: np.array) -> None:
         """
         Simulate environment for one timestep.
         """
@@ -51,7 +52,7 @@ class BaseEnv(object):
             except yaml.YAMLError as exc:
                 print(exc)
 
-    def _setup_sim(self, args):
+    def _setup_sim(self, args: Namespace):
         """
         This method sets up the correct simulation backend.
         Checks for args.use_casadi.
@@ -79,19 +80,21 @@ class BaseEnv(object):
             # to a lambda function which essentially does nothing
             self._update_viewer = lambda *args, **kwargs: None
     
-    def _step_mujoco(self) -> None:
+    def _step_mujoco(self, input: np.array) -> None:
         """
         Uses mujoco physics engine to simulate system forward in time
         """
         # Step simulation
-        # Controller callback is called internally to retrieve inputs
-        # See: https://mujoco.readthedocs.io/en/latest/APIreference/APIglobals.html#mjcb-control
-        mujoco.mj_step(self.model,self.data)
+        # Reroute inputs to mujoco
+        self.data.ctrl = input
+
+        # Advance simulation
+        mujoco.mj_step(self.model, self.data)        
 
         # Update viewer
         self._update_viewer()
 
-    def _step_casadi(self) -> None:
+    def _step_casadi(self, input: np.array) -> None:
         """
         Uses casadi to simulate system forward in time
         """

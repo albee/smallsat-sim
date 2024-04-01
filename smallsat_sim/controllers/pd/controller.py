@@ -9,7 +9,6 @@ import mujoco
 class PDController(BaseController):
     def __init__(self) -> None:
         super().__init__()
-        mujoco.set_mjcb_control(self.controller_callback)
 
         self.x_ref = np.zeros((3,1))
         self.quat_ref = np.array([1.,0.,0.,0.])
@@ -36,17 +35,17 @@ class PDController(BaseController):
                              +np.append([0,0,0],np.cross(force,actuator_pos)))
         return B_matrix
 
-    def controller_callback(self,model,data) -> None:
+    def get_control_input(self,env) -> None:
         """Defines the controller callback for the simulation step.
         """
         desired_pos        = self.x_ref  # Linear
         desired_quat       = np.array([1.,0.,0.,0.])
         desired_linvel     = self.v_ref  # Linear
         desired_angvel     = np.zeros((3,1))
-        current_pos        = np.reshape(data.qpos[:3],(3,1))
-        current_quat       = np.reshape(data.qpos[3:],(4,1))
-        current_linvel     = np.reshape(data.qvel[:3],(3,1))  # Linear
-        current_angvel     = np.reshape(data.qvel[3:],(3,1))  # Angular
+        current_pos        = np.reshape(env.data.qpos[:3],(3,1))
+        current_quat       = np.reshape(env.data.qpos[3:],(4,1))
+        current_linvel     = np.reshape(env.data.qvel[:3],(3,1))  # Linear
+        current_angvel     = np.reshape(env.data.qvel[3:],(3,1))  # Angular
 
         x_error = desired_pos - current_pos  # Linear, world frame
         v_error = desired_linvel - current_linvel  # Linear, world frame
@@ -68,5 +67,6 @@ class PDController(BaseController):
 
         desired_control = desired_acceleration
         # Distribute the desired forces and torques to the actuators, least squares
-        B_matrix = self.B_matrix(model,data)
-        data.ctrl = np.dot(np.linalg.pinv(B_matrix), desired_control)
+        B_matrix = self.B_matrix(env.model,env.data)
+        
+        return np.dot(np.linalg.pinv(B_matrix), desired_control)
