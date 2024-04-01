@@ -24,7 +24,8 @@ while True:
     sim_time = env.data.time
 
     if sim_time < real_time:
-    # Take step in environment
-    # Controller callback is executed internally
-        env.step()
+        # Calculate control action (open-loop)
+        ctrl_input = ctrl.get_control_input(env)
         
+        # Advance simulation
+        env.step(input=ctrl_input)
