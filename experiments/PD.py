@@ -7,7 +7,7 @@ from smallsat_sim.envs.astrobee.env import AstrobeeEnv
 args = get_args()
 
 # Create environment
-env = AstrobeeEnv()
+env = AstrobeeEnv(args=args)
 
 # Create controller
 ctrl = PDController()
