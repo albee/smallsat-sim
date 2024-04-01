@@ -5,12 +5,12 @@ import mujoco
 import mujoco.viewer
 
 from smallsat_sim import SMALLSAT_SIM_ENVS_DIR
-from smallsat_sim import SMALLSAT_SIM_ROOT_DIR
+from smallsat_sim import SMALLSAT_SIM_LIB_DIR
 
 
 class BaseEnv(object):
-    def __init__(self) -> None:
-        pass
+    def __init__(self, args) -> None:
+        self._setup_sim(args)
 
     def reset(self) -> None:
         """
@@ -51,6 +51,55 @@ class BaseEnv(object):
             except yaml.YAMLError as exc:
                 print(exc)
 
+    def _setup_sim(self, args):
+        """
+        This method sets up the correct simulation backend.
+        Checks for args.use_casadi.
+        Creates a viewer depending on headless flag.
+        """
+        # Dynamically bind self.step() method
+        if args.sim_casadi:
+            self.step = self._step_casadi
+        else:
+            self.step = self._step_mujoco
 
-    # Rewards should be in here as well
+        # Load the correct xml file
+        smallsat = self.cfg['smallsat']['name']
+        xml = os.path.join(SMALLSAT_SIM_LIB_DIR, smallsat, smallsat + ".xml")
+
+        # Create model and data instances
+        self.model = mujoco.MjModel.from_xml_path(xml)
+        self.data = mujoco.MjData(self.model)
+
+        # Launch the viewer
+        if not args.headless:
+            self._create_viewer()
+        else:
+            # If sim is run in headless mode, set the update_viewer method
+            # to a lambda function which essentially does nothing
+            self._update_viewer = lambda *args, **kwargs: None
+    
+    def _step_mujoco(self) -> None:
+        """
+        Uses mujoco physics engine to simulate system forward in time
+        """
+        # Step simulation
+        # Controller callback is called internally to retrieve inputs
+        # See: https://mujoco.readthedocs.io/en/latest/APIreference/APIglobals.html#mjcb-control
+        mujoco.mj_step(self.model,self.data)
+
+        # Update viewer
+        self._update_viewer()
+
+    def _step_casadi(self) -> None:
+        """
+        Uses casadi to simulate system forward in time
+        """
+        raise NotImplementedError("This function hasn't been implemented yet.")
+    
+    def _update_viewer(self):
+        """
+        Updates the viewer
+        """
+        self.viewer.sync()
     

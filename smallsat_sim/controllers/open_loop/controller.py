@@ -1,4 +1,4 @@
-from smallsat_sim.controllers.controller import BaseController
+from smallsat_sim.controllers.base_controller import BaseController
 
 import numpy as np
 import mujoco
