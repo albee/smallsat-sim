@@ -5,10 +5,9 @@ import mujoco
 import os
 
 class AstrobeeEnv(BaseEnv):
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self,args) -> None:
         self.cfg = self._load_cfg("astrobee")
-        self._init_mujoco()
+        super().__init__(args=args)
 
     def _init_mujoco(self) -> None:
         smallsat = self.cfg['smallsat']['name']
