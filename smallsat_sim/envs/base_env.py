@@ -7,6 +7,7 @@ import mujoco.viewer
 from smallsat_sim import SMALLSAT_SIM_ENVS_DIR
 from smallsat_sim import SMALLSAT_SIM_LIB_DIR
 
+from argparse import Namespace
 
 class BaseEnv(object):
     def __init__(self, args) -> None:
@@ -51,7 +52,7 @@ class BaseEnv(object):
             except yaml.YAMLError as exc:
                 print(exc)
 
-    def _setup_sim(self, args):
+    def _setup_sim(self, args: Namespace):
         """
         This method sets up the correct simulation backend.
         Checks for args.use_casadi.

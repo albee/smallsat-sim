@@ -1,4 +1,5 @@
 from smallsat_sim.controllers.base_controller import BaseController
+from smallsat_sim.envs.base_env import BaseEnv
 
 import numpy as np
 import mujoco
@@ -7,7 +8,7 @@ class OpenLoopController(BaseController):
     def __init__(self) -> None:
         super().__init__()
 
-    def get_control_input(self, env) -> None:
+    def get_control_input(self, env: BaseEnv) -> None:
         """
         Calculates the open-loop control input
         """

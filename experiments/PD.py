@@ -12,6 +12,9 @@ env = AstrobeeEnv(args=args)
 # Create controller
 ctrl = PDController()
 
+# Set a reference (Tentative code for demonstration purposes)
+ctrl.x_ref[0] = 1
+
 # Define start time
 start_time = time.time()
 
