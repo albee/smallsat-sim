@@ -5,7 +5,7 @@
     </asset>
 
     <worldbody>
-        <body name="cube" pos="0 0 0">
+        <body name="cube" pos="0 0 0" euler="0 0 0">
             <freejoint/>
             <geom type="box" size="0.1 0.1 0.1" mass="1"/> <!-- Defines the cube -->
             <site name="thruster_site0" pos="0.1 0 0" size="0.01"/> <!-- Position for thruster action -->
