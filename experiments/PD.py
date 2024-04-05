@@ -10,7 +10,7 @@ args = get_args()
 env = AstrobeeEnv(args=args)
 
 # Create controller
-ctrl = PDController()
+ctrl = PDController(env)
 
 # Set a reference (Tentative code for demonstration purposes)
 ctrl.x_ref[0] = 1

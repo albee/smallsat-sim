@@ -1,4 +1,5 @@
 from smallsat_sim.controllers.base_controller import BaseController
+from smallsat_sim.envs.base_env import BaseEnv
 from smallsat_sim.utils.helpers import quat_multiply, quat_conjugate, Rquat, sgn_quat
 import yaml
 import numpy as np
@@ -7,7 +8,7 @@ import mujoco
 
 
 class PDController(BaseController):
-    def __init__(self) -> None:
+    def __init__(self,env) -> None:
         super().__init__()
 
         self.x_ref = np.zeros((3,1))
@@ -20,10 +21,10 @@ class PDController(BaseController):
         self.Kp_q = cfg['gains']['Kp_q']
         self.Kd_q = cfg['gains']['Kd_q']
 
-    def B_matrix(self,model,data) -> np.ndarray:
+        self.B_matrix = self.calc_B_matrix(env.model)
+
+    def calc_B_matrix(self,model) -> np.ndarray:
         """Create B matrix (thruster configuration matrix, mixer, etc.)
-        Not sure how to reflect that the thrusters only produce thrust 
-        in one direction. For now, assume bi-directional thrusters.
         """
         B_matrix = np.empty(shape=(6,model.nu))
         for i in range(model.nu):
@@ -34,12 +35,28 @@ class PDController(BaseController):
             B_matrix[:,i] = (actuator.gear 
                              +np.append([0,0,0],np.cross(force,actuator_pos)))
         return B_matrix
+    
+    def _apply_ctrl_constraint(self, env: BaseEnv, u: np.ndarray) -> np.ndarray:
+        """Apply non-negative control constraints to the input control signal u.
+        """
+        # Get index of all thrusters that give propulsion in x,y,z
+        # This assumes that thrusters only have propulsion in one direction!
+        x_thrusters_id = [i for i, gear in enumerate(env.model.actuator_gear) if gear[0] != 0]
+        y_thrusters_id = [i for i, gear in enumerate(env.model.actuator_gear) if gear[1] != 0]
+        z_thrusters_id = [i for i, gear in enumerate(env.model.actuator_gear) if gear[2] != 0]
 
-    def get_control_input(self,env) -> None:
+        for list in [x_thrusters_id, y_thrusters_id, z_thrusters_id]:
+            min_thrust = np.amin(u[list])  # Find lowest thrust value in the list
+            if min_thrust < 0:
+                u[list] -= min_thrust  # Subtract the minimum thrust from all thrusters
+        return u
+
+
+    def get_control_input(self, env: BaseEnv) -> np.ndarray:
         """Defines the controller callback for the simulation step.
         """
         desired_pos        = self.x_ref  # Linear
-        desired_quat       = np.array([1.,0.,0.,0.])
+        desired_quat       = self.quat_ref
         desired_linvel     = self.v_ref  # Linear
         desired_angvel     = np.zeros((3,1))
         current_pos        = np.reshape(env.data.qpos[:3],(3,1))
@@ -67,6 +84,8 @@ class PDController(BaseController):
 
         desired_control = desired_acceleration
         # Distribute the desired forces and torques to the actuators, least squares
-        B_matrix = self.B_matrix(env.model,env.data)
+        u_unconstrained = np.dot(np.linalg.pinv(self.B_matrix), desired_control)
         
-        return np.dot(np.linalg.pinv(B_matrix), desired_control)
+        # Only allow non-negative thrust values
+        u = self._apply_ctrl_constraint(env, u_unconstrained)
+        return u
