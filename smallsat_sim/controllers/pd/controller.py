@@ -21,9 +21,9 @@ class PDController(BaseController):
         self.Kp_q = cfg['gains']['Kp_q']
         self.Kd_q = cfg['gains']['Kd_q']
 
-        self.B_matrix = self.B_matrix(env.model)
+        self.B_matrix = self.calc_B_matrix(env.model)
 
-    def B_matrix(self,model) -> np.ndarray:
+    def calc_B_matrix(self,model) -> np.ndarray:
         """Create B matrix (thruster configuration matrix, mixer, etc.)
         """
         B_matrix = np.empty(shape=(6,model.nu))
@@ -84,8 +84,7 @@ class PDController(BaseController):
 
         desired_control = desired_acceleration
         # Distribute the desired forces and torques to the actuators, least squares
-        B_matrix = self.B_matrix
-        u_unconstrained = np.dot(np.linalg.pinv(B_matrix), desired_control)
+        u_unconstrained = np.dot(np.linalg.pinv(self.B_matrix), desired_control)
         
         # Only allow non-negative thrust values
         u = self._apply_ctrl_constraint(env, u_unconstrained)
