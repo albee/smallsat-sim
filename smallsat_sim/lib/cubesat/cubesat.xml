@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="cubesat">
+    <compiler convexhull="true"/>
+    <visual>
+        <headlight ambient="0.5 0.5 0.5" specular="0.1 0.1 0.1" diffuse="0.5 0.5 0.5"/>
+    </visual>
+    <option gravity="0 0 0"/>
+    <asset>
+        <mesh name="cubesat_top" file="meshes/cubesat_top.stl" scale="0.001 0.001 0.001"/>
+        <mesh name="cubesat_middle" file="meshes/cubesat_middle.stl" scale="0.001 0.001 0.001"/>
+        <mesh name="cubesat_bottom" file="meshes/cubesat_bottom.stl" scale="0.001 0.001 0.001"/>
+    </asset>
+    <worldbody>
+        <body name="cubesat" pos="0 0 0" quat="1 0 0 0">
+            <freejoint/>
+            <!--Make a 3U cubesat by combining three 1U modules-->
+            <geom type="mesh" mesh="cubesat_top" pos="-0.0495 -0.0495 0.1395" euler="0 0 0"/>
+            <geom type="mesh" mesh="cubesat_middle" pos="-0.05 -0.05 -0.15" euler="0 0 0"/>
+            <geom type="mesh" mesh="cubesat_middle" pos="-0.05 -0.05 -0.0535" euler="0 0 0"/>
+            <geom type="mesh" mesh="cubesat_middle" pos="-0.05 -0.05 0.043" euler="0 0 0"/>
+            <geom type="mesh" mesh="cubesat_bottom" pos="-0.05 -0.05 -0.15" euler="0 0 0"/>
+            
+            <!--Thruster sites are placed based on the description of Astrobee's thrusters-->
+            <site name="LX+" pos="0.05 0.025 0.05" size="0.005"/>
+            <site name="LX-" pos="-0.05 0.025 -0.05" size="0.005"/>
+            <site name="RX+" pos="0.05 -0.025 -0.05" size="0.005"/>
+            <site name="RX-" pos="-0.05 -0.025 0.05" size="0.005"/>
+            <site name="AY+" pos="0.025 0.05 0.05" size="0.005"/>
+            <site name="AY-" pos="0.025 -0.05 -0.05" size="0.005"/>
+            <site name="FY+" pos="-0.025 0.05 -0.05" size="0.005"/>
+            <site name="FY-" pos="-0.025 -0.05 0.05" size="0.005"/>
+            <site name="LZ+" pos="-0.025 -0.025 0.143" size="0.005"/>
+            <site name="LZ-" pos="0.025 -0.025 -0.15" size="0.005"/>
+            <site name="RZ+" pos="0.025 0.025 0.143" size="0.005"/>
+            <site name="RZ-" pos="-0.025 0.025 -0.15" size="0.005"/>
+        </body>
+    </worldbody>
+    <!--Actuator gear based on the description of Astrobee's thrusters-->
+    <actuator>
+            <general name="thruster1"
+                site="LX+"
+                gear="1 0 0"
+                forcerange="0 1"
+                ctrlrange="0 1"
+                forcelimited="true"
+            />
+            <general name="thruster2"
+                site="LX-"
+                gear="-1 0 0"
+                forcerange="0 1"
+                ctrlrange="0 1"
+                forcelimited="true"
+            />
+            <general name="thruster3"
+                site="RX+"
+                gear="1 0 0"
+                forcerange="0 1"
+                ctrlrange="0 1"
+                forcelimited="true"
+            />
+            <general name="thruster4"
+                site="RX-"
+                gear="1 0 0"
+                forcerange="0 1"
+                ctrlrange="0 1"
+                forcelimited="true"
+            />
+            <general name="thruster5"
+                site="AY+"
+                gear="0 1 0"
+                forcerange="0 1"
+                ctrlrange="0 1"
+                forcelimited="true"
+            />
+            <general name="thruster6"
+                site="AY-"
+                gear="0 -1 0"
+                forcerange="0 1"
+                ctrlrange="0 1"
+                forcelimited="true"
+            />
+            <general name="thruster7"
+                site="FY+"
+                gear="0 1 0"
+                forcerange="0 1"
+                ctrlrange="0 1"
+                forcelimited="true"
+            />
+            <general name="thruster8"
+                site="FY-"
+                gear="0 -1 0"
+                forcerange="0 1"
+                ctrlrange="0 1"
+                forcelimited="true"
+            />
+            <general name="thruster9"
+                site="LZ+"
+                gear="0 0 1"
+                forcerange="0 1"
+                ctrlrange="0 1"
+                forcelimited="true"
+            />
+            <general name="thruster10"
+                site="LZ-"
+                gear="0 0 -1"
+                forcerange="0 1"
+                ctrlrange="0 1"
+                forcelimited="true"
+            />
+            <general name="thruster11"
+                site="RZ+"
+                gear="0 0 1"
+                forcerange="0 1"
+                ctrlrange="0 1"
+                forcelimited="true"
+            />
+            <general name="thruster12"
+                site="RZ-"
+                gear="0 0 -1"
+                forcerange="0 1"
+                ctrlrange="0 1"
+                forcelimited="true"
+            />
+        </actuator>
+</mujoco>
