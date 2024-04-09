@@ -13,6 +13,10 @@ class BaseEnv(object):
     def __init__(self, args) -> None:
         self._setup_sim(args)
 
+        # Initialize disturbance and perturbation to None as default setting
+        self.disturbance = None
+        self.perturbation = None
+
     def reset(self) -> None:
         """
         Resets environment to a desired state.
@@ -84,9 +88,8 @@ class BaseEnv(object):
         """
         Uses mujoco physics engine to simulate system forward in time
         """
-        # Step simulation
-        # Reroute inputs to mujoco
-        self.data.ctrl = input
+        # Prepare env for simulation step
+        self._pre_physics_step_mujoco(input)
 
         # Advance simulation
         mujoco.mj_step(self.model, self.data)        
@@ -105,4 +108,31 @@ class BaseEnv(object):
         Updates the viewer
         """
         self.viewer.sync()
-    
+
+    def _pre_physics_step_mujoco(self, input: np.ndarray) -> None:
+        """"
+        Prepares the environment for the simulation step in MuJoCo.
+        This includes:
+            - Adding external disturbances
+            - Adding perturbations to control input and model dynamics
+            - ...
+        """
+        # External disturbances
+        if self.disturbance:
+            self.data.qfrc_applied = self.disturbance.apply()
+
+        # Perturbations
+        if self.perturbation:
+            self.data.ctrl = self.perturbation.apply()
+        else:
+            self.data.ctrl = input
+
+    def _pre_physics_step_casadi(self, input: np.ndarray) -> None:
+        """"
+        Prepares the environment for the simulation step in CasADi.
+        This includes:
+            - Adding external disturbances
+            - Adding perturbations to control input and model dynamics
+            - ...
+        """
+        pass
