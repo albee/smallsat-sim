@@ -4,14 +4,18 @@ import os
 import mujoco
 import mujoco.viewer
 
-from smallsat_sim import SMALLSAT_SIM_ENVS_DIR
-from smallsat_sim import SMALLSAT_SIM_LIB_DIR
+from smallsat_sim import SMALLSAT_SIM_ENVS_DIR, SMALLSAT_SIM_LIB_DIR
+from smallsat_sim.envs.dynamics import SymbolicModel
 
 from argparse import Namespace
 
 class BaseEnv(object):
     def __init__(self, args) -> None:
+        # Setup simulation environment
         self._setup_sim(args)
+
+        # Create symbolic model
+        self.symbolic_model = SymbolicModel(self.lib_cfg)
 
         # Initialize disturbance and perturbation to None as default setting
         self.disturbance = None
@@ -48,20 +52,40 @@ class BaseEnv(object):
         """
         self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
 
-    def _load_cfg(self, env_name: str) -> dict:
+    def _load_cfg(self, env_name: str, lib_name: str) -> dict:
         """
-        Loads the config parameters from the file located in cfg/config.yaml    
+        Loads and returns the following config files:
+            - env config file
+            - lib config file   
         """
+        # Save env and lib names for later use
+        self.env_name = env_name
+        self.lib_name = lib_name
+        
+        # env config
         # localize relevant yaml file
         cfg_path = os.path.join(SMALLSAT_SIM_ENVS_DIR, env_name, "cfg", "config.yaml")
 
         # load from yaml file
         with open(cfg_path) as file:
             try:
-                cfg = yaml.safe_load(file)
-                return cfg
+                env_cfg = yaml.safe_load(file)
             except yaml.YAMLError as exc:
                 print(exc)
+
+        # lib config        
+        # localize relevant yaml file
+        cfg_path = os.path.join(SMALLSAT_SIM_LIB_DIR, lib_name, "cfg", "config.yaml")
+
+        # load from yaml file
+        with open(cfg_path) as file:
+            try:
+                lib_cfg = yaml.safe_load(file)
+            except yaml.YAMLError as exc:
+                print(exc)
+
+        return env_cfg, lib_cfg
+
 
     def _setup_sim(self, args: Namespace):
         """
@@ -69,8 +93,7 @@ class BaseEnv(object):
         Creates a viewer depending on headless flag.
         """
         # Load the correct xml file
-        smallsat = self.cfg['smallsat']['name']
-        xml = os.path.join(SMALLSAT_SIM_LIB_DIR, smallsat, smallsat + ".xml")
+        xml = os.path.join(SMALLSAT_SIM_LIB_DIR, self.lib_name, self.lib_name + ".xml")
 
         # Create model and data instances
         self.model = mujoco.MjModel.from_xml_path(xml)
