@@ -27,7 +27,14 @@ class BaseEnv(object):
         """
         Simulate environment for one timestep.
         """
-        pass
+        # Prepare env for simulation step
+        self._pre_physics_step(input)
+
+        # Advance simulation
+        mujoco.mj_step(self.model, self.data)        
+
+        # Update viewer
+        self._update_viewer()
 
     def get_obs(self) -> np.array:
         """
@@ -58,16 +65,9 @@ class BaseEnv(object):
 
     def _setup_sim(self, args: Namespace):
         """
-        This method sets up the correct simulation backend.
-        Checks for args.use_casadi.
+        Prepares simulation according to args.
         Creates a viewer depending on headless flag.
         """
-        # Dynamically bind self.step() method
-        if args.sim_casadi:
-            self.step = self._step_casadi
-        else:
-            self.step = self._step_mujoco
-
         # Load the correct xml file
         smallsat = self.cfg['smallsat']['name']
         xml = os.path.join(SMALLSAT_SIM_LIB_DIR, smallsat, smallsat + ".xml")
@@ -84,32 +84,13 @@ class BaseEnv(object):
             # to a lambda function which essentially does nothing
             self._update_viewer = lambda *args, **kwargs: None
     
-    def _step_mujoco(self, input: np.array) -> None:
-        """
-        Uses mujoco physics engine to simulate system forward in time
-        """
-        # Prepare env for simulation step
-        self._pre_physics_step_mujoco(input)
-
-        # Advance simulation
-        mujoco.mj_step(self.model, self.data)        
-
-        # Update viewer
-        self._update_viewer()
-
-    def _step_casadi(self, input: np.array) -> None:
-        """
-        Uses casadi to simulate system forward in time
-        """
-        raise NotImplementedError("This function hasn't been implemented yet.")
-    
     def _update_viewer(self):
         """
         Updates the viewer
         """
         self.viewer.sync()
 
-    def _pre_physics_step_mujoco(self, input: np.ndarray) -> None:
+    def _pre_physics_step(self, input: np.ndarray) -> None:
         """"
         Prepares the environment for the simulation step in MuJoCo.
         This includes:
@@ -126,13 +107,3 @@ class BaseEnv(object):
             self.data.ctrl = self.perturbation.apply()
         else:
             self.data.ctrl = input
-
-    def _pre_physics_step_casadi(self, input: np.ndarray) -> None:
-        """"
-        Prepares the environment for the simulation step in CasADi.
-        This includes:
-            - Adding external disturbances
-            - Adding perturbations to control input and model dynamics
-            - ...
-        """
-        pass
