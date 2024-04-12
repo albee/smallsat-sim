@@ -17,14 +17,14 @@
         <general name="thruster0"
                  site="thruster_site0"
                  gear="-1 0 0"
-                 forcerange="0 0.1"
+                 forcerange="0 1"
                  ctrlrange="0 1"
                  forcelimited="true"
         />
         <general name="thruster1"
                  site="thruster_site1"
                  gear="1 0 0"
-                 forcerange="0 0.1"
+                 forcerange="0 1"
                  ctrlrange="0 1"
                  forcelimited="true"
         />
