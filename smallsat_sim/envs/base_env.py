@@ -33,6 +33,8 @@ class BaseEnv(object):
         """
         # Prepare env for simulation step
         self._pre_physics_step(input)
+        obs = self.get_obs()
+        print("Success!")
 
         # Advance simulation
         mujoco.mj_step(self.model, self.data)        
@@ -44,7 +46,10 @@ class BaseEnv(object):
         """
         Return all states and optionally rewards
         """
-        pass
+        obs = np.concatenate((self.data.qpos, # [r, q] -> (7,)
+                              self.data.qvel)) # [v, omega] -> (6,)
+        
+        return obs
 
     def _create_viewer(self) -> None:
         """
