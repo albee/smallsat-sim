@@ -45,7 +45,7 @@ class BaseEnv(object):
 
     def get_obs(self) -> np.array:
         """
-        Return all states and optionally rewards
+        Return all states
         """
         # obs = [r (3),
         #        q (4),
