@@ -9,6 +9,7 @@ from smallsat_sim.envs.dynamics import SymbolicModel
 
 from argparse import Namespace
 
+
 class BaseEnv(object):
     def __init__(self, args) -> None:
         # Setup simulation environment
@@ -37,7 +38,7 @@ class BaseEnv(object):
         print("Success!")
 
         # Advance simulation
-        mujoco.mj_step(self.model, self.data)        
+        mujoco.mj_step(self.model, self.data)
 
         # Update viewer
         self._update_viewer()
@@ -46,9 +47,13 @@ class BaseEnv(object):
         """
         Return all states and optionally rewards
         """
-        obs = np.concatenate((self.data.qpos, # [r, q] -> (7,)
-                              self.data.qvel)) # [v, omega] -> (6,)
-        
+        # obs = [r (3),
+        #        q (4),
+        #        v (3),
+        #        omega (3)]
+
+        obs = np.concatenate((self.data.qpos, self.data.qvel))
+
         return obs
 
     def _create_viewer(self) -> None:
@@ -61,12 +66,12 @@ class BaseEnv(object):
         """
         Loads and returns the following config files:
             - env config file
-            - lib config file   
+            - lib config file
         """
         # Save env and lib names for later use
         self.env_name = env_name
         self.lib_name = lib_name
-        
+
         # env config
         # localize relevant yaml file
         cfg_path = os.path.join(SMALLSAT_SIM_ENVS_DIR, env_name, "cfg", "config.yaml")
@@ -78,7 +83,7 @@ class BaseEnv(object):
             except yaml.YAMLError as exc:
                 print(exc)
 
-        # lib config        
+        # lib config
         # localize relevant yaml file
         cfg_path = os.path.join(SMALLSAT_SIM_LIB_DIR, lib_name, "cfg", "config.yaml")
 
@@ -90,7 +95,6 @@ class BaseEnv(object):
                 print(exc)
 
         return env_cfg, lib_cfg
-
 
     def _setup_sim(self, args: Namespace):
         """
@@ -111,7 +115,7 @@ class BaseEnv(object):
             # If sim is run in headless mode, set the update_viewer method
             # to a lambda function which essentially does nothing
             self._update_viewer = lambda *args, **kwargs: None
-    
+
     def _update_viewer(self):
         """
         Updates the viewer
@@ -119,7 +123,7 @@ class BaseEnv(object):
         self.viewer.sync()
 
     def _pre_physics_step(self, input: np.ndarray) -> None:
-        """"
+        """
         Prepares the environment for the simulation step in MuJoCo.
         This includes:
             - Adding external disturbances
