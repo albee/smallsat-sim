@@ -22,6 +22,9 @@ class BaseEnv(object):
         self.disturbance = None
         self.perturbation = None
 
+        # Initialize observations
+        self.obs = self.get_obs()
+
     def reset(self) -> None:
         """
         Resets environment to a desired state.
@@ -34,8 +37,6 @@ class BaseEnv(object):
         """
         # Prepare env for simulation step
         self._pre_physics_step(input)
-        obs = self.get_obs()
-        print("Success!")
 
         # Advance simulation
         mujoco.mj_step(self.model, self.data)
@@ -130,6 +131,9 @@ class BaseEnv(object):
             - Adding perturbations to control input and model dynamics
             - ...
         """
+        # Fetch most recent observations
+        self.obs = self.get_obs()
+
         # External disturbances
         if self.disturbance:
             self.data.qfrc_applied = self.disturbance.apply()

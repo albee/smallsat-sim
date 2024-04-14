@@ -1,5 +1,6 @@
-from numpy import ndarray
 from smallsat_sim.planners.base_planner import BasePlanner
+
+import numpy as np
 
 
 class OraclePlanner(BasePlanner):
@@ -11,17 +12,24 @@ class OraclePlanner(BasePlanner):
         # generate a circular reference trajectory around the gateway
         self._generate_reference()
 
-    def get_reference(self, obs: ndarray) -> ndarray:
+    def get_reference(self, obs: np.ndarray) -> np.ndarray:
         """
         Dedicated method which is called externally
         """
-        pass
+        return self.reference_points[0]
 
     def _generate_reference(self):
         """
-        Generates a circle in the z-dimension around the gateway
+        Generates a circle in the yz plane around the gateway
         """
-        pass
+        self.reference_points = []
+        for i in range(int((2 * np.pi * self.radius) // self.spacing)):
+            x = 0  # x-coordinate remains constant as the circle is in the yz-plane
+            y = self.radius * np.sin(
+                i * 2 * np.pi * self.radius / self.spacing
+            )  # y-coordinate
+            z = self.radius * np.cos(
+                i * 2 * np.pi * self.radius / self.spacing
+            )  # z-coordinate
 
-    def _calc_world_point(self):
-        pass
+            self.reference_points.append(np.array([x, y, z]))

@@ -2,6 +2,7 @@ import time
 from smallsat_sim.utils.helpers import get_args
 from smallsat_sim.controllers.pd.controller import PDController
 from smallsat_sim.envs.astrobee.env import AstrobeeEnv
+from smallsat_sim.planners.oracle.oracle import OraclePlanner
 
 # Get arguments for script execution
 args = get_args()
@@ -9,8 +10,11 @@ args = get_args()
 # Create environment
 env = AstrobeeEnv(args=args)
 
+# Create planner
+planner = OraclePlanner()
+
 # Create controller
-ctrl = PDController(env)
+ctrl = PDController(env, planner)
 
 # Set a reference (Tentative code for demonstration purposes)
 ctrl.x_ref[0] = 1
