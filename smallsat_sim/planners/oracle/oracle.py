@@ -25,9 +25,11 @@ class OraclePlanner(BasePlanner):
             obs[0:3] - self.reference_points[self.idx_reference_point]
         )
 
+        # If smallsat is closer than the clearance distance, the next reference point is queried
         if dist < self.clearance_dist:
             self.idx_reference_point += 1
 
+        # Visualizes the next 3 points
         self.visualize(
             [
                 self.reference_points[

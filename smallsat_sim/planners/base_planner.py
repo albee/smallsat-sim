@@ -19,7 +19,7 @@ class BasePlanner(object):
 
     def visualize(self, points: list[np.ndarray]):
         """
-        Visualizes reference points in the MuJoCo viewer.
+        Visualizes reference points in the MuJoCo viewer
         """
         self.viewer.user_scn.ngeom = 0
         i = 0
