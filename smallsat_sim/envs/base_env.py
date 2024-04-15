@@ -61,7 +61,14 @@ class BaseEnv(object):
         """
         Creates a viewer to visualize simulation
         """
+        # Create instance of MuJoCo viewer
         self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
+        
+        # Set default camera options
+        self.viewer.cam.distance = 3.0
+        self.viewer.cam.trackbodyid = 2 # tracks smallsat
+        self.viewer.cam.azimuth = 10.0
+        self.viewer.cam.type = 1
 
     def _load_cfg(self, env_name: str, lib_name: str) -> dict:
         """
