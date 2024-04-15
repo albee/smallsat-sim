@@ -11,13 +11,10 @@ args = get_args()
 env = AstrobeeEnv(args=args)
 
 # Create planner
-planner = OraclePlanner()
+planner = OraclePlanner(env)
 
 # Create controller
 ctrl = PDController(env, planner)
-
-# Set a reference (Tentative code for demonstration purposes)
-ctrl.x_ref[0] = 1
 
 # Define start time
 start_time = time.time()
