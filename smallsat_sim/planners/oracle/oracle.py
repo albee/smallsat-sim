@@ -30,9 +30,15 @@ class OraclePlanner(BasePlanner):
 
         self.visualize(
             [
-                self.reference_points[self.idx_reference_point % len(self.reference_points)],
-                self.reference_points[(self.idx_reference_point + 1) % len(self.reference_points)],
-                self.reference_points[(self.idx_reference_point + 2) % len(self.reference_points)],
+                self.reference_points[
+                    self.idx_reference_point % len(self.reference_points)
+                ],
+                self.reference_points[
+                    (self.idx_reference_point + 1) % len(self.reference_points)
+                ],
+                self.reference_points[
+                    (self.idx_reference_point + 2) % len(self.reference_points)
+                ],
             ]
         )
 

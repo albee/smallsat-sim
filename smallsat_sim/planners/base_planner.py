@@ -2,10 +2,12 @@ import numpy as np
 import mujoco
 import itertools
 
+
 class BasePlanner(object):
     """
     Base class of planner objects.
     """
+
     def __init__(self, env) -> None:
         self.viewer = env.viewer
 
@@ -31,7 +33,7 @@ class BasePlanner(object):
                 size=[0.05, 0, 0],
                 pos=np.array([x, y, z]),
                 mat=np.eye(3).flatten(),
-                rgba=np.array([1, 0, 0, 2])
+                rgba=np.array([1, 0, 0, 2]),
             )
             i += 1
         self.viewer.user_scn.ngeom = i
