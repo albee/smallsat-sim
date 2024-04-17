@@ -80,19 +80,6 @@ class LibConfig:
             i += 1
             thruster = Thruster(name=f'thruster{i}', pos=value["pos"], gear=value["gear"])
             thruster_list.append(thruster)
-        # self.thruster1 = Thruster(name='thruster1', gear='1 0 0', pos=site_positions["LX+"])
-        # self.thruster2 = Thruster(name='thruster2', gear='-1 0 0', pos=site_positions["LX-"])
-        # self.thruster3 = Thruster(name='thruster3', gear='1 0 0', pos=site_positions["RX+"])
-        # self.thruster4 = Thruster(name='thruster4', gear='-1 0 0', pos=site_positions["RX-"])
-        # self.thruster5 = Thruster(name='thruster5', gear='0 1 0', pos=site_positions["AY+"])
-        # self.thruster6 = Thruster(name='thruster6', gear='0 -1 0', pos=site_positions["AY-"])
-        # self.thruster7 = Thruster(name='thruster7', gear='0 1 0', pos=site_positions["FY+"])
-        # self.thruster8 = Thruster(name='thruster8', gear='0 -1 0', pos=site_positions["FY-"])
-        # self.thruster9 = Thruster(name='thruster9', gear='0 0 1', pos=site_positions["LZ+"])
-        # self.thruster10 = Thruster(name='thruster10', gear='0 0 -1', pos=site_positions["LZ-"])
-        # self.thruster11 = Thruster(name='thruster11', gear='0 0 1', pos=site_positions["RZ+"])
-        # self.thruster12 = Thruster(name='thruster12', gear='0 0 -1', pos=site_positions["RZ-"])
-
 
     class Geoms:
         """Geoms class for defining all geoms in a particular MuJoCo body.
