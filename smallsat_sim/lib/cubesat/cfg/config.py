@@ -2,13 +2,14 @@ class Thruster():
     """Thruster class for defining thruster properties
     Defines both actuator and site properties for the thruster.
     """
-    def __init__(self, name, pos, gear, site=None, forcerange='0 1', ctrlrange='0 1', forcelimited='true', size=0.005) -> None:
+    def __init__(self, name, pos, gear, site=None, forcerange=[0,1], ctrlrange=[0,0], forcelimited='false', ctrllimited='false', size=0.005) -> None:
         self.name = name
         self.site = name if site is None else site
         self.gear = gear
         self.pos = pos
         self.forcerange = forcerange
         self.ctrlrange = ctrlrange
+        self.ctrllimited = ctrllimited
         self.forcelimited = forcelimited
         self.size = size 
         
@@ -35,47 +36,71 @@ class Geom():
             self.mesh = f'cubesat/meshes/{name}.{meshtype}'
             self.asset_scale = asset_scale
 
+
+class PhysicalProperties():
+    """Physical properties class for defining physical properties of the vehicle.
+    """
+    def __init__(self, length, width, height, density) -> None:
+        self.length = length
+        self.width = width
+        self.height = height
+        self.density = density
+
 class LibConfig:
     """Library configuration class. Contains static vehicle information.
     """
+    # Physical properties of the vehicle (consisting of the above geoms)
+    pp = PhysicalProperties(length=0.1, width=0.1, height=0.3, density=1000)
+
     class Thrusters:
-        def __init__(self) -> None:
-            # The site positions correspond to Astrobee 
-            # (https://ntrs.nasa.gov/citations/20160007769)
-            site_positions = {
-                "LX+": '0.05 0.025 0.05',
-                "LX-": '-0.05 0.025 -0.05',
-                "RX+": '0.05 -0.025 -0.05',
-                "RX-": '-0.05 -0.025 0.05',
-                "AY+": '0.025 0.05 0.05',
-                "AY-": '0.025 -0.05 -0.05',
-                "FY+": '-0.025 0.05 -0.05',
-                "FY-": '-0.025 -0.05 0.05',
-                "LZ+": '-0.025 -0.025 0.143',
-                "LZ-": '0.025 -0.025 -0.15',
-                "RZ+": '0.025 0.025 0.143',
-                "RZ-": '-0.025 0.025 -0.15',
-            }
-            self.thruster1 = Thruster(name='thruster1', gear='1 0 0', pos=site_positions["LX+"])
-            self.thruster2 = Thruster(name='thruster2', gear='-1 0 0', pos=site_positions["LX-"])
-            self.thruster3 = Thruster(name='thruster3', gear='1 0 0', pos=site_positions["RX+"])
-            self.thruster4 = Thruster(name='thruster4', gear='-1 0 0', pos=site_positions["RX-"])
-            self.thruster5 = Thruster(name='thruster5', gear='0 1 0', pos=site_positions["AY+"])
-            self.thruster6 = Thruster(name='thruster6', gear='0 -1 0', pos=site_positions["AY-"])
-            self.thruster7 = Thruster(name='thruster7', gear='0 1 0', pos=site_positions["FY+"])
-            self.thruster8 = Thruster(name='thruster8', gear='0 -1 0', pos=site_positions["FY-"])
-            self.thruster9 = Thruster(name='thruster9', gear='0 0 1', pos=site_positions["LZ+"])
-            self.thruster10 = Thruster(name='thruster10', gear='0 0 -1', pos=site_positions["LZ-"])
-            self.thruster11 = Thruster(name='thruster11', gear='0 0 1', pos=site_positions["RZ+"])
-            self.thruster12 = Thruster(name='thruster12', gear='0 0 -1', pos=site_positions["RZ-"])
+        """Thrusters class for defining all thrusters in a particular MuJoCo body.
+        """
+        n_thrusters = 12  # Total number of thrusters
+        # Dictionary of thruster site positions.
+        # The site positions correspond to Astrobee 
+        # (https://ntrs.nasa.gov/citations/20160007769)
+        site_information = {
+            "LX+": {"pos": [0.05, 0.025, 0.05], "gear": [1, 0, 0]},
+            "LX-": {"pos": [-0.05, 0.025, -0.05], "gear": [-1, 0, 0]},
+            "RX+": {"pos": [0.05, -0.025, -0.05], "gear": [1, 0, 0]},
+            "RX-": {"pos": [-0.05, -0.025, 0.05], "gear": [-1, 0, 0]},
+            "AY+": {"pos": [0.025, 0.05, 0.05], "gear": [0, 1, 0]},
+            "AY-": {"pos": [0.025, -0.05, -0.05], "gear": [0, -1, 0]},
+            "FY+": {"pos": [-0.025, 0.05, -0.05], "gear": [0, 1, 0]},
+            "FY-": {"pos": [-0.025, -0.05, 0.05], "gear": [0, -1, 0]},
+            "LZ+": {"pos": [-0.025, -0.025, 0.143], "gear": [0, 0, 1]},
+            "LZ-": {"pos": [0.025, -0.025, -0.15], "gear": [0, 0, -1]},
+            "RZ+": {"pos": [0.025, 0.025, 0.143], "gear": [0, 0, 1]},
+            "RZ-": {"pos": [-0.025, 0.025, -0.15], "gear": [0, 0, -1]}
+        }
+        # Create list of thrusters based on dictionary above
+        thruster_list = []
+        i = 0
+        for key, value in site_information.items():
+            i += 1
+            thruster = Thruster(name=f'thruster{i}', pos=value["pos"], gear=value["gear"])
+            thruster_list.append(thruster)
+        # self.thruster1 = Thruster(name='thruster1', gear='1 0 0', pos=site_positions["LX+"])
+        # self.thruster2 = Thruster(name='thruster2', gear='-1 0 0', pos=site_positions["LX-"])
+        # self.thruster3 = Thruster(name='thruster3', gear='1 0 0', pos=site_positions["RX+"])
+        # self.thruster4 = Thruster(name='thruster4', gear='-1 0 0', pos=site_positions["RX-"])
+        # self.thruster5 = Thruster(name='thruster5', gear='0 1 0', pos=site_positions["AY+"])
+        # self.thruster6 = Thruster(name='thruster6', gear='0 -1 0', pos=site_positions["AY-"])
+        # self.thruster7 = Thruster(name='thruster7', gear='0 1 0', pos=site_positions["FY+"])
+        # self.thruster8 = Thruster(name='thruster8', gear='0 -1 0', pos=site_positions["FY-"])
+        # self.thruster9 = Thruster(name='thruster9', gear='0 0 1', pos=site_positions["LZ+"])
+        # self.thruster10 = Thruster(name='thruster10', gear='0 0 -1', pos=site_positions["LZ-"])
+        # self.thruster11 = Thruster(name='thruster11', gear='0 0 1', pos=site_positions["RZ+"])
+        # self.thruster12 = Thruster(name='thruster12', gear='0 0 -1', pos=site_positions["RZ-"])
 
 
     class Geoms:
-        def __init__(self) -> None:
-            self.geom_list = [
-            Geom(name='cubesat_top', type='mesh', pos='-0.0495 -0.0495 0.1395', euler='0 0 0', meshtype='stl', asset_scale='0.001 0.001 0.001'),
-            Geom(name='cubesat_middle', type='mesh', pos='-0.05 -0.05 -0.15', euler='0 0 0', meshtype='stl', asset_scale='0.001 0.001 0.001'),
-            Geom(name='cubesat_middle', type='mesh', pos='-0.05 -0.05 -0.0535', euler='0 0 0', meshtype='stl', asset_scale='0.001 0.001 0.001'),
-            Geom(name='cubesat_middle', type='mesh', pos='-0.05 -0.05 0.043', euler='0 0 0', meshtype='stl', asset_scale='0.001 0.001 0.001'),
-            Geom(name='cubesat_bottom', type='mesh', pos='-0.05 -0.05 -0.15', euler='0 0 0', meshtype='stl', asset_scale='0.001 0.001 0.001'),
-            ]
+        """Geoms class for defining all geoms in a particular MuJoCo body.
+        """
+        geom_list = [
+            Geom(name='cubesat_top', type='mesh', pos=[-0.0495, -0.0495, 0.1395], euler=[0, 0, 0], meshtype='stl', asset_scale=[0.001, 0.001, 0.001]),
+            Geom(name='cubesat_middle', type='mesh', pos=[-0.05, -0.05, -0.15], euler=[0, 0, 0], meshtype='stl', asset_scale=[0.001, 0.001, 0.001]),
+            Geom(name='cubesat_middle', type='mesh', pos=[-0.05, -0.05, -0.0535], euler=[0, 0, 0], meshtype='stl', asset_scale=[0.001, 0.001, 0.001]),
+            Geom(name='cubesat_middle', type='mesh', pos=[-0.05, -0.05, 0.043], euler=[0, 0, 0], meshtype='stl', asset_scale=[0.001, 0.001, 0.001]),
+            Geom(name='cubesat_bottom', type='mesh', pos=[-0.05, -0.05, -0.15], euler=[0, 0, 0], meshtype='stl', asset_scale=[0.001, 0.001, 0.001]),
+        ]
