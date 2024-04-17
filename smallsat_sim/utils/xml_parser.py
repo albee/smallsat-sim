@@ -1,15 +1,18 @@
 from smallsat_sim.envs.cubesat.cfg.config import Body
 from smallsat_sim.lib.cubesat.cfg.config import Thruster, Geom
 
+def xmlify(array: list):
+    return " ".join([str(x) for x in array])
+
 
 def generate_mujoco_xml(env_config, lib_config):
-    geoms = lib_config.Geoms()
-    bodies = env_config.Bodies(env_config.num_bodies)
-    thrusters = lib_config.Thrusters()
+    geoms = lib_config.Geoms
+    bodies = env_config.Bodies
+    thrusters = lib_config.Thrusters
 
     xml_content = f'''<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="{env_config.model}">
-    <compiler convexhull="{env.compiler['convexhull']}" texturedir="smallsat_sim/lib" meshdir="smallsat_sim/lib"/>
+    <compiler convexhull="{env_config.compiler['convexhull']}" texturedir="smallsat_sim/lib" meshdir="smallsat_sim/lib"/>
     <visual>
         <headlight ambient="{env_config.visual['headlight']['ambient']}" specular="{env_config.visual['headlight']['specular']}" diffuse="{env_config.visual['headlight']['diffuse']}"/>
     </visual>
@@ -84,7 +87,7 @@ def generate_mujoco_xml(env_config, lib_config):
             if geom.name not in temp:
                 temp.append(geom.name)
             
-                xml_content += f"        <mesh name='{geom.name}' file='{geom.mesh}' scale='{geom.asset_scale}'/>\n"
+                xml_content += f"        <mesh name='{geom.name}' file='{geom.mesh}' scale='{xmlify(geom.asset_scale)}'/>\n"
     xml_content += '''    </asset>
     <worldbody>
         <body name="gateway_full">
@@ -130,16 +133,19 @@ def generate_mujoco_xml(env_config, lib_config):
 '''
 
     for body in bodies.bodies_list:
-        xml_content += f"        <body name='{body.name}' pos='{body.pos}' quat='{body.quat}'>\n"
+        xml_content += f"        <body name='{body.name}' pos='{xmlify(body.pos)}' quat='{xmlify(body.quat)}'>\n"
+        xml_content += '''            <freejoint/>
+'''
         for geom in geoms.geom_list:
             if geom.type == 'mesh':
-                xml_content += f"            <geom type='mesh' mesh='{geom.name}' pos='{geom.pos}' euler='{geom.euler}'/>\n"
+                xml_content += f"            <geom type='mesh' mesh='{geom.name}' pos='{xmlify(geom.pos)}' euler='{xmlify(geom.euler)}'/>\n"
             else:
-                xml_content += f"            <geom type='{geom.type}' size='{geom.size}' pos='{geom.pos}' euler='{geom.euler}'/>\n"
-        
-        for thruster_name, thruster_obj in vars(thrusters).items():
-            if isinstance(thruster_obj, Thruster):
-                xml_content += f"            <site name='{thruster_obj.site}' pos='{thruster_obj.pos}' size='{thruster_obj.size}'/>\n"
+                xml_content += f"            <geom type='{geom.type}' size='{xmlify(geom.size)}' pos='{xmlify(geom.pos)}' euler='{xmlify(geom.euler)}'/>\n"
+        for thruster in thrusters.thruster_list:
+            xml_content += f"            <site name='{thruster.site}' pos='{xmlify(thruster.pos)}' size='{thruster.size}'/>\n"
+        # for thruster_name, thruster_obj in vars(thrusters).items():
+        #     if isinstance(thruster_obj, Thruster):
+        #         xml_content += f"            <site name='{thruster_obj.site}' pos='{thruster_obj.pos}' size='{thruster_obj.size}'/>\n"
         xml_content += "        </body>\n"
 
     xml_content += '''    </worldbody>
@@ -148,16 +154,26 @@ def generate_mujoco_xml(env_config, lib_config):
 '''
     xml_content += '''    <actuator>
 '''
-    for thruster_name, thruster_obj in vars(thrusters).items():
-        if isinstance(thruster_obj, Thruster):
-            xml_content += f'''        <general name="{thruster_obj.name}"
-                    site="{thruster_obj.site}"
-                    gear="{thruster_obj.gear}"
-                    forcerange="{thruster_obj.forcerange}"
-                    ctrlrange="{thruster_obj.ctrlrange}"
-                    forcelimited="{thruster_obj.forcelimited}"
+    # Create thruster sites (these do not need to be duplicated for each body)
+    for thruster in thrusters.thruster_list:
+        xml_content += f'''        <general name="{thruster.name}"
+                    site="{thruster.site}"
+                    gear="{xmlify(thruster.gear)}"
+                    forcerange="{xmlify(thruster.forcerange)}"
+                    ctrlrange="{xmlify(thruster.ctrlrange)}"
+                    forcelimited="{thruster.forcelimited}"
                 />
 '''
+#     for thruster_name, thruster_obj in vars(thrusters).items():
+#         if isinstance(thruster_obj, Thruster):
+#             xml_content += f'''        <general name="{thruster_obj.name}"
+#                     site="{thruster_obj.site}"
+#                     gear="{thruster_obj.gear}"
+#                     forcerange="{thruster_obj.forcerange}"
+#                     ctrlrange="{thruster_obj.ctrlrange}"
+#                     forcelimited="{thruster_obj.forcelimited}"
+#                 />
+# '''
     xml_content += '    </actuator>\n'
     xml_content += '</mujoco>'
     return xml_content

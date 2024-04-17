@@ -17,11 +17,15 @@ class SymbolicModel:
 
     def __init__(self, cfg: dict) -> None:
         # Load physical properties
-        self.length = cfg["props"]["length"]
-        self.width = cfg["props"]["width"]
-        self.height = cfg["props"]["height"]
-        self.density = cfg["props"]["density"]
-        self.nu = cfg["actuators"]["nu"]
+        physical_parameters = cfg.pp
+        self.length = physical_parameters.length
+        self.width = physical_parameters.width
+        self.height = physical_parameters.height
+        self.density = physical_parameters.density
+
+        # Load thruster information
+        self.thrusters = cfg.Thrusters
+        self.nu = self.thrusters.n_thrusters
 
         # Calculate remaining physical properties
         self.volume = self.length * self.width * self.height
@@ -29,9 +33,6 @@ class SymbolicModel:
         self.I11 = (1 / 12) * self.mass * (self.width**2 + self.height**2)
         self.I22 = (1 / 12) * self.mass * (self.length**2 + self.height**2)
         self.I33 = (1 / 12) * self.mass * (self.length**2 + self.width**2)
-
-        # Load actuator information
-        self.actuators = cfg["actuators"]
 
         # Calculate mixer matrix
         self._calc_mixer()
@@ -52,18 +53,25 @@ class SymbolicModel:
         """
         # Initialize mixer matrix
         self.mixer = np.zeros((6, self.nu))
-
-        for idx in range(self.nu):
-            # Populate mixer
+        for idx, thruster in enumerate(self.thrusters.thruster_list):
             self.mixer[:, idx] = np.concatenate(
                 (
-                    self.actuators[f"thruster{idx}"]["gear"],
-                    np.cross(
-                        self.actuators[f"thruster{idx}"]["gear"],
-                        self.actuators[f"thruster{idx}"]["pos"],
-                    ),
+                    thruster.gear,
+                    np.cross(thruster.gear, thruster.pos),
                 )
             )
+
+        # for idx in range(self.nu):
+        #     # Populate mixer
+        #     self.mixer[:, idx] = np.concatenate(
+        #         (
+        #             self.thrusters[f"thruster{idx}"]["gear"],
+        #             np.cross(
+        #                 self.thrusters[f"thruster{idx}"]["gear"],
+        #                 self.thrusters[f"thruster{idx}"]["pos"],
+        #             ),
+        #         )
+        #     )
 
     def _setup_model(self) -> None:
         """
