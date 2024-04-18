@@ -35,10 +35,10 @@ class PDController(BaseController):
         self.v_ref = np.zeros((3, 1))
         self.omega_ref = np.zeros((3, 1))  # Angular velocity
         cfg = self._load_cfg("pd")
-        self.Kp_x = cfg["gains"]["Kp_x"] * 3
-        self.Kd_x = cfg["gains"]["Kd_x"]
-        self.Kp_q = cfg["gains"]["Kp_q"]
-        self.Kd_q = cfg["gains"]["Kd_q"]
+        self.Kp_x = cfg.gains.Kp_x
+        self.Kd_x = cfg.gains.Kd_x
+        self.Kp_q = cfg.gains.Kp_q
+        self.Kd_q = cfg.gains.Kd_q
 
         self.B_matrix = self.calc_B_matrix(env.model)
 

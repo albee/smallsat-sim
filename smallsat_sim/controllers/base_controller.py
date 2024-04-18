@@ -1,9 +1,8 @@
 import yaml
 import os
 
-from smallsat_sim import SMALLSAT_SIM_CONTROLLERS_DIR
-
 from smallsat_sim.envs.base_env import BaseEnv
+
 
 class BaseController(object):
     def __init__(self) -> None:
@@ -14,18 +13,14 @@ class BaseController(object):
         Returns the control input
         """
 
-    def _load_cfg(self, controller_name: str) -> dict:
+    def _load_cfg(self, controller_name: str) -> object:
         """
-        Loads the config parameters from the file located in cfg/config.yaml    
+        Loads the config parameters from the file located in cfg/config.yaml
         """
-        # localize relevant yaml file
-        cfg_path = os.path.join(SMALLSAT_SIM_CONTROLLERS_DIR, 
-                                controller_name, "cfg", "config.yaml")
+        # Dynamically import the correct lib config module
+        module = __import__(
+            f"smallsat_sim.controllers.{controller_name}.cfg", fromlist=["config"]
+        )
+        ctrl_config = module.config.ControllerConfig()
 
-        # load from yaml file
-        with open(cfg_path) as file:
-            try:
-                cfg = yaml.safe_load(file)
-                return cfg
-            except yaml.YAMLError as exc:
-                print(exc)
+        return ctrl_config
