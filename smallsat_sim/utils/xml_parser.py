@@ -197,12 +197,9 @@ def generate_mujoco_xml(env_config, lib_config):
 if __name__ == "__main__":
     from smallsat_sim.envs.cubesat.cfg.config import EnvConfig
     from smallsat_sim.lib.cubesat.cfg.config import LibConfig
-    import argparse
 
-    args = argparse.Namespace()
-    args.num_bodies = 1
     lib = LibConfig()
-    env = EnvConfig(args)
+    env = EnvConfig()
     xml = generate_mujoco_xml(env, lib)
     with open("cubesat.xml", "w") as f:
         f.write(xml)
