@@ -1,5 +1,5 @@
 gains:
-  Kp_x: 100
-  Kd_x: 100
-  Kp_q: 5
-  Kd_q: 10
+  Kp_x: 5
+  Kd_x: 5
+  Kp_q: 0.25
+  Kd_q: 0.5

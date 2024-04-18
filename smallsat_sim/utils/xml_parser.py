@@ -20,7 +20,7 @@ def generate_mujoco_xml(env_config, lib_config):
 
     # Beginning of xml file
     # Defines general options for the environment
-    # Loads all assets such as .obj files and corresponding meshes/texture 
+    # Loads all assets such as .obj files and corresponding meshes/texture
     xml_content = f"""<?xml version="1.0" encoding="utf-8"?>
     <mujoco model="{env_config.model}">
         <compiler convexhull="{env_config.compiler['convexhull']}" texturedir="smallsat_sim/lib" meshdir="smallsat_sim/lib"/>
@@ -100,7 +100,7 @@ def generate_mujoco_xml(env_config, lib_config):
             if geom.name not in temp:
                 temp.append(geom.name)
                 xml_content += f"        <mesh name='{geom.name}' file='{geom.mesh}' scale='{xmlify(geom.asset_scale)}'/>\n"
-    
+
     # Import meshes of lunar gateway
     xml_content += """    </asset>
     <worldbody>
