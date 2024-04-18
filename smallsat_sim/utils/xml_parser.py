@@ -3,14 +3,24 @@ from smallsat_sim.lib.cubesat.cfg.config import Thruster, Geom
 
 
 def xmlify(array: list):
+    """
+    Converts a list of numbers into a string
+    """
     return " ".join([str(x) for x in array])
 
 
 def generate_mujoco_xml(env_config, lib_config):
+    """
+    This function generates the xml string which is fed to MuJoCo for setting up the sim environment
+    """
+    # Extract relevant quantities from configs
     geoms = lib_config.Geoms
     bodies = env_config.Bodies
     thrusters = lib_config.Thrusters
 
+    # Beginning of xml file
+    # Defines general options for the environment
+    # Loads all assets such as .obj files and corresponding meshes/texture 
     xml_content = f"""<?xml version="1.0" encoding="utf-8"?>
     <mujoco model="{env_config.model}">
         <compiler convexhull="{env_config.compiler['convexhull']}" texturedir="smallsat_sim/lib" meshdir="smallsat_sim/lib"/>
@@ -82,13 +92,16 @@ def generate_mujoco_xml(env_config, lib_config):
             <mesh file="gateway/gateway_simple_25.obj"/>
     """
 
+    # Add additional, smallsat-specific meshes
+    # Add temp folder to avoid multiple definition of same mesh
     temp = []
     for geom in geoms.geom_list:
         if geom.type == "mesh":
             if geom.name not in temp:
                 temp.append(geom.name)
-
                 xml_content += f"        <mesh name='{geom.name}' file='{geom.mesh}' scale='{xmlify(geom.asset_scale)}'/>\n"
+    
+    # Import meshes of lunar gateway
     xml_content += """    </asset>
     <worldbody>
         <body name="gateway_full">
@@ -132,7 +145,7 @@ def generate_mujoco_xml(env_config, lib_config):
 
     <worldbody>
 """
-
+    # Define all free floating bodies
     for body in bodies.bodies_list:
         xml_content += f"        <body name='{body.name}' pos='{xmlify(body.pos)}' quat='{xmlify(body.quat)}'>\n"
         xml_content += """            <freejoint/>
@@ -180,6 +193,7 @@ def generate_mujoco_xml(env_config, lib_config):
     return xml_content
 
 
+# File can be executed to test xml output
 if __name__ == "__main__":
     from smallsat_sim.envs.cubesat.cfg.config import EnvConfig
     from smallsat_sim.lib.cubesat.cfg.config import LibConfig
