@@ -95,11 +95,6 @@ def generate_mujoco_xml(env_config, lib_config):
             <material name="Material_001.001" specular="0.5" shininess="0.25" rgba="0.100000 0.100000 0.100000 1.000000"/>
             <material name="Material_001.002" specular="0.5" shininess="0.25" rgba="0.100000 0.100000 0.100000 1.000000"/>
             <material name="Material_001_003" texture="black" specular="0.5" shininess="0.25"/>
-            <material name="Material_001_004" texture="black" specular="0.5" shininess="0.25"/>
-            <material name="Material_001_006" texture="black" specular="0.5" shininess="0.25"/>
-            <material name="Material_001_007" texture="black" specular="0.5" shininess="0.25"/>
-            <material name="Material_001_008" texture="black" specular="0.5" shininess="0.25"/>
-            <material name="Material_001_009" texture="black" specular="0.5" shininess="0.25"/>
             <material name="Material_002" specular="0.5" shininess="0.25" rgba="0.640000 0.005111 0.000000 1.000000"/>
             <material name="Material_002.001" specular="0.5" shininess="0.25" rgba="0.568443 0.568443 0.568443 1.000000"/>
             <material name="Material_002.002" specular="0.5" shininess="0.25" rgba="0.568443 0.568443 0.568443 1.000000"/>
@@ -155,11 +150,6 @@ def generate_mujoco_xml(env_config, lib_config):
             <mesh file="astrobee/meshes/astrobee_26.obj"/>
             <mesh file="astrobee/meshes/astrobee_27.obj"/>
             <mesh file="astrobee/meshes/astrobee_28.obj"/>
-            <mesh file="astrobee/meshes/astrobee_29.obj"/>
-            <mesh file="astrobee/meshes/astrobee_30.obj"/>
-            <mesh file="astrobee/meshes/astrobee_31.obj"/>
-            <mesh file="astrobee/meshes/astrobee_32.obj"/>
-            <mesh file="astrobee/meshes/astrobee_33.obj"/>
             """
         
     else:
@@ -226,34 +216,29 @@ def generate_mujoco_xml(env_config, lib_config):
             <geom mesh="astrobee_3" material="Material_003.001" class="visual"/>
             <geom mesh="astrobee_4" material="Material_001.001" class="visual"/>
             <geom mesh="astrobee_5" material="Material_002.001" class="visual"/>
-            <geom mesh="astrobee_6" material="Material_001_009" class="visual"/>
-            <geom mesh="astrobee_7" material="Material_001_008" class="visual"/>
-            <geom mesh="astrobee_8" material="Material_001_007" class="visual"/>
-            <geom mesh="astrobee_9" material="Material_001_006" class="visual"/>
-            <geom mesh="astrobee_10" material="Material_028" class="visual"/>
-            <geom mesh="astrobee_11" material="Material_027" class="visual"/>
-            <geom mesh="astrobee_12" material="Material_025" class="visual"/>
-            <geom mesh="astrobee_13" material="Material_024" class="visual"/>
-            <geom mesh="astrobee_14" material="Material_023" class="visual"/>
-            <geom mesh="astrobee_15" material="Material_022" class="visual"/>
-            <geom mesh="astrobee_16" material="Material_021" class="visual"/>
-            <geom mesh="astrobee_17" material="Material_020" class="visual"/>
-            <geom mesh="astrobee_18" material="Material_017" class="visual"/>
-            <geom mesh="astrobee_19" material="Material_014" class="visual"/>
-            <geom mesh="astrobee_20" material="Material_012" class="visual"/>
-            <geom mesh="astrobee_21" material="Material_011" class="visual"/>
-            <geom mesh="astrobee_22" material="Material_010" class="visual"/>
-            <geom mesh="astrobee_23" material="Material_009" class="visual"/>
-            <geom mesh="astrobee_24" material="Material_008" class="visual"/>
-            <geom mesh="astrobee_25" material="Material_007" class="visual"/>
-            <geom mesh="astrobee_26" material="Material_005" class="visual"/>
-            <geom mesh="astrobee_27" material="Material_004" class="visual"/>
-            <geom mesh="astrobee_28" material="Material_003" class="visual"/>
-            <geom mesh="astrobee_29" material="Material_002" class="visual"/>
-            <geom mesh="astrobee_30" material="Material_019" class="visual"/>
-            <geom mesh="astrobee_31" material="Material_001" class="visual"/>
-            <geom mesh="astrobee_32" material="Material_001_004" class="visual"/>
-            <geom mesh="astrobee_33" material="Material_001_003" class="visual"/>
+            <geom mesh="astrobee_6" material="Material_001" class="visual"/>
+            <geom mesh="astrobee_7" material="Material_001_003" class="visual"/>
+            <geom mesh="astrobee_8" material="Material_028" class="visual"/>
+            <geom mesh="astrobee_9" material="Material_027" class="visual"/>
+            <geom mesh="astrobee_10" material="Material_025" class="visual"/>
+            <geom mesh="astrobee_11" material="Material_024" class="visual"/>
+            <geom mesh="astrobee_12" material="Material_023" class="visual"/>
+            <geom mesh="astrobee_13" material="Material_022" class="visual"/>
+            <geom mesh="astrobee_14" material="Material_021" class="visual"/>
+            <geom mesh="astrobee_15" material="Material_020" class="visual"/>
+            <geom mesh="astrobee_16" material="Material_017" class="visual"/>
+            <geom mesh="astrobee_17" material="Material_014" class="visual"/>
+            <geom mesh="astrobee_18" material="Material_012" class="visual"/>
+            <geom mesh="astrobee_19" material="Material_011" class="visual"/>
+            <geom mesh="astrobee_20" material="Material_010" class="visual"/>
+            <geom mesh="astrobee_21" material="Material_009" class="visual"/>
+            <geom mesh="astrobee_22" material="Material_008" class="visual"/>
+            <geom mesh="astrobee_23" material="Material_007" class="visual"/>
+            <geom mesh="astrobee_24" material="Material_005" class="visual"/>
+            <geom mesh="astrobee_25" material="Material_004" class="visual"/>
+            <geom mesh="astrobee_26" material="Material_003" class="visual"/>
+            <geom mesh="astrobee_27" material="Material_002" class="visual"/>
+            <geom mesh="astrobee_28" material="Material_019" class="visual"/>
             <geom mesh="astrobee_0" class="collision"/>
             <geom mesh="astrobee_1" class="collision"/>
             <geom mesh="astrobee_2" class="collision"/>
@@ -282,12 +267,7 @@ def generate_mujoco_xml(env_config, lib_config):
             <geom mesh="astrobee_25" class="collision"/>
             <geom mesh="astrobee_26" class="collision"/>
             <geom mesh="astrobee_27" class="collision"/>
-            <geom mesh="astrobee_28" class="collision"/>
-            <geom mesh="astrobee_29" class="collision"/>
-            <geom mesh="astrobee_30" class="collision"/>
-            <geom mesh="astrobee_31" class="collision"/>
-            <geom mesh="astrobee_32" class="collision"/>
-            <geom mesh="astrobee_33" class="collision"/>\n"""
+            <geom mesh="astrobee_28" class="collision"/>\n"""
         for thruster in thrusters.thruster_list:
             xml_content += f"            <site name='{thruster.site}' pos='{xmlify(thruster.pos)}' size='{thruster.size}'/>\n"
     
