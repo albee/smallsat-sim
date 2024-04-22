@@ -7,13 +7,20 @@ from smallsat_sim.lib.base_lib_config import (
 
 
 class LibConfig(BaseLibConfig):
-    """Library configuration class. Contains static vehicle information."""
+    """
+    Library configuration class. Contains static vehicle information.
+    """
+
+    # Name of model
+    name = "cubesat"
 
     # Physical properties of the vehicle (consisting of the above geoms)
     pp = PhysicalProperties(length=0.1, width=0.1, height=0.3, density=1000)
 
     class Thrusters:
-        """Thrusters class for defining all thrusters in a particular MuJoCo body."""
+        """
+        Thrusters class for defining all thrusters in a particular MuJoCo body.
+        """
 
         n_thrusters = 12  # Total number of thrusters
         # Dictionary of thruster site positions.
@@ -44,7 +51,9 @@ class LibConfig(BaseLibConfig):
             thruster_list.append(thruster)
 
     class Geoms:
-        """Geoms class for defining all geoms in a particular MuJoCo body."""
+        """
+        Geoms class for defining all geoms in a particular MuJoCo body.
+        """
 
         geom_list = [
             Geom(

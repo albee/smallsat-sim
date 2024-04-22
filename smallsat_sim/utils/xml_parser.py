@@ -1,7 +1,3 @@
-from smallsat_sim.envs.cubesat.cfg.config import Body
-from smallsat_sim.lib.cubesat.cfg.config import Thruster, Geom
-
-
 def xmlify(array: list):
     """
     Converts a list of numbers into a string
@@ -92,17 +88,92 @@ def generate_mujoco_xml(env_config, lib_config):
             <mesh file="gateway/gateway_simple_25.obj"/>
     """
 
+    if lib_config.name == "astrobee":
+        xml_content += f"""        <!--Load astrobee model components-->
+            <texture type="2d" name="black" file="astrobee/meshes/black.png"/>
+            <material name="Material_001" texture="black" specular="0.5" shininess="0.25"/>
+            <material name="Material_001.001" specular="0.5" shininess="0.25" rgba="0.100000 0.100000 0.100000 1.000000"/>
+            <material name="Material_001.002" specular="0.5" shininess="0.25" rgba="0.100000 0.100000 0.100000 1.000000"/>
+            <material name="Material_001_003" texture="black" specular="0.5" shininess="0.25"/>
+            <material name="Material_001_004" texture="black" specular="0.5" shininess="0.25"/>
+            <material name="Material_001_006" texture="black" specular="0.5" shininess="0.25"/>
+            <material name="Material_001_007" texture="black" specular="0.5" shininess="0.25"/>
+            <material name="Material_001_008" texture="black" specular="0.5" shininess="0.25"/>
+            <material name="Material_001_009" texture="black" specular="0.5" shininess="0.25"/>
+            <material name="Material_002" specular="0.5" shininess="0.25" rgba="0.640000 0.005111 0.000000 1.000000"/>
+            <material name="Material_002.001" specular="0.5" shininess="0.25" rgba="0.568443 0.568443 0.568443 1.000000"/>
+            <material name="Material_002.002" specular="0.5" shininess="0.25" rgba="0.568443 0.568443 0.568443 1.000000"/>
+            <material name="Material_003" specular="0.5" shininess="0.25" rgba="0.000000 0.000000 0.000000 1.000000"/>
+            <texture type="2d" name="skin_bumble" file="astrobee/meshes/skin_bumble.png"/>
+            <material name="Material_003.001" texture="skin_bumble" specular="0.5" shininess="0.25"/>
+            <material name="Material_003.002" texture="skin_bumble" specular="0.5" shininess="0.25"/>
+            <material name="Material_004" specular="0.5" shininess="0.25" rgba="0.001995 0.000000 0.640000 1.000000"/>
+            <material name="Material_005" specular="0.5" shininess="0.25" rgba="0.000000 0.000000 0.000000 1.000000"/>
+            <material name="Material_007" specular="0.5" shininess="0.25" rgba="0.015079 0.015079 0.015079 1.000000"/>
+            <material name="Material_008" specular="0.5" shininess="0.25" rgba="0.018920 0.018920 0.018920 1.000000"/>
+            <material name="Material_009" specular="0.5" shininess="0.25" rgba="0.011736 0.011736 0.011736 1.000000"/>
+            <material name="Material_010" specular="0.5" shininess="0.25" rgba="0.050976 0.050976 0.050976 1.000000"/>
+            <material name="Material_011" specular="0.5" shininess="0.25" rgba="0.640000 0.450660 0.080787 1.000000"/>
+            <material name="Material_012" specular="0.5" shininess="0.25" rgba="0.005755 0.005755 0.005755 1.000000"/>
+            <material name="Material_014" specular="0.5" shininess="0.25" rgba="0.241980 0.625158 0.800000 1.000000"/>
+            <material name="Material_017" specular="0.5" shininess="0.25" rgba="0.000000 0.640000 0.003578 1.000000"/>
+            <material name="Material_019" specular="0.5" shininess="0.25" rgba="0.752312 0.752312 0.752312 1.000000"/>
+            <material name="Material_020" specular="0.5" shininess="0.25" rgba="0.050976 0.050976 0.050976 1.000000"/>
+            <material name="Material_021" specular="0.5" shininess="0.25" rgba="0.138684 0.138684 0.138684 1.000000"/>
+            <material name="Material_022" specular="0.5" shininess="0.25" rgba="0.110067 0.110067 0.110067 1.000000"/>
+            <material name="Material_023" specular="0.5" shininess="0.25" rgba="0.640000 0.452536 0.017686 1.000000"/>
+            <material name="Material_024" specular="0.5" shininess="0.25" rgba="0.000000 0.085228 0.000689 1.000000"/>
+            <material name="Material_025" specular="0.5" shininess="0.25" rgba="0.202354 0.202354 0.202354 1.000000"/>
+            <material name="Material_027" specular="0.5" shininess="0.25" rgba="0.145780 0.710281 0.800000 1.000000"/>
+            <material name="Material_028" specular="0.5" shininess="0.25" rgba="0.171227 0.171227 0.171227 1.000000"/>
+            <mesh file="astrobee/meshes/astrobee_0.obj"/>
+            <mesh file="astrobee/meshes/astrobee_1.obj"/>
+            <mesh file="astrobee/meshes/astrobee_2.obj"/>
+            <mesh file="astrobee/meshes/astrobee_3.obj"/>
+            <mesh file="astrobee/meshes/astrobee_4.obj"/>
+            <mesh file="astrobee/meshes/astrobee_5.obj"/>
+            <mesh file="astrobee/meshes/astrobee_6.obj"/>
+            <mesh file="astrobee/meshes/astrobee_7.obj"/>
+            <mesh file="astrobee/meshes/astrobee_8.obj"/>
+            <mesh file="astrobee/meshes/astrobee_9.obj"/>
+            <mesh file="astrobee/meshes/astrobee_10.obj"/>
+            <mesh file="astrobee/meshes/astrobee_11.obj"/>
+            <mesh file="astrobee/meshes/astrobee_12.obj"/>
+            <mesh file="astrobee/meshes/astrobee_13.obj"/>
+            <mesh file="astrobee/meshes/astrobee_14.obj"/>
+            <mesh file="astrobee/meshes/astrobee_15.obj"/>
+            <mesh file="astrobee/meshes/astrobee_16.obj"/>
+            <mesh file="astrobee/meshes/astrobee_17.obj"/>
+            <mesh file="astrobee/meshes/astrobee_18.obj"/>
+            <mesh file="astrobee/meshes/astrobee_19.obj"/>
+            <mesh file="astrobee/meshes/astrobee_20.obj"/>
+            <mesh file="astrobee/meshes/astrobee_21.obj"/>
+            <mesh file="astrobee/meshes/astrobee_22.obj"/>
+            <mesh file="astrobee/meshes/astrobee_23.obj"/>
+            <mesh file="astrobee/meshes/astrobee_24.obj"/>
+            <mesh file="astrobee/meshes/astrobee_25.obj"/>
+            <mesh file="astrobee/meshes/astrobee_26.obj"/>
+            <mesh file="astrobee/meshes/astrobee_27.obj"/>
+            <mesh file="astrobee/meshes/astrobee_28.obj"/>
+            <mesh file="astrobee/meshes/astrobee_29.obj"/>
+            <mesh file="astrobee/meshes/astrobee_30.obj"/>
+            <mesh file="astrobee/meshes/astrobee_31.obj"/>
+            <mesh file="astrobee/meshes/astrobee_32.obj"/>
+            <mesh file="astrobee/meshes/astrobee_33.obj"/>
+            """
+        
+    else:
     # Add additional, smallsat-specific meshes
     # Add temp folder to avoid multiple definition of same mesh
-    temp = []
-    for geom in geoms.geom_list:
-        if geom.type == "mesh":
-            if geom.name not in temp:
-                temp.append(geom.name)
-                xml_content += f"        <mesh name='{geom.name}' file='{geom.mesh}' scale='{xmlify(geom.asset_scale)}'/>\n"
+        temp = []
+        for geom in geoms.geom_list:
+            if geom.type == "mesh":
+                if geom.name not in temp:
+                    temp.append(geom.name)
+                    xml_content += f"        <mesh name='{geom.name}' file='{geom.mesh}' scale='{xmlify(geom.asset_scale)}'/>\n"
 
     # Import meshes of lunar gateway
-    xml_content += """    </asset>
+    xml_content += """      </asset>
     <worldbody>
         <body name="gateway_full">
             <geom mesh="gateway_0" material="Canadarm" class="visual"/>
@@ -145,22 +216,99 @@ def generate_mujoco_xml(env_config, lib_config):
 
     <worldbody>
 """
-    # Define all free floating bodies
-    for body in bodies.bodies_list:
-        xml_content += f"        <body name='{body.name}' pos='{xmlify(body.pos)}' quat='{xmlify(body.quat)}'>\n"
-        xml_content += """            <freejoint/>
-"""
-        for geom in geoms.geom_list:
-            if geom.type == "mesh":
-                xml_content += f"            <geom type='mesh' mesh='{geom.name}' pos='{xmlify(geom.pos)}' euler='{xmlify(geom.euler)}'/>\n"
-            else:
-                xml_content += f"            <geom type='{geom.type}' size='{xmlify(geom.size)}' pos='{xmlify(geom.pos)}' euler='{xmlify(geom.euler)}'/>\n"
+    if lib_config.name == "astrobee":
+        for body in bodies.bodies_list:
+            xml_content += f"""         <body name='{body.name}' pos='{xmlify(body.pos)}' quat='{xmlify(body.quat)}'>
+            <freejoint/>
+            <geom mesh="astrobee_0" material="Material_003.002" class="visual"/>
+            <geom mesh="astrobee_1" material="Material_001.002" class="visual"/>
+            <geom mesh="astrobee_2" material="Material_002.002" class="visual"/>
+            <geom mesh="astrobee_3" material="Material_003.001" class="visual"/>
+            <geom mesh="astrobee_4" material="Material_001.001" class="visual"/>
+            <geom mesh="astrobee_5" material="Material_002.001" class="visual"/>
+            <geom mesh="astrobee_6" material="Material_001_009" class="visual"/>
+            <geom mesh="astrobee_7" material="Material_001_008" class="visual"/>
+            <geom mesh="astrobee_8" material="Material_001_007" class="visual"/>
+            <geom mesh="astrobee_9" material="Material_001_006" class="visual"/>
+            <geom mesh="astrobee_10" material="Material_028" class="visual"/>
+            <geom mesh="astrobee_11" material="Material_027" class="visual"/>
+            <geom mesh="astrobee_12" material="Material_025" class="visual"/>
+            <geom mesh="astrobee_13" material="Material_024" class="visual"/>
+            <geom mesh="astrobee_14" material="Material_023" class="visual"/>
+            <geom mesh="astrobee_15" material="Material_022" class="visual"/>
+            <geom mesh="astrobee_16" material="Material_021" class="visual"/>
+            <geom mesh="astrobee_17" material="Material_020" class="visual"/>
+            <geom mesh="astrobee_18" material="Material_017" class="visual"/>
+            <geom mesh="astrobee_19" material="Material_014" class="visual"/>
+            <geom mesh="astrobee_20" material="Material_012" class="visual"/>
+            <geom mesh="astrobee_21" material="Material_011" class="visual"/>
+            <geom mesh="astrobee_22" material="Material_010" class="visual"/>
+            <geom mesh="astrobee_23" material="Material_009" class="visual"/>
+            <geom mesh="astrobee_24" material="Material_008" class="visual"/>
+            <geom mesh="astrobee_25" material="Material_007" class="visual"/>
+            <geom mesh="astrobee_26" material="Material_005" class="visual"/>
+            <geom mesh="astrobee_27" material="Material_004" class="visual"/>
+            <geom mesh="astrobee_28" material="Material_003" class="visual"/>
+            <geom mesh="astrobee_29" material="Material_002" class="visual"/>
+            <geom mesh="astrobee_30" material="Material_019" class="visual"/>
+            <geom mesh="astrobee_31" material="Material_001" class="visual"/>
+            <geom mesh="astrobee_32" material="Material_001_004" class="visual"/>
+            <geom mesh="astrobee_33" material="Material_001_003" class="visual"/>
+            <geom mesh="astrobee_0" class="collision"/>
+            <geom mesh="astrobee_1" class="collision"/>
+            <geom mesh="astrobee_2" class="collision"/>
+            <geom mesh="astrobee_3" class="collision"/>
+            <geom mesh="astrobee_4" class="collision"/>
+            <geom mesh="astrobee_5" class="collision"/>
+            <geom mesh="astrobee_6" class="collision"/>
+            <geom mesh="astrobee_7" class="collision"/>
+            <geom mesh="astrobee_8" class="collision"/>
+            <geom mesh="astrobee_9" class="collision"/>
+            <geom mesh="astrobee_10" class="collision"/>
+            <geom mesh="astrobee_11" class="collision"/>
+            <geom mesh="astrobee_12" class="collision"/>
+            <geom mesh="astrobee_13" class="collision"/>
+            <geom mesh="astrobee_14" class="collision"/>
+            <geom mesh="astrobee_15" class="collision"/>
+            <geom mesh="astrobee_16" class="collision"/>
+            <geom mesh="astrobee_17" class="collision"/>
+            <geom mesh="astrobee_18" class="collision"/>
+            <geom mesh="astrobee_19" class="collision"/>
+            <geom mesh="astrobee_20" class="collision"/>
+            <geom mesh="astrobee_21" class="collision"/>
+            <geom mesh="astrobee_22" class="collision"/>
+            <geom mesh="astrobee_23" class="collision"/>
+            <geom mesh="astrobee_24" class="collision"/>
+            <geom mesh="astrobee_25" class="collision"/>
+            <geom mesh="astrobee_26" class="collision"/>
+            <geom mesh="astrobee_27" class="collision"/>
+            <geom mesh="astrobee_28" class="collision"/>
+            <geom mesh="astrobee_29" class="collision"/>
+            <geom mesh="astrobee_30" class="collision"/>
+            <geom mesh="astrobee_31" class="collision"/>
+            <geom mesh="astrobee_32" class="collision"/>
+            <geom mesh="astrobee_33" class="collision"/>\n"""
         for thruster in thrusters.thruster_list:
             xml_content += f"            <site name='{thruster.site}' pos='{xmlify(thruster.pos)}' size='{thruster.size}'/>\n"
-        # for thruster_name, thruster_obj in vars(thrusters).items():
-        #     if isinstance(thruster_obj, Thruster):
-        #         xml_content += f"            <site name='{thruster_obj.site}' pos='{thruster_obj.pos}' size='{thruster_obj.size}'/>\n"
+    
         xml_content += "        </body>\n"
+    else:
+        # Define all free floating bodies
+        for body in bodies.bodies_list:
+            xml_content += f"        <body name='{body.name}' pos='{xmlify(body.pos)}' quat='{xmlify(body.quat)}'>\n"
+            xml_content += """            <freejoint/>
+    """
+            for geom in geoms.geom_list:
+                if geom.type == "mesh":
+                    xml_content += f"            <geom type='mesh' mesh='{geom.name}' pos='{xmlify(geom.pos)}' euler='{xmlify(geom.euler)}'/>\n"
+                else:
+                    xml_content += f"            <geom type='{geom.type}' size='{xmlify(geom.size)}' pos='{xmlify(geom.pos)}' euler='{xmlify(geom.euler)}'/>\n"
+            for thruster in thrusters.thruster_list:
+                xml_content += f"            <site name='{thruster.site}' pos='{xmlify(thruster.pos)}' size='{thruster.size}'/>\n"
+            # for thruster_name, thruster_obj in vars(thrusters).items():
+            #     if isinstance(thruster_obj, Thruster):
+            #         xml_content += f"            <site name='{thruster_obj.site}' pos='{thruster_obj.pos}' size='{thruster_obj.size}'/>\n"
+            xml_content += "        </body>\n"
 
     xml_content += """    </worldbody>
 """
@@ -195,8 +343,8 @@ def generate_mujoco_xml(env_config, lib_config):
 
 # File can be executed to test xml output
 if __name__ == "__main__":
-    from smallsat_sim.envs.cubesat.cfg.config import EnvConfig
-    from smallsat_sim.lib.cubesat.cfg.config import LibConfig
+    from smallsat_sim.envs.astrobee.cfg.config import EnvConfig
+    from smallsat_sim.lib.astrobee.cfg.config import LibConfig
 
     lib = LibConfig()
     env = EnvConfig()

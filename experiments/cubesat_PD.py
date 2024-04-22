@@ -26,7 +26,7 @@ while True:
 
     sim_time = env.data.time
 
-    if sim_time < real_time:
+    if True:
         # Calculate control action (open-loop)
         ctrl_input = ctrl.get_control_input(env)
 

@@ -14,7 +14,7 @@
         <mesh name="pmc_bumper" file="meshes/pmc_bumper.stl"/>
         <mesh name="pmc_skin_honey" file="meshes/pmc_skin_honey.stl"/>
         <mesh name="body" file="meshes/body.stl"/>
-        <texture name="skin_honey" file="meshes/skin_honey.png"/>
+        <texture type="2d" name="skin_honey" file="meshes/skin_honey.png"/>
         <material name="skin_honey" texture="skin_honey"/>
         <texture type="2d" name="Canadarm_BaseColor" file="meshes/Canadarm_BaseColor.png"/>
         <material name="Canadarm" texture="Canadarm_BaseColor" specular="0.0" shininess="0.5"/>
@@ -112,12 +112,10 @@
         <body name="cubesat" pos="0 0 10" quat="1 0 0 0">
             <freejoint/>
             <geom type="mesh" mesh="body" pos="0 0 0" euler="0 0 0"/>
-            <geom type="mesh" mesh="pmc" pos="0 0 0" euler="0 0 0"/>
-            <geom type="mesh" mesh="pmc" pos="0 0 0" euler="0 180 180"/>
+            <geom type="mesh" mesh="pmc" material="skin_honey" pos="0 0 0" euler="0 0 0"/>
+            <geom type="mesh" mesh="pmc"  material="skin_honey" pos="0 0 0" euler="0 180 180"/>
             <geom type="mesh" mesh="pmc_bumper" pos="0 0 0" euler="0 0 0"/>
             <geom type="mesh" mesh="pmc_bumper" pos="0 0 0" euler="0 180 180"/>
-            <geom type="mesh" mesh="pmc_skin_honey" material="skin_honey" pos="0 0 0" euler="0 0 0"/>
-            <geom type="mesh" mesh="pmc_skin_honey" material="skin_honey" pos="0 0 0" euler="0 180 180"/>
             <site name="thruster1" pos="0.1 0.05 0" size="0.02"/>
             <site name="thruster2" pos="0.1 -0.05 0" size="0.02"/>
             <site name="thruster3" pos="-0.1 0.05 0" size="0.02"/>

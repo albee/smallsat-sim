@@ -1,5 +1,6 @@
 class Thruster:
-    """Thruster class for defining thruster properties
+    """
+    Thruster class for defining thruster properties
     Defines both actuator and site properties for the thruster.
     """
 
@@ -26,7 +27,8 @@ class Thruster:
         self.size = size
 
 class Geom:
-    """Geom class for defining geom properties
+    """
+    Geom class for defining geom properties
     Especially considers mesh geoms.
     """
 
@@ -60,7 +62,9 @@ class Geom:
             self.asset_scale = asset_scale
 
 class PhysicalProperties:
-    """Physical properties class for defining physical properties of the vehicle."""
+    """
+    Physical properties class for defining physical properties of the vehicle.
+    """
 
     def __init__(self, length, width, height, density) -> None:
         self.length = length
