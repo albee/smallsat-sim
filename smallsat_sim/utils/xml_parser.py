@@ -88,6 +88,8 @@ def generate_mujoco_xml(env_config, lib_config):
             <mesh file="gateway/gateway_simple_25.obj"/>
     """
 
+    # Check whether astrobee or cubesat is used.
+    # This code defines the materials and meshes.
     if lib_config.name == "astrobee":
         xml_content += f"""        <!--Load astrobee model components-->
             <texture type="2d" name="black" file="astrobee/meshes/black.png"/>
@@ -206,6 +208,7 @@ def generate_mujoco_xml(env_config, lib_config):
 
     <worldbody>
 """
+    # Generates the free-floating bodiesin the simulation
     if lib_config.name == "astrobee":
         for body in bodies.bodies_list:
             xml_content += f"""         <body name='{body.name}' pos='{xmlify(body.pos)}' quat='{xmlify(body.quat)}'>
@@ -306,16 +309,6 @@ def generate_mujoco_xml(env_config, lib_config):
                     forcelimited="{thruster.forcelimited}"
                 />
 """
-    #     for thruster_name, thruster_obj in vars(thrusters).items():
-    #         if isinstance(thruster_obj, Thruster):
-    #             xml_content += f'''        <general name="{thruster_obj.name}"
-    #                     site="{thruster_obj.site}"
-    #                     gear="{thruster_obj.gear}"
-    #                     forcerange="{thruster_obj.forcerange}"
-    #                     ctrlrange="{thruster_obj.ctrlrange}"
-    #                     forcelimited="{thruster_obj.forcelimited}"
-    #                 />
-    # '''
     xml_content += "    </actuator>\n"
     xml_content += "</mujoco>"
     return xml_content
