@@ -6,9 +6,9 @@ class Thruster:
 
     def __init__(
         self,
-        name,
-        pos,
-        gear,
+        name: str,
+        pos: list[float],
+        gear: list[float],
         site=None,
         forcerange=[0, 1],
         ctrlrange=[0, 0],
@@ -26,6 +26,7 @@ class Thruster:
         self.forcelimited = forcelimited
         self.size = size
 
+
 class Geom:
     """
     Geom class for defining geom properties
@@ -34,8 +35,8 @@ class Geom:
 
     def __init__(
         self,
-        name,
-        type,
+        name: str,
+        type: str,
         pos=None,
         euler="0 0 0",
         meshtype=None,
@@ -61,6 +62,7 @@ class Geom:
             self.mesh = f"cubesat/meshes/{name}.{meshtype}"
             self.asset_scale = asset_scale
 
+
 class PhysicalProperties:
     """
     Physical properties class for defining physical properties of the vehicle.
@@ -74,4 +76,8 @@ class PhysicalProperties:
 
 
 class BaseLibConfig(object):
+    """
+    Base class for all model configurations.
+    TODO: Implement reusable base class methods/properties if useful.
+    """
     pass
