@@ -40,13 +40,13 @@ class Geom:
         pos=None,
         euler="0 0 0",
         meshtype=None,
-        asset_scale="1 1 1",
-        size="1 1 1",
+        asset_scale=[1, 1, 1],
+        size=[1, 1, 1],
     ) -> None:
         self.name = name
         self.type = type
         if pos is None:
-            self.pos = "0 0 0"
+            self.pos = [0, 0, 0]
             print(
                 f"Warning: No position provided for geom {name}. Using default position [0,0,0]."
             )
