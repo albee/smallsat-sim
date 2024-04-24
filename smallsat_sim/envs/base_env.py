@@ -1,10 +1,7 @@
 import numpy as np
-import yaml
-import os
 import mujoco
 import mujoco.viewer
 
-from smallsat_sim import SMALLSAT_SIM_ENVS_DIR, SMALLSAT_SIM_MODEL_DIR
 from smallsat_sim.envs.dynamics import SymbolicModel
 from smallsat_sim.utils import xml_parser
 
@@ -40,7 +37,8 @@ class BaseEnv(object):
         self._pre_physics_step(input)
 
         # Advance simulation
-        mujoco.mj_step(self.model, self.data)
+        for _ in range(self.env_cfg.control.control_decimation):
+            mujoco.mj_step(self.model, self.data)
 
         # Update viewer
         self._update_viewer()
@@ -64,10 +62,10 @@ class BaseEnv(object):
         """
         # Create instance of MuJoCo viewer
         self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
-        
+
         # Set default camera options
         self.viewer.cam.distance = 3.0
-        self.viewer.cam.trackbodyid = 2 # tracks smallsat
+        self.viewer.cam.trackbodyid = 2  # tracks smallsat
         self.viewer.cam.azimuth = 10.0
         self.viewer.cam.type = 1
 
@@ -97,7 +95,7 @@ class BaseEnv(object):
         Creates a viewer depending on headless flag.
         """
         # Generate xml using env and model config files
-        xml = xml_parser.generate_mujoco_xml(self.env_cfg,self.model_cfg)
+        xml = xml_parser.generate_mujoco_xml(self.env_cfg, self.model_cfg)
         # Create model and data instances
         self.model = mujoco.MjModel.from_xml_string(xml)
         self.data = mujoco.MjData(self.model)

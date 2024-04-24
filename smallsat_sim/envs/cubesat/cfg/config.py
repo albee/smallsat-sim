@@ -34,7 +34,7 @@ class EnvConfig:
             control_decimation = 10
 
             class gains:
-                Kp_x = 10.0
-                Kd_x = 10.0
-                Kp_q = 0.5
-                Kd_q = 1.0
+                Kp_x = 1.0
+                Kd_x = 1.0
+                Kp_q = 0.05
+                Kd_q = 0.1

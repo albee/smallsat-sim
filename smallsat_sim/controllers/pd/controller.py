@@ -23,16 +23,19 @@ import numpy as np
 
 class PDController(BaseController):
     def __init__(self, env, planner) -> None:
-        super().__init__()
+        # Fetch correct controller config
+        ctrl_cfg = env.env_cfg.control.PD
 
-        # Initialize the planner module
-        self.planner = planner
+        # Initialize base class
+        super().__init__(env, planner, ctrl_cfg)
 
+        # Set some reference quantities (Deprecated?)
         self.x_ref = self.planner.get_reference(env.obs)
         self.quat_ref = np.array([1.0, 0.0, 0.0, 0.0])
         self.v_ref = np.zeros((3, 1))
         self.omega_ref = np.zeros((3, 1))  # Angular velocity
-        ctrl_cfg = env.env_cfg.control.PD
+
+        # Extract PD gains
         self.Kp_x = ctrl_cfg.gains.Kp_x
         self.Kd_x = ctrl_cfg.gains.Kd_x
         self.Kp_q = ctrl_cfg.gains.Kp_q
