@@ -16,6 +16,7 @@ def get_args() -> argparse.Namespace:
     # Add arguments
     parser.add_argument('--num_envs', type=int, help='Number of envs run in parallel', default=1)
     parser.add_argument('--headless', action='store_true', help='Run in headless mode')
+    parser.add_argument('--num_bodies', type=int, help='Number of bodies in the simulation', default=1)
 
     # Parse the arguments
     args = parser.parse_args()

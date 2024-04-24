@@ -6,6 +6,7 @@ import mujoco.viewer
 
 from smallsat_sim import SMALLSAT_SIM_ENVS_DIR, SMALLSAT_SIM_LIB_DIR
 from smallsat_sim.envs.dynamics import SymbolicModel
+from smallsat_sim.utils import xml_parser
 
 from argparse import Namespace
 
@@ -80,27 +81,13 @@ class BaseEnv(object):
         self.env_name = env_name
         self.lib_name = lib_name
 
-        # env config
-        # localize relevant yaml file
-        cfg_path = os.path.join(SMALLSAT_SIM_ENVS_DIR, env_name, "cfg", "config.yaml")
+        # Dynamically import the correct env config module
+        module = __import__(f"smallsat_sim.envs.{env_name}.cfg", fromlist=["config"])
+        env_cfg = module.config.EnvConfig()
 
-        # load from yaml file
-        with open(cfg_path) as file:
-            try:
-                env_cfg = yaml.safe_load(file)
-            except yaml.YAMLError as exc:
-                print(exc)
-
-        # lib config
-        # localize relevant yaml file
-        cfg_path = os.path.join(SMALLSAT_SIM_LIB_DIR, lib_name, "cfg", "config.yaml")
-
-        # load from yaml file
-        with open(cfg_path) as file:
-            try:
-                lib_cfg = yaml.safe_load(file)
-            except yaml.YAMLError as exc:
-                print(exc)
+        # Dynamically import the correct lib config module
+        module = __import__(f"smallsat_sim.lib.{lib_name}.cfg", fromlist=["config"])
+        lib_cfg = module.config.LibConfig()
 
         return env_cfg, lib_cfg
 
@@ -109,11 +96,10 @@ class BaseEnv(object):
         Prepares simulation according to args.
         Creates a viewer depending on headless flag.
         """
-        # Load the correct xml file
-        xml = os.path.join(SMALLSAT_SIM_LIB_DIR, self.lib_name, self.lib_name + ".xml")
-
+        # Generate xml using env and lib config files
+        xml = xml_parser.generate_mujoco_xml(self.env_cfg,self.lib_cfg)
         # Create model and data instances
-        self.model = mujoco.MjModel.from_xml_path(xml)
+        self.model = mujoco.MjModel.from_xml_string(xml)
         self.data = mujoco.MjData(self.model)
 
         # Launch the viewer
