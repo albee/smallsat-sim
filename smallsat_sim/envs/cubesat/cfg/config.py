@@ -1,3 +1,5 @@
+from smallsat_sim.envs.base_env_config import BaseEnvConfig
+
 class Body:
     def __init__(self, name, pos=[0, 0, 0], quat=[1, 0, 0, 0]) -> None:
         self.name = name
@@ -5,7 +7,7 @@ class Body:
         self.quat = quat
 
 
-class EnvConfig:
+class EnvConfig(BaseEnvConfig):
     """Environment configuration class. Contains dynamic vehicle information."""
 
     model = "cubesat"

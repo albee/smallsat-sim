@@ -37,11 +37,13 @@ class BaseEnv(object):
         self._pre_physics_step(input)
 
         # Advance simulation
-        for _ in range(self.env_cfg.control.control_decimation):
-            mujoco.mj_step(self.model, self.data)
+        for substep in range(self.env_cfg.control.control_decimation):
+            # Update viewer
+            if substep % self.env_cfg.viewer.viewer_decimation == 0:
+                self._update_viewer()
 
-        # Update viewer
-        self._update_viewer()
+            # Step in MuJoCo engine
+            mujoco.mj_step(self.model, self.data)
 
     def get_obs(self) -> np.array:
         """
