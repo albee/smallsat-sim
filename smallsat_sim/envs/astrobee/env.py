@@ -1,8 +1,4 @@
 from smallsat_sim.envs.base_env import BaseEnv
-from smallsat_sim import SMALLSAT_SIM_MODEL_DIR
-
-import mujoco
-import os
 
 
 class AstrobeeEnv(BaseEnv):

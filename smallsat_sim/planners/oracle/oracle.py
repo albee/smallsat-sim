@@ -22,7 +22,10 @@ class OraclePlanner(BasePlanner):
         """
         # Check if current state is close enough
         dist = np.linalg.norm(
-            obs[0:3] - self.reference_points[self.idx_reference_point]
+            obs[0:3]
+            - self.reference_points[
+                self.idx_reference_point % len(self.reference_points)
+            ]
         )
 
         # If smallsat is closer than the clearance distance, the next reference point is queried
@@ -44,7 +47,9 @@ class OraclePlanner(BasePlanner):
             ]
         )
 
-        return self.reference_points[self.idx_reference_point]
+        return self.reference_points[
+            self.idx_reference_point % len(self.reference_points)
+        ]
 
     def _generate_reference(self):
         """

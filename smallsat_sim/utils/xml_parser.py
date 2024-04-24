@@ -86,6 +86,7 @@ def generate_mujoco_xml(env_config, model_config):
             <mesh file="gateway/gateway_simple_23.obj"/>
             <mesh file="gateway/gateway_simple_24.obj"/>
             <mesh file="gateway/gateway_simple_25.obj"/>
+            <texture type="skybox" file="gateway/stars.png"/>
     """
 
     # Check whether astrobee or cubesat is used.

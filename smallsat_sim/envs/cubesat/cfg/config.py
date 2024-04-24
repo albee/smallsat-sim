@@ -1,3 +1,5 @@
+from smallsat_sim.envs.base_env_config import BaseEnvConfig
+
 class Body:
     def __init__(self, name, pos=[0, 0, 0], quat=[1, 0, 0, 0]) -> None:
         self.name = name
@@ -5,7 +7,7 @@ class Body:
         self.quat = quat
 
 
-class EnvConfig:
+class EnvConfig(BaseEnvConfig):
     """Environment configuration class. Contains dynamic vehicle information."""
 
     model = "cubesat"
@@ -23,3 +25,18 @@ class EnvConfig:
         bodies_list = []
         for i in range(num_bodies):
             bodies_list.append(Body(name=f"body{i}", pos=[i, 0, 10]))
+
+    # Holds all information for the controller in use
+    class control:
+
+        # PD controller parameters
+        class PD:
+            # Decimate the controller frequency such that it doesn't
+            # run equally fast to the simulation discretization
+            control_decimation = 10
+
+            class gains:
+                Kp_x = 1.0
+                Kd_x = 1.0
+                Kp_q = 0.05
+                Kd_q = 0.1
