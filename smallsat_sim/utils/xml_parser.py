@@ -242,35 +242,7 @@ def generate_mujoco_xml(env_config, lib_config):
             <geom mesh="astrobee_26" material="Material_003" class="visual"/>
             <geom mesh="astrobee_27" material="Material_002" class="visual"/>
             <geom mesh="astrobee_28" material="Material_019" class="visual"/>
-            <geom mesh="astrobee_0" class="collision"/>
-            <geom mesh="astrobee_1" class="collision"/>
-            <geom mesh="astrobee_2" class="collision"/>
-            <geom mesh="astrobee_3" class="collision"/>
-            <geom mesh="astrobee_4" class="collision"/>
-            <geom mesh="astrobee_5" class="collision"/>
-            <geom mesh="astrobee_6" class="collision"/>
-            <geom mesh="astrobee_7" class="collision"/>
-            <geom mesh="astrobee_8" class="collision"/>
-            <geom mesh="astrobee_9" class="collision"/>
-            <geom mesh="astrobee_10" class="collision"/>
-            <geom mesh="astrobee_11" class="collision"/>
-            <geom mesh="astrobee_12" class="collision"/>
-            <geom mesh="astrobee_13" class="collision"/>
-            <geom mesh="astrobee_14" class="collision"/>
-            <geom mesh="astrobee_15" class="collision"/>
-            <geom mesh="astrobee_16" class="collision"/>
-            <geom mesh="astrobee_17" class="collision"/>
-            <geom mesh="astrobee_18" class="collision"/>
-            <geom mesh="astrobee_19" class="collision"/>
-            <geom mesh="astrobee_20" class="collision"/>
-            <geom mesh="astrobee_21" class="collision"/>
-            <geom mesh="astrobee_22" class="collision"/>
-            <geom mesh="astrobee_23" class="collision"/>
-            <geom mesh="astrobee_24" class="collision"/>
-            <geom mesh="astrobee_25" class="collision"/>
-            <geom mesh="astrobee_26" class="collision"/>
-            <geom mesh="astrobee_27" class="collision"/>
-            <geom mesh="astrobee_28" class="collision"/>\n"""
+            <geom type="box" size="0.16 0.16 0.16" mass="10" class="collision"/>\n"""
         for thruster in thrusters.thruster_list:
             xml_content += f"            <site name='{thruster.site}' pos='{xmlify(thruster.pos)}' size='{thruster.size}'/>\n"
     
