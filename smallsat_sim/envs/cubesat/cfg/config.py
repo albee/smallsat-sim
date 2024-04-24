@@ -23,3 +23,18 @@ class EnvConfig:
         bodies_list = []
         for i in range(num_bodies):
             bodies_list.append(Body(name=f"body{i}", pos=[i, 0, 10]))
+
+    # Holds all information for the controller in use
+    class control:
+
+        # PD controller parameters
+        class PD:
+            # Decimate the controller frequency such that it doesn't
+            # run equally fast to the simulation discretization
+            control_decimation = 10
+
+            class gains:
+                Kp_x = 10.0
+                Kd_x = 10.0
+                Kp_q = 0.5
+                Kd_q = 1.0

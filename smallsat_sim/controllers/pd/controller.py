@@ -17,10 +17,8 @@
 from smallsat_sim.controllers.base_controller import BaseController
 from smallsat_sim.envs.base_env import BaseEnv
 from smallsat_sim.utils.helpers import quat_multiply, quat_conjugate, Rquat, sgn_quat
-import yaml
-import numpy as np
 
-import mujoco
+import numpy as np
 
 
 class PDController(BaseController):
@@ -34,11 +32,11 @@ class PDController(BaseController):
         self.quat_ref = np.array([1.0, 0.0, 0.0, 0.0])
         self.v_ref = np.zeros((3, 1))
         self.omega_ref = np.zeros((3, 1))  # Angular velocity
-        cfg = self._load_cfg("pd")
-        self.Kp_x = cfg.gains.Kp_x
-        self.Kd_x = cfg.gains.Kd_x
-        self.Kp_q = cfg.gains.Kp_q
-        self.Kd_q = cfg.gains.Kd_q
+        ctrl_cfg = env.env_cfg.control.PD
+        self.Kp_x = ctrl_cfg.gains.Kp_x
+        self.Kd_x = ctrl_cfg.gains.Kd_x
+        self.Kp_q = ctrl_cfg.gains.Kp_q
+        self.Kd_q = ctrl_cfg.gains.Kd_q
 
         self.B_matrix = self.calc_B_matrix(env.model)
 

@@ -1,8 +1,5 @@
 from smallsat_sim.envs.base_env import BaseEnv
 
-import mujoco
-import os
-
 
 class CubesatEnv(BaseEnv):
     def __init__(self, args) -> None:

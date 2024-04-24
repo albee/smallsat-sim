@@ -12,15 +12,3 @@ class BaseController(object):
         """
         Returns the control input
         """
-
-    def _load_cfg(self, controller_name: str) -> object:
-        """
-        Loads the config parameters from the file located in cfg/config.yaml
-        """
-        # Dynamically import the correct model config module
-        module = __import__(
-            f"smallsat_sim.controllers.{controller_name}.cfg", fromlist=["config"]
-        )
-        ctrl_config = module.config.ControllerConfig()
-
-        return ctrl_config
