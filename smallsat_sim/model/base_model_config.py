@@ -75,7 +75,7 @@ class PhysicalProperties:
         self.density = density
 
 
-class BaseLibConfig(object):
+class BaseModelConfig(object):
     """
     Base class for all model configurations.
     TODO: Implement reusable base class methods/properties if useful.

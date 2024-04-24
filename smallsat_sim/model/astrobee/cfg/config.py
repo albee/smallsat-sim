@@ -1,12 +1,12 @@
-from smallsat_sim.lib.base_lib_config import (
+from smallsat_sim.model.base_model_config import (
     Thruster,
     Geom,
     PhysicalProperties,
-    BaseLibConfig,
+    BaseModelConfig,
 )
 
 
-class LibConfig(BaseLibConfig):
+class ModelConfig(BaseModelConfig):
     """
     Config class for the astrobee model.
     """
