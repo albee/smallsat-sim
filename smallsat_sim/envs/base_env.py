@@ -4,7 +4,7 @@ import os
 import mujoco
 import mujoco.viewer
 
-from smallsat_sim import SMALLSAT_SIM_ENVS_DIR, SMALLSAT_SIM_LIB_DIR
+from smallsat_sim import SMALLSAT_SIM_ENVS_DIR, SMALLSAT_SIM_MODEL_DIR
 from smallsat_sim.envs.dynamics import SymbolicModel
 from smallsat_sim.utils import xml_parser
 
@@ -17,7 +17,7 @@ class BaseEnv(object):
         self._setup_sim(args)
 
         # Create symbolic model
-        self.symbolic_model = SymbolicModel(self.lib_cfg)
+        self.symbolic_model = SymbolicModel(self.model_cfg)
 
         # Initialize disturbance and perturbation to None as default setting
         self.disturbance = None
@@ -71,33 +71,33 @@ class BaseEnv(object):
         self.viewer.cam.azimuth = 10.0
         self.viewer.cam.type = 1
 
-    def _load_cfg(self, env_name: str, lib_name: str) -> dict:
+    def _load_cfg(self, env_name: str, model_name: str) -> dict:
         """
         Loads and returns the following config files:
             - env config file
-            - lib config file
+            - model config file
         """
-        # Save env and lib names for later use
+        # Save env and model names for later use
         self.env_name = env_name
-        self.lib_name = lib_name
+        self.model_name = model_name
 
         # Dynamically import the correct env config module
         module = __import__(f"smallsat_sim.envs.{env_name}.cfg", fromlist=["config"])
         env_cfg = module.config.EnvConfig()
 
-        # Dynamically import the correct lib config module
-        module = __import__(f"smallsat_sim.lib.{lib_name}.cfg", fromlist=["config"])
-        lib_cfg = module.config.LibConfig()
+        # Dynamically import the correct model config module
+        module = __import__(f"smallsat_sim.model.{model_name}.cfg", fromlist=["config"])
+        model_cfg = module.config.ModelConfig()
 
-        return env_cfg, lib_cfg
+        return env_cfg, model_cfg
 
     def _setup_sim(self, args: Namespace):
         """
         Prepares simulation according to args.
         Creates a viewer depending on headless flag.
         """
-        # Generate xml using env and lib config files
-        xml = xml_parser.generate_mujoco_xml(self.env_cfg,self.lib_cfg)
+        # Generate xml using env and model config files
+        xml = xml_parser.generate_mujoco_xml(self.env_cfg,self.model_cfg)
         # Create model and data instances
         self.model = mujoco.MjModel.from_xml_string(xml)
         self.data = mujoco.MjData(self.model)

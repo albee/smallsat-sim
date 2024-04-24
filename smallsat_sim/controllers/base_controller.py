@@ -17,7 +17,7 @@ class BaseController(object):
         """
         Loads the config parameters from the file located in cfg/config.yaml
         """
-        # Dynamically import the correct lib config module
+        # Dynamically import the correct model config module
         module = __import__(
             f"smallsat_sim.controllers.{controller_name}.cfg", fromlist=["config"]
         )

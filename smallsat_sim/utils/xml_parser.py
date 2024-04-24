@@ -5,21 +5,21 @@ def xmlify(array: list):
     return " ".join([str(x) for x in array])
 
 
-def generate_mujoco_xml(env_config, lib_config):
+def generate_mujoco_xml(env_config, model_config):
     """
     This function generates the xml string which is fed to MuJoCo for setting up the sim environment
     """
     # Extract relevant quantities from configs
-    geoms = lib_config.Geoms
+    geoms = model_config.Geoms
     bodies = env_config.Bodies
-    thrusters = lib_config.Thrusters
+    thrusters = model_config.Thrusters
 
     # Beginning of xml file
     # Defines general options for the environment
     # Loads all assets such as .obj files and corresponding meshes/texture
     xml_content = f"""<?xml version="1.0" encoding="utf-8"?>
     <mujoco model="{env_config.model}">
-        <compiler convexhull="{env_config.compiler['convexhull']}" texturedir="smallsat_sim/lib" meshdir="smallsat_sim/lib"/>
+        <compiler convexhull="{env_config.compiler['convexhull']}" texturedir="smallsat_sim/model" meshdir="smallsat_sim/model"/>
         <visual>
             <headlight ambient="{env_config.visual['headlight']['ambient']}" specular="{env_config.visual['headlight']['specular']}" diffuse="{env_config.visual['headlight']['diffuse']}"/>
         </visual>
@@ -90,7 +90,7 @@ def generate_mujoco_xml(env_config, lib_config):
 
     # Check whether astrobee or cubesat is used.
     # This code defines the materials and meshes.
-    if lib_config.name == "astrobee":
+    if model_config.name == "astrobee":
         xml_content += f"""        <!--Load astrobee model components-->
             <texture type="2d" name="black" file="astrobee/meshes/black.png"/>
             <material name="Material_001" texture="black" specular="0.5" shininess="0.25"/>
@@ -209,7 +209,7 @@ def generate_mujoco_xml(env_config, lib_config):
     <worldbody>
 """
     # Generates the free-floating bodiesin the simulation
-    if lib_config.name == "astrobee":
+    if model_config.name == "astrobee":
         for body in bodies.bodies_list:
             xml_content += f"""         <body name='{body.name}' pos='{xmlify(body.pos)}' quat='{xmlify(body.quat)}'>
             <freejoint/>
@@ -289,11 +289,11 @@ def generate_mujoco_xml(env_config, lib_config):
 # File can be executed to test xml output
 if __name__ == "__main__":
     from smallsat_sim.envs.astrobee.cfg.config import EnvConfig
-    from smallsat_sim.lib.astrobee.cfg.config import LibConfig
+    from smallsat_sim.model.astrobee.cfg.config import ModelConfig
 
-    lib = LibConfig()
+    model_config = ModelConfig()
     env = EnvConfig()
-    xml = generate_mujoco_xml(env, lib)
+    xml = generate_mujoco_xml(env, model_config)
     with open("cubesat.xml", "w") as f:
         f.write(xml)
     print(xml)
