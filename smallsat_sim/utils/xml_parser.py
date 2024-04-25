@@ -214,6 +214,9 @@ def generate_mujoco_xml(env_config, model_config):
         for body in bodies.bodies_list:
             xml_content += f"""         <body name='{body.name}' pos='{xmlify(body.pos)}' quat='{xmlify(body.quat)}'>
             <freejoint/>
+            <!Inertial properties are have been taken from Astrobee repo>
+            <!(https://github.com/nasa/astrobee/blob/master/astrobee/config/worlds/iss.config)>
+            <inertial pos="0.003713818 -0.000326347 -0.002532192" mass="9.583788668" diaginertia="0.153427995 0.14271405 0.162302759"/>
             <geom mesh="astrobee_0" material="Material_003.002" class="visual"/>
             <geom mesh="astrobee_1" material="Material_001.002" class="visual"/>
             <geom mesh="astrobee_2" material="Material_002.002" class="visual"/>
@@ -243,7 +246,7 @@ def generate_mujoco_xml(env_config, model_config):
             <geom mesh="astrobee_26" material="Material_003" class="visual"/>
             <geom mesh="astrobee_27" material="Material_002" class="visual"/>
             <geom mesh="astrobee_28" material="Material_019" class="visual"/>
-            <geom type="box" size="0.16 0.16 0.16" mass="10" class="collision"/>\n"""
+            <geom type="box" size="0.16 0.16 0.16" class="collision"/>\n"""
         for thruster in thrusters.thruster_list:
             xml_content += f"            <site name='{thruster.site}' pos='{xmlify(thruster.pos)}' size='{thruster.size}'/>\n"
     
@@ -253,7 +256,9 @@ def generate_mujoco_xml(env_config, model_config):
         for body in bodies.bodies_list:
             xml_content += f"        <body name='{body.name}' pos='{xmlify(body.pos)}' quat='{xmlify(body.quat)}'>\n"
             xml_content += """            <freejoint/>
-    """
+            <!Inertial properties are calculated from box with 3U dimensions and density 1000kg/m3>
+            <inertial pos="0 0 0" mass="3.0" diaginertia="0.025 0.025 0.005"/>
+"""
             for geom in geoms.geom_list:
                 if geom.type == "mesh":
                     xml_content += f"            <geom type='mesh' mesh='{geom.name}' pos='{xmlify(geom.pos)}' euler='{xmlify(geom.euler)}'/>\n"
