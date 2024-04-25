@@ -108,6 +108,7 @@ class BaseEnv(object):
         else:
             # If sim is run in headless mode, set the update_viewer method
             # to a lambda function which essentially does nothing
+            self.viewer = None
             self._update_viewer = lambda *args, **kwargs: None
 
     def _update_viewer(self):

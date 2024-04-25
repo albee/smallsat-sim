@@ -9,7 +9,13 @@ class BasePlanner(object):
     """
 
     def __init__(self, env) -> None:
-        self.viewer = env.viewer
+        # Check if there is a viewer. In case there is not,
+        # dynamically allocate the visualize method to a lambda
+        # function doing nothing.
+        if env.viewer:
+            self.viewer = env.viewer
+        else:
+            self.visualize = lambda *args, **kwargs: None
 
     def get_reference(self, obs: np.ndarray) -> np.ndarray:
         """
