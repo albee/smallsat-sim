@@ -256,9 +256,9 @@ def generate_mujoco_xml(env_config, model_config):
         # Define all free floating bodies
         for body in bodies.bodies_list:
             xml_content += f"        <body name='{body.name}' pos='{xmlify(body.pos)}' quat='{xmlify(body.quat)}'>\n"
-            xml_content += """            <freejoint/>
+            xml_content += f"""            <freejoint/>
             <!Inertial properties are calculated from box with 3U dimensions and density 1000kg/m3>
-            <inertial pos="0 0 0" mass="3.0" diaginertia="0.025 0.025 0.005"/>
+            <inertial pos="{xmlify(props.com_offset)}" mass="{props.mass}" diaginertia="{xmlify(props.diag_inertia)}"/>
 """
             for geom in geoms.geom_list:
                 if geom.type == "mesh":

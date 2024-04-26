@@ -19,7 +19,7 @@ class ModelConfig(BaseModelConfig):
         length=0.1,
         width=0.1,
         height=0.3,
-        mass=4.0,
+        mass=3.0,
         diag_inertia=[0.025, 0.025, 0.005],
         com_offset=[0, 0, 0],
     )
