@@ -17,22 +17,15 @@ class SymbolicModel:
 
     def __init__(self, cfg: dict) -> None:
         # Load physical properties
-        physical_parameters = cfg.pp
-        self.length = physical_parameters.length
-        self.width = physical_parameters.width
-        self.height = physical_parameters.height
-        self.density = physical_parameters.density
+        props = cfg.pp
 
+        self.mass = props.mass
+        self.inertia = props.diag_inertia
+        self.com_offset = props.com_offset
+        
         # Load thruster information
         self.thrusters = cfg.Thrusters
         self.nu = self.thrusters.n_thrusters
-
-        # Calculate remaining physical properties
-        self.volume = self.length * self.width * self.height
-        self.mass = self.volume * self.density
-        self.I11 = (1 / 12) * self.mass * (self.width**2 + self.height**2)
-        self.I22 = (1 / 12) * self.mass * (self.length**2 + self.height**2)
-        self.I33 = (1 / 12) * self.mass * (self.length**2 + self.width**2)
 
         # Calculate mixer matrix
         self._calc_mixer()
@@ -60,18 +53,6 @@ class SymbolicModel:
                     np.cross(thruster.gear, thruster.pos),
                 )
             )
-
-        # for idx in range(self.nu):
-        #     # Populate mixer
-        #     self.mixer[:, idx] = np.concatenate(
-        #         (
-        #             self.thrusters[f"thruster{idx}"]["gear"],
-        #             np.cross(
-        #                 self.thrusters[f"thruster{idx}"]["gear"],
-        #                 self.thrusters[f"thruster{idx}"]["pos"],
-        #             ),
-        #         )
-        #     )
 
     def _setup_model(self) -> None:
         """
@@ -144,9 +125,7 @@ class SymbolicModel:
         # Casadi: parameters
         m = self.mass
         I = SX(3, 3)
-        I[0, 0] = self.I11
-        I[1, 1] = self.I22
-        I[2, 2] = self.I33
+        I = np.diag(self.inertia)
         M_com = SX(6, 6)  # Full inertia matrix (6x6)
         M_com[0:3, 0:3] = m * SX.eye(3)
         M_com[3:6, 3:6] = I
@@ -159,7 +138,7 @@ class SymbolicModel:
         # CG = Center of Gravity, CO = Center origin (body frame)
         H = SX(6, 6)
         H[0:3, 0:3] = SX.eye(3)
-        H[0:3, 3:6] = ca.transpose(ca.skew(np.array([0,0,0])))
+        H[0:3, 3:6] = ca.transpose(ca.skew(np.array(self.com_offset)))
         H[3:6, 3:6] = SX.eye(3)
 
         # Transform system matrices to body frame by similarity transformation
