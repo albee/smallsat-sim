@@ -217,7 +217,7 @@ def generate_mujoco_xml(env_config, model_config):
             <freejoint/>
             <!Inertial properties are have been taken from Astrobee repo>
             <!(https://github.com/nasa/astrobee/blob/master/astrobee/config/worlds/iss.config)>
-            <inertial pos="{props.com_offset[0]} {props.com_offset[1]} {props.com_offset[2]}" mass="{props.mass}" diaginertia="{props.diag_inertia[0]} {props.diag_inertia[1]} {props.diag_inertia[2]}"/>
+            <inertial pos="{xmlify(props.com_offset)}" mass="{props.mass}" diaginertia="{xmlify(props.diag_inertia)}"/>
             <geom mesh="astrobee_0" material="Material_003.002" class="visual"/>
             <geom mesh="astrobee_1" material="Material_001.002" class="visual"/>
             <geom mesh="astrobee_2" material="Material_002.002" class="visual"/>
