@@ -68,10 +68,13 @@ class PhysicalProperties:
     Physical properties class for defining physical properties of the vehicle.
     """
 
-    def __init__(self, length, width, height, density) -> None:
+    def __init__(self, length, width, height, mass, diag_inertia, com_offset, density=1000) -> None:
         self.length = length
         self.width = width
         self.height = height
+        self.mass = mass
+        self.diag_inertia = diag_inertia
+        self.com_offset = com_offset
         self.density = density
 
 
@@ -80,4 +83,5 @@ class BaseModelConfig(object):
     Base class for all model configurations.
     TODO: Implement reusable base class methods/properties if useful.
     """
+
     pass

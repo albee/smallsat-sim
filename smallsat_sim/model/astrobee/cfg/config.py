@@ -13,30 +13,85 @@ class ModelConfig(BaseModelConfig):
 
     # Name of model
     name = "astrobee"
-    
+
     # Define physical properties of the vehicle
-    pp = PhysicalProperties(length=0.1, width=0.1, height=0.3, density=1000)
+    pp = PhysicalProperties(
+        length=0.32,
+        width=0.32,
+        height=0.32,
+        mass=9.583788668,
+        diag_inertia=[0.153427995, 0.14271405, 0.162302759],
+        com_offset=[0.003713818, -0.000326347, -0.002532192],
+    )
 
     class Thrusters:
         """
         Thrusters class defines the configuration of all thrusters in the astrobee model
         """
 
-        n_thrusters = 12 # Total number of thrusters
+        n_thrusters = 12  # Total number of thrusters
 
         site_information = {
-            "LX+": {"pos": [0.1524, 0.1019, -0.0396], "gear": [-1, 0, 0]},
-            "LX-": {"pos": [-0.1524, 0.1019, 0.0396], "gear": [1, 0, 0]},
-            "RX+": {"pos": [0.1524, -0.1019, 0.0396], "gear": [-1, 0, 0]},
-            "RX-": {"pos": [-0.1524, -0.1019, -0.0396], "gear": [1, 0, 0]},
-            "AY+": {"pos": [-0.0719, 0.1524, -0.0719], "gear": [0, -1, 0]},
-            "AY-": {"pos": [-0.0719, -0.1524, 0.0719], "gear": [0, 1, 0]},
-            "FY+": {"pos": [0.0719, 0.1524, 0.0719], "gear": [0, -1, 0]},
-            "FY-": {"pos": [0.0719, -0.1524, -0.0719], "gear": [0, 1, 0]},
-            "LZ+": {"pos": [-0.0676, 0.1019, 0.1524], "gear": [0, 0, -1]},
-            "LZ-": {"pos": [0.0676, 0.1019, -0.1524], "gear": [0, 0, 1]},
-            "RZ+": {"pos": [0.0676, -0.1019, 0.1524], "gear": [0, 0, -1]},
-            "RZ-": {"pos": [-0.0676, -0.1019, -0.1524], "gear": [0, 0, 1]},
+            "LX+": {
+                "pos": [0.1524, 0.1019, -0.0396],
+                "gear": [-1, 0, 0],
+                "forcerange": [0, 0.6],
+            },
+            "LX-": {
+                "pos": [-0.1524, 0.1019, 0.0396],
+                "gear": [1, 0, 0],
+                "forcerange": [0, 0.6],
+            },
+            "RX+": {
+                "pos": [0.1524, -0.1019, 0.0396],
+                "gear": [-1, 0, 0],
+                "forcerange": [0, 0.6],
+            },
+            "RX-": {
+                "pos": [-0.1524, -0.1019, -0.0396],
+                "gear": [1, 0, 0],
+                "forcerange": [0, 0.6],
+            },
+            "AY+": {
+                "pos": [-0.0719, 0.1524, -0.0719],
+                "gear": [0, -1, 0],
+                "forcerange": [0, 0.3],
+            },
+            "AY-": {
+                "pos": [-0.0719, -0.1524, 0.0719],
+                "gear": [0, 1, 0],
+                "forcerange": [0, 0.3],
+            },
+            "FY+": {
+                "pos": [0.0719, 0.1524, 0.0719],
+                "gear": [0, -1, 0],
+                "forcerange": [0, 0.3],
+            },
+            "FY-": {
+                "pos": [0.0719, -0.1524, -0.0719],
+                "gear": [0, 1, 0],
+                "forcerange": [0, 0.3],
+            },
+            "LZ+": {
+                "pos": [-0.0676, 0.1019, 0.1524],
+                "gear": [0, 0, -1],
+                "forcerange": [0, 0.3],
+            },
+            "LZ-": {
+                "pos": [0.0676, 0.1019, -0.1524],
+                "gear": [0, 0, 1],
+                "forcerange": [0, 0.3],
+            },
+            "RZ+": {
+                "pos": [0.0676, -0.1019, 0.1524],
+                "gear": [0, 0, -1],
+                "forcerange": [0, 0.3],
+            },
+            "RZ-": {
+                "pos": [-0.0676, -0.1019, -0.1524],
+                "gear": [0, 0, 1],
+                "forcerange": [0, 0.3],
+            },
         }
         # Create list of thrusters based on dictionary above
         thruster_list = []
@@ -44,7 +99,11 @@ class ModelConfig(BaseModelConfig):
         for key, value in site_information.items():
             i += 1
             thruster = Thruster(
-                name=f"thruster{i}", pos=value["pos"], gear=value["gear"], forcerange=[0,10], ctrlrange=[0,10]
+                name=f"thruster{i}",
+                pos=value["pos"],
+                gear=value["gear"],
+                forcerange=value["forcerange"],
+                ctrlrange=value["forcerange"],
             )
             thruster_list.append(thruster)
 
@@ -54,4 +113,3 @@ class ModelConfig(BaseModelConfig):
         """
 
         geom_list = []
-        

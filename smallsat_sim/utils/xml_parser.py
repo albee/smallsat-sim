@@ -13,6 +13,7 @@ def generate_mujoco_xml(env_config, model_config):
     geoms = model_config.Geoms
     bodies = env_config.Bodies
     thrusters = model_config.Thrusters
+    props = model_config.pp
 
     # Beginning of xml file
     # Defines general options for the environment
@@ -154,10 +155,10 @@ def generate_mujoco_xml(env_config, model_config):
             <mesh file="astrobee/meshes/astrobee_27.obj"/>
             <mesh file="astrobee/meshes/astrobee_28.obj"/>
             """
-        
+
     else:
-    # Add additional, smallsat-specific meshes
-    # Add temp folder to avoid multiple definition of same mesh
+        # Add additional, smallsat-specific meshes
+        # Add temp folder to avoid multiple definition of same mesh
         temp = []
         for geom in geoms.geom_list:
             if geom.type == "mesh":
@@ -216,7 +217,7 @@ def generate_mujoco_xml(env_config, model_config):
             <freejoint/>
             <!Inertial properties are have been taken from Astrobee repo>
             <!(https://github.com/nasa/astrobee/blob/master/astrobee/config/worlds/iss.config)>
-            <inertial pos="0.003713818 -0.000326347 -0.002532192" mass="9.583788668" diaginertia="0.153427995 0.14271405 0.162302759"/>
+            <inertial pos="{props.com_offset[0]} {props.com_offset[1]} {props.com_offset[2]}" mass="{props.mass}" diaginertia="{props.diag_inertia[0]} {props.diag_inertia[1]} {props.diag_inertia[2]}"/>
             <geom mesh="astrobee_0" material="Material_003.002" class="visual"/>
             <geom mesh="astrobee_1" material="Material_001.002" class="visual"/>
             <geom mesh="astrobee_2" material="Material_002.002" class="visual"/>
