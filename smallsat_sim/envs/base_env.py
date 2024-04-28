@@ -136,7 +136,7 @@ class BaseEnv(object):
 
         # Perturbations
         if self.perturbation:
-            self.data.ctrl = self.perturbation.apply()
+            self.data.ctrl = self.perturbation.apply(input)
         else:
             self.data.ctrl = input
 
@@ -144,6 +144,10 @@ class BaseEnv(object):
         """
         Callback function for keypressed detected in the MuJoCo viewer
         """
-        print(keycode)
         if chr(keycode) == ' ':
-            print("Keypress detected.")
+            print("Spacebar keypress detected.")
+            # Check if there is a stuck of perturbation registered
+            try:
+                self.perturbation.stuck_off_thruster()
+            except:
+                print("Could not stuck off thruster. No StuckOffThruster Perturbation module defined.")
