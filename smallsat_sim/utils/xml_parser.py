@@ -13,6 +13,7 @@ def generate_mujoco_xml(env_config, model_config):
     geoms = model_config.Geoms
     bodies = env_config.Bodies
     thrusters = model_config.Thrusters
+    props = model_config.pp
 
     # Beginning of xml file
     # Defines general options for the environment
@@ -154,10 +155,10 @@ def generate_mujoco_xml(env_config, model_config):
             <mesh file="astrobee/meshes/astrobee_27.obj"/>
             <mesh file="astrobee/meshes/astrobee_28.obj"/>
             """
-        
+
     else:
-    # Add additional, smallsat-specific meshes
-    # Add temp folder to avoid multiple definition of same mesh
+        # Add additional, smallsat-specific meshes
+        # Add temp folder to avoid multiple definition of same mesh
         temp = []
         for geom in geoms.geom_list:
             if geom.type == "mesh":
@@ -214,6 +215,9 @@ def generate_mujoco_xml(env_config, model_config):
         for body in bodies.bodies_list:
             xml_content += f"""         <body name='{body.name}' pos='{xmlify(body.pos)}' quat='{xmlify(body.quat)}'>
             <freejoint/>
+            <!Inertial properties are have been taken from Astrobee repo>
+            <!(https://github.com/nasa/astrobee/blob/master/astrobee/config/worlds/iss.config)>
+            <inertial pos="{xmlify(props.com_offset)}" mass="{props.mass}" diaginertia="{xmlify(props.diag_inertia)}"/>
             <geom mesh="astrobee_0" material="Material_003.002" class="visual"/>
             <geom mesh="astrobee_1" material="Material_001.002" class="visual"/>
             <geom mesh="astrobee_2" material="Material_002.002" class="visual"/>
@@ -243,7 +247,7 @@ def generate_mujoco_xml(env_config, model_config):
             <geom mesh="astrobee_26" material="Material_003" class="visual"/>
             <geom mesh="astrobee_27" material="Material_002" class="visual"/>
             <geom mesh="astrobee_28" material="Material_019" class="visual"/>
-            <geom type="box" size="0.16 0.16 0.16" mass="10" class="collision"/>\n"""
+            <geom type="box" size="0.16 0.16 0.16" class="collision"/>\n"""
         for thruster in thrusters.thruster_list:
             xml_content += f"            <site name='{thruster.site}' pos='{xmlify(thruster.pos)}' size='{thruster.size}'/>\n"
     
@@ -252,8 +256,10 @@ def generate_mujoco_xml(env_config, model_config):
         # Define all free floating bodies
         for body in bodies.bodies_list:
             xml_content += f"        <body name='{body.name}' pos='{xmlify(body.pos)}' quat='{xmlify(body.quat)}'>\n"
-            xml_content += """            <freejoint/>
-    """
+            xml_content += f"""            <freejoint/>
+            <!Inertial properties are calculated from box with 3U dimensions and density 1000kg/m3>
+            <inertial pos="{xmlify(props.com_offset)}" mass="{props.mass}" diaginertia="{xmlify(props.diag_inertia)}"/>
+"""
             for geom in geoms.geom_list:
                 if geom.type == "mesh":
                     xml_content += f"            <geom type='mesh' mesh='{geom.name}' pos='{xmlify(geom.pos)}' euler='{xmlify(geom.euler)}'/>\n"

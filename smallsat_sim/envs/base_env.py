@@ -18,7 +18,7 @@ class BaseEnv(object):
 
         # Initialize disturbance and perturbation to None as default setting
         self.disturbance = None
-        self.perturbation = None
+        self.perturbations = None
 
         # Initialize observations
         self.obs = self.get_obs()
@@ -63,7 +63,9 @@ class BaseEnv(object):
         Creates a viewer to visualize simulation
         """
         # Create instance of MuJoCo viewer
-        self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
+        self.viewer = mujoco.viewer.launch_passive(
+            self.model, self.data, key_callback=self._key_callback
+        )
 
         # Set default camera options
         self.viewer.cam.distance = 3.0
@@ -133,7 +135,16 @@ class BaseEnv(object):
             self.data.qfrc_applied = self.disturbance.apply()
 
         # Perturbations
-        if self.perturbation:
-            self.data.ctrl = self.perturbation.apply()
+        if self.perturbations:
+            self.data.ctrl = self.perturbations.apply(input)
         else:
             self.data.ctrl = input
+
+    def _key_callback(self, keycode) -> None:
+        """
+        Callback function for keypressed detected in the MuJoCo viewer
+        """
+        try:
+            self.perturbations.key_callback(keycode)
+        except:
+            print("No perturbation list registered. Keycallback unsuccessful.")

@@ -14,7 +14,7 @@ class Disturbance(object):
 
 class DisturbanceList(Disturbance):
     """
-    Applies multiple disturbances sequentially to a given input.
+    Applies multiple disturbances sequentially
     """
     def __init__(self,
                  disturbances: list[Disturbance]
