@@ -57,10 +57,6 @@ class PerturbationList(object):
             self.perturbations[perturbation_index].key_callback()
 
     def _check_registered_perturbations(self, keycode) -> None | int:
-        # Check if keycode is in keycode dictionary
-        if chr(keycode) not in self.keycode_dict.keys():
-            return None
-
         # Iterate over perturbations to find a matching type
         for idx, perturbation in enumerate(self.perturbations):
             if isinstance(perturbation, self.keycode_dict[chr(keycode)]["type"]):

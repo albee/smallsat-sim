@@ -4,6 +4,7 @@ import mujoco.viewer
 
 from smallsat_sim.envs.dynamics import SymbolicModel
 from smallsat_sim.utils import xml_parser
+from smallsat_sim.envs.perturbations import PerturbationList
 
 from argparse import Namespace
 
@@ -19,6 +20,7 @@ class BaseEnv(object):
         # Initialize disturbance and perturbation to None as default setting
         self.disturbance = None
         self.perturbations = None
+        self.perturbations_keycodes = PerturbationList([]).keycode_dict.keys()
 
         # Initialize observations
         self.obs = self.get_obs()
@@ -145,6 +147,7 @@ class BaseEnv(object):
         Callback function for keypressed detected in the MuJoCo viewer
         """
         try:
-            self.perturbations.key_callback(keycode)
+            if chr(keycode) in self.perturbations_keycodes:
+                self.perturbations.key_callback(keycode)
         except:
             print("No perturbation list registered. Keycallback unsuccessful.")
