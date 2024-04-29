@@ -53,16 +53,23 @@ class PerturbationList(object):
         perturbation_index = self._check_registered_perturbations(keycode)
 
         # Apply the callback function
-        self.perturbations[perturbation_index].key_callback()
+        if isinstance(perturbation_index, int):
+            self.perturbations[perturbation_index].key_callback()
 
-    def _check_registered_perturbations(self, keycode) -> None:
+    def _check_registered_perturbations(self, keycode) -> None | int:
+        # Check if keycode is in keycode dictionary
+        if chr(keycode) not in self.keycode_dict.keys():
+            return None
+
         # Iterate over perturbations to find a matching type
         for idx, perturbation in enumerate(self.perturbations):
             if isinstance(perturbation, self.keycode_dict[chr(keycode)]["type"]):
                 return idx
 
         # Print warning if no matching perturbation is found
+        # and return None
         print(self.keycode_dict[chr(keycode)]["warning"])
+        return None
 
 
 class StuckOffThrusters(Perturbation):
