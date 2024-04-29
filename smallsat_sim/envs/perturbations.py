@@ -16,21 +16,53 @@ class Perturbation(object):
     def apply(self, input: np.ndarray) -> np.ndarray:
         pass
 
+    def key_callback() -> None:
+        pass
+
 
 class PerturbationList(object):
     """
     Applies multiple perturbations
     """
 
-    def __init__(self, model_config, perturbations: list[Perturbation]) -> None:
+    def __init__(self, perturbations: list[Perturbation]) -> None:
         super().__init__()
+        # Save perturbations in array
         self.perturbations = perturbations
+
+        # Initialize look-up dictionary for keycodes and disturbances
+        self.keycode_dict = {
+            " ": {
+                "type": StuckOffThrusters,
+                "warning": "Could not stuck off thruster. No StuckOffThruster Perturbation module defined.",
+            }
+        }
 
     def apply(self, input: np.ndarray) -> np.ndarray:
         for perturbation in self.perturbations:
-            input = perturbation.apply()
+            input = perturbation.apply(input)
 
         return input
+
+    def key_callback(self, keycode):
+        """
+        Handles external keycall back calls based on registered perturbation
+        modules inside of self.perturbations
+        """
+        # Extract location of desired perturbation (if it exists)
+        perturbation_index = self._check_registered_perturbations(keycode)
+
+        # Apply the callback function
+        self.perturbations[perturbation_index].key_callback()
+
+    def _check_registered_perturbations(self, keycode) -> None:
+        # Iterate over perturbations to find a matching type
+        for idx, perturbation in enumerate(self.perturbations):
+            if isinstance(perturbation, self.keycode_dict[chr(keycode)]["type"]):
+                return idx
+
+        # Print warning if no matching perturbation is found
+        print(self.keycode_dict[chr(keycode)]["warning"])
 
 
 class StuckOffThrusters(Perturbation):
@@ -64,3 +96,8 @@ class StuckOffThrusters(Perturbation):
             random_index = np.random.choice(indices_with_ones)
             print(f"Thruster {random_index} is stuck off.")
             self.thruster_mask[random_index] = 0
+
+    def key_callback(self, keycode=None) -> None:
+
+        # Call correct method for key callbacks
+        self.stuck_off_thruster(index=None)

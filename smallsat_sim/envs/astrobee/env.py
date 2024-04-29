@@ -1,5 +1,5 @@
 from smallsat_sim.envs.base_env import BaseEnv
-from smallsat_sim.envs.perturbations import StuckOffThrusters
+from smallsat_sim.envs.perturbations import StuckOffThrusters, PerturbationList
 
 
 class AstrobeeEnv(BaseEnv):
@@ -11,4 +11,4 @@ class AstrobeeEnv(BaseEnv):
         super().__init__(args=args)
 
         # Instantiate perturbations
-        self.perturbation = StuckOffThrusters(self.model_cfg)
+        self.perturbations = PerturbationList([StuckOffThrusters(self.model_cfg)])
