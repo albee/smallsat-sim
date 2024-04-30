@@ -47,6 +47,9 @@ class BaseEnv(object):
             # Step in MuJoCo engine
             mujoco.mj_step(self.model, self.data)
 
+        # Execute post physics steps
+        self._post_physics_step()
+
     def get_obs(self) -> np.array:
         """
         Return all states
@@ -129,9 +132,6 @@ class BaseEnv(object):
             - Adding perturbations to control input and model dynamics
             - ...
         """
-        # Fetch most recent observations
-        self.obs = self.get_obs()
-
         # External disturbances
         if self.disturbance:
             self.data.qfrc_applied = self.disturbance.apply()
@@ -141,6 +141,13 @@ class BaseEnv(object):
             self.data.ctrl = self.perturbations.apply(input)
         else:
             self.data.ctrl = input
+
+    def _post_physics_step(self) -> None:
+        """
+        Executes actions after stepping simulation
+        """
+        # Fetch most recent observations
+        self.obs = self.get_obs()
 
     def _key_callback(self, keycode) -> None:
         """
