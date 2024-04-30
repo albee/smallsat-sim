@@ -1,6 +1,7 @@
 import time
 from smallsat_sim.utils.helpers import get_args
 from smallsat_sim.controllers.pd.controller import PDController
+from smallsat_sim.controllers.nominal_mpc.controller import NominalMPCController
 from smallsat_sim.envs.astrobee.env import AstrobeeEnv
 from smallsat_sim.planners.oracle.oracle import OraclePlanner
 
@@ -14,7 +15,7 @@ env = AstrobeeEnv(args=args)
 planner = OraclePlanner(env)
 
 # Create controller
-ctrl = PDController(env, planner)
+ctrl = NominalMPCController(env, planner)
 
 # Define start time
 start_time = time.time()

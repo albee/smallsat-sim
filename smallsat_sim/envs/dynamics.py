@@ -22,7 +22,7 @@ class SymbolicModel:
         self.mass = props.mass
         self.inertia = props.diag_inertia
         self.com_offset = props.com_offset
-        
+
         # Load thruster information
         self.thrusters = cfg.Thrusters
         self.nu = self.thrusters.n_thrusters
@@ -88,17 +88,9 @@ class SymbolicModel:
         # x = [r,q,v,omega]': full state vector
         x = ca.vertcat(r, q, v, omega)
 
-        # CasADi: inputs
-        Fx, Fy, Fz = SX.sym("Fx"), SX.sym("Fy"), SX.sym("Fz")
-        F = ca.vertcat(Fx, Fy, Fz)
-
-        Tx, Ty, Tz = SX.sym("Tx"), SX.sym("Ty"), SX.sym("Tz")
-        T = ca.vertcat(Tx, Ty, Tz)
-
         u = SX.sym("u", self.nu)  # Thruster inputs
-        d = SX.sym("d", 6)
 
-        # Casadi: derivatives
+        # CasADi: derivatives
         rx_dot = SX.sym("rx_dot")
         ry_dot = SX.sym("ry_dot")
         rz_dot = SX.sym("rz_dot")
@@ -121,6 +113,12 @@ class SymbolicModel:
         omega_dot = ca.vertcat(omega_x_dot, omega_y_dot, omega_z_dot)
 
         x_dot = ca.vertcat(r_dot, q_dot, v_dot, omega_dot)
+
+        # CasADi: algebraic variables
+        z = ca.vertcat([])
+
+        # CasADi: parameters
+        p = ca.vertcat([])
 
         # Casadi: parameters
         m = self.mass
@@ -164,7 +162,7 @@ class SymbolicModel:
         J_quat[0:3, 0:3] = R_quat
         J_quat[3:7, 3:6] = T_quat
 
-        dynamics = ca.vertcat(
+        f_expl = ca.vertcat(
             ca.mtimes(J_quat, ca.vertcat(v, omega)),
             ca.mtimes(
                 M_body_inv,
@@ -172,13 +170,11 @@ class SymbolicModel:
             ),
         )
 
-        # Create model struct to collect all relevant components
-        self.model = {"vars": {"x": x, "u": u}, "dynamics": dynamics}
-
-        # Define explicit (continuous time) dynamics x_dot = f_expl(x,u,p)
-        self.f_expl = ca.Function("f_expl", [x, u], [dynamics], ["x", "u"], ["f"])
-
-        # Define integrator dynamics
-        self.f_int = ca.integrator(
-            "f_impl", "rk", {"x": x, "p": u, "ode": dynamics}, 0, 0.002, {"number_of_finite_elements": 1}
-        )
+        # Save everything to symbolic model object
+        self.x = x
+        self.xdot = x_dot
+        self.u = u
+        self.z = z
+        self.p = p
+        self.f_expl_expr = f_expl
+        self.f_impl_expr = x_dot - f_expl

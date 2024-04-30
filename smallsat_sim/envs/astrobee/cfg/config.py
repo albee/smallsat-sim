@@ -40,3 +40,15 @@ class EnvConfig(BaseEnvConfig):
                 Kd_x = 20.0
                 Kp_q = 1.0
                 Kd_q = 2.0
+
+        # Nominal MPC controller parameters
+        class NominalMPC:
+            # Decimate the controller frequency such that it doesn't
+            # run equally fast to the simulation discretization
+            control_decimation = 25
+
+            # Define MPC's horizon
+            N = 40
+
+            class cost:
+                pass
