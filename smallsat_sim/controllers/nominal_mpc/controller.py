@@ -21,6 +21,9 @@ class NominalMPCController(BaseController):
         # Generate solver
         self._generate_solver(env)
 
+        # Initialize solver
+        self._initialize_solver(env)
+
     def _generate_solver(self, env) -> None:
         # Create solver interface
         ocp = AcadosOcp()
@@ -82,8 +85,8 @@ class NominalMPCController(BaseController):
         ocp.dims.nsh = 0
 
         # set intial condition
+
         ocp.constraints.x0 = np.zeros(nx)
-        ocp.constraints.x0[2] = 10
         ocp.constraints.idxbx_0 = np.arange(nx)
         ocp.parameter_values = np.zeros(ocp.dims.np)
         # set QP solver and integration
@@ -106,12 +109,17 @@ class NominalMPCController(BaseController):
         # create solver with agent specific code files
         filename = os.path.join(save_dir, "acados_pacejka_mpcc_solver_config.json")
 
-        self.ocp_solver = AcadosOcpSolver.generate(ocp, json_file=filename)
+        self.ocp_solver = AcadosOcpSolver(ocp, json_file=filename)
 
         print("Solver generated successfully.")
+
+    def _initialize_solver(self, env: BaseEnv) -> np.ndarray:
+        xinit = 0
+        
+        [self.ocp_solver.set(i, "x", xinit) for i in range(self.ctrl_cfg.N+1)]
 
     def get_control_input(self, env: BaseEnv) -> np.ndarray:
         """
         Calculate the control input based on current obs
         """
-        
+        pass
