@@ -65,12 +65,15 @@ class NominalMPCController(BaseController):
         Q = 1e-3 * np.eye(3)
         R = 1e-3 * np.eye(12)
 
-        
         ocp.cost.cost_type = "EXTERNAL"
         ocp.cost.cost_type_e = "EXTERNAL"
         ocp.model.cost_expr_ext_cost = model.u.T @ R @ model.u
-        #ocp.model.cost_expr_ext_cost_e = model.x[0:3].T @ Q @ model.x[0:3]
-        ocp.model.cost_expr_ext_cost_e = (model.x[0]-xref)**2 + (model.x[1]-yref)**2 + (model.x[2]-zref)**2
+        # ocp.model.cost_expr_ext_cost_e = model.x[0:3].T @ Q @ model.x[0:3]
+        ocp.model.cost_expr_ext_cost_e = (
+            (model.x[0] - xref) ** 2
+            + (model.x[1] - yref) ** 2
+            + (model.x[2] - zref) ** 2
+        )
 
         # Setup OCP
         ocp.dims.nx = nx
@@ -86,7 +89,7 @@ class NominalMPCController(BaseController):
 
         # set intial condition
 
-        ocp.constraints.x0 = np.zeros(nx)
+        ocp.constraints.x0 = env.obs[0:13]
         ocp.constraints.idxbx_0 = np.arange(nx)
         ocp.parameter_values = np.zeros(ocp.dims.np)
         # set QP solver and integration
@@ -114,12 +117,17 @@ class NominalMPCController(BaseController):
         print("Solver generated successfully.")
 
     def _initialize_solver(self, env: BaseEnv) -> np.ndarray:
-        xinit = 0
-        
-        [self.ocp_solver.set(i, "x", xinit) for i in range(self.ctrl_cfg.N+1)]
+        xinit = env.obs[0:13]
+
+        [self.ocp_solver.set(i, "x", xinit) for i in range(self.ctrl_cfg.N + 1)]
 
     def get_control_input(self, env: BaseEnv) -> np.ndarray:
         """
         Calculate the control input based on current obs
         """
-        pass
+        ref_pos = self.planner.get_reference(env.obs).reshape(3, 1)
+        self.ocp_solver.set(self.ctrl_cfg.N, "p", ref_pos)
+        u0 = self.ocp_solver.solve_for_x0(env.obs[0:13])
+        print(f"Solved with status {self.ocp_solver.status}")
+
+        return u0
