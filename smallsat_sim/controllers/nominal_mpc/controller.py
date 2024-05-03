@@ -6,6 +6,7 @@ from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
 import numpy as np
 import os
 import casadi as ca
+import mujoco
 
 from casadi import SX, DM
 
@@ -23,6 +24,14 @@ class NominalMPCController(BaseController):
 
         # Initialize solver
         self._initialize_solver(env)
+
+        # Check if there is a viewer. In case there is not,
+        # dynamically allocate the visualize method to a lambda
+        # function doing nothing.
+        if env.viewer:
+            self.viewer = env.viewer
+        else:
+            self._visualize = lambda *args, **kwargs: None
 
     def _generate_solver(self, env) -> None:
         # Create solver interface
@@ -129,5 +138,26 @@ class NominalMPCController(BaseController):
         self.ocp_solver.set(self.ctrl_cfg.N, "p", ref_pos)
         u0 = self.ocp_solver.solve_for_x0(env.obs[0:13])
         print(f"Solved with status {self.ocp_solver.status}")
+        self._visualize()
 
         return u0
+    
+    def _visualize(self):
+        """
+        Plot predicted trajectory of MPC in MuJoCo viewer.
+        """
+        prediction = []
+        offset = self.viewer.user_scn.ngeom
+        for i in range(self.ctrl_cfg.N + 1):
+            point = self.ocp_solver.get(i, 'x')[0:3]
+            mujoco.mjv_initGeom(
+                self.viewer.user_scn.geoms[i + offset],
+                type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                size=[0.05, 0, 0],
+                pos=point,
+                mat=np.eye(3).flatten(),
+                rgba=np.array([0, 0, 1, 2]),
+            )
+            
+        self.viewer.user_scn.ngeom += (self.ctrl_cfg.N + 1)
+
