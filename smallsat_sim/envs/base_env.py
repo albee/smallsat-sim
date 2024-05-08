@@ -4,7 +4,9 @@ import mujoco.viewer
 
 from smallsat_sim.envs.dynamics import SymbolicModel
 from smallsat_sim.utils import xml_parser
+from smallsat_sim.utils.helpers import Rquat
 from smallsat_sim.envs.perturbations import PerturbationList
+
 
 from argparse import Namespace
 
@@ -56,10 +58,17 @@ class BaseEnv(object):
         """
         # obs = [r (3),
         #        q (4),
-        #        v (3),
+        #        v (3), --> in BODY frame
         #        omega (3)]
 
-        obs = np.concatenate((self.data.qpos, self.data.qvel))
+        # Convert current quaternion to rotation matrix
+        R = Rquat(self.data.qpos[3:])
+
+        # Rotate intertial velocity to body velocity
+        vel_body = R.T @ self.data.qvel[:3]
+
+        # Create array of observations
+        obs = np.concatenate((self.data.qpos, vel_body, self.data.qvel[3:]))
 
         return obs
 
