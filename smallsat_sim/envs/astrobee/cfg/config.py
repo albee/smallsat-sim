@@ -24,7 +24,7 @@ class EnvConfig(BaseEnvConfig):
         num_bodies = 1
         bodies_list = []
         for i in range(num_bodies):
-            bodies_list.append(Body(name=f"body{i}", pos=[i, 0, 10]))
+            bodies_list.append(Body(name=f"body{i}", pos=[0.0, -1.0, 10.5]))
 
     # Holds all information for the controller in use
     class control:
@@ -48,7 +48,7 @@ class EnvConfig(BaseEnvConfig):
             control_decimation = 25
 
             # Define MPC's horizon
-            N = 40
+            N = 80
 
             class cost:
                 pass
