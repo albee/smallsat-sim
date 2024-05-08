@@ -16,9 +16,14 @@ class SymbolicModel:
     """
 
     def __init__(self, cfg: dict) -> None:
+        """
+        Initialize the symbolic model using the given configuration.
+
+        Args:
+            cfg (dict): Configuration containing physical properties and thruster info.
+        """
         # Load physical properties
         props = cfg.pp
-
         self.mass = props.mass
         self.inertia = props.diag_inertia
         self.com_offset = props.com_offset
@@ -27,10 +32,8 @@ class SymbolicModel:
         self.thrusters = cfg.Thrusters
         self.nu = self.thrusters.n_thrusters
 
-        # Calculate mixer matrix
+        # Calculate mixer matrix and set up the CasADi model
         self._calc_mixer()
-
-        # Setup the CasADi model
         self._setup_model()
 
     def _calc_mixer(self) -> None:
@@ -50,7 +53,7 @@ class SymbolicModel:
             self.mixer[:, idx] = np.concatenate(
                 (
                     thruster.gear,
-                    np.cross(thruster.gear, thruster.pos),
+                    np.cross(thruster.pos, thruster.gear),
                 )
             )
 
@@ -148,6 +151,21 @@ class SymbolicModel:
         S = ca.skew(eps)
         R_quat = SX.eye(3) + 2 * eta * S + 2 * ca.mtimes(S, S)
 
+        c = ca.vertcat(
+            m * ca.mtimes([ca.skew(omega), ca.skew(omega), self.com_offset]),
+            ca.mtimes(
+                [
+                    ca.skew(omega),
+                    (
+                        I
+                        - m
+                        * ca.mtimes(ca.skew(self.com_offset), ca.skew(self.com_offset))
+                    ),
+                    omega,
+                ]
+            ),
+        )
+
         T_quat = SX(4, 3)
         T_quat = 0.5 * np.array(
             [
@@ -166,7 +184,7 @@ class SymbolicModel:
             ca.mtimes(J_quat, ca.vertcat(v, omega)),
             ca.mtimes(
                 M_body_inv,
-                -ca.mtimes(C_body, ca.vertcat(v, omega)) + ca.mtimes(DM(self.mixer), u),
+                -c + ca.mtimes(DM(self.mixer), u),
             ),
         )
 
