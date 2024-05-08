@@ -213,7 +213,7 @@ def generate_mujoco_xml(env_config, model_config):
     # Generates the free-floating bodiesin the simulation
     if model_config.name == "astrobee":
         for body in bodies.bodies_list:
-            xml_content += f"""         <body name='{body.name}' pos='{xmlify(body.pos)}' quat='{xmlify(body.quat)}'>
+            xml_content += f"""         <body name='{body.name}' pos='{xmlify(body.pos)}' euler='{xmlify(body.euler)}'>
             <freejoint/>
             <!Inertial properties are have been taken from Astrobee repo>
             <!(https://github.com/nasa/astrobee/blob/master/astrobee/config/worlds/iss.config)>
@@ -255,7 +255,7 @@ def generate_mujoco_xml(env_config, model_config):
     else:
         # Define all free floating bodies
         for body in bodies.bodies_list:
-            xml_content += f"        <body name='{body.name}' pos='{xmlify(body.pos)}' quat='{xmlify(body.quat)}'>\n"
+            xml_content += f"        <body name='{body.name}' pos='{xmlify(body.pos)}' euler='{xmlify(body.euler)}'>\n"
             xml_content += f"""            <freejoint/>
             <!Inertial properties are calculated from box with 3U dimensions and density 1000kg/m3>
             <inertial pos="{xmlify(props.com_offset)}" mass="{props.mass}" diaginertia="{xmlify(props.diag_inertia)}"/>
@@ -285,7 +285,7 @@ def generate_mujoco_xml(env_config, model_config):
                     gear="{xmlify(thruster.gear)}"
                     forcerange="{xmlify(thruster.forcerange)}"
                     ctrlrange="{xmlify(thruster.ctrlrange)}"
-                    forcelimited="{thruster.forcelimited}"
+                    forcelimited="true"
                 />
 """
     xml_content += "    </actuator>\n"

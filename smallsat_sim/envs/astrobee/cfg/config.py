@@ -1,10 +1,10 @@
 from smallsat_sim.envs.base_env_config import BaseEnvConfig
 
 class Body:
-    def __init__(self, name, pos=[0, 0, 0], quat=[1, 0, 0, 0]) -> None:
+    def __init__(self, name, pos=[0, 0, 0], euler=[0, 0, 0]) -> None:
         self.name = name
         self.pos = pos
-        self.quat = quat
+        self.euler = euler
 
 
 class EnvConfig(BaseEnvConfig):
