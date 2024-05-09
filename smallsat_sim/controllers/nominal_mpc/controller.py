@@ -63,12 +63,11 @@ class NominalMPCController(BaseController):
         # Define and assign cost functions
         Q = self.ctrl_cfg.cost.Q
         R = self.ctrl_cfg.cost.R
+        Q_e = self.ctrl_cfg.cost.Q_e
         ocp.cost.cost_type = "EXTERNAL"
         ocp.cost.cost_type_e = "EXTERNAL"
-        ocp.model.cost_expr_ext_cost = (
-            model.u.T @ R @ model.u + 1e-2 * model.x[10:13].T @ Q @ model.x[10:13]
-        )
-        ocp.model.cost_expr_ext_cost_e = (model.x[0:3] - p).T @ Q @ (model.x[0:3] - p)
+        ocp.model.cost_expr_ext_cost = model.u.T @ R @ model.u + model.x.T @ Q @ model.x
+        ocp.model.cost_expr_ext_cost_e = (model.x[0:3] - p).T @ Q_e @ (model.x[0:3] - p)
 
         # Set OCP dimensions
         nx = model.x.size()[0]

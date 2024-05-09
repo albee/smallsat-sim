@@ -55,5 +55,14 @@ class EnvConfig(BaseEnvConfig):
             N = 80
 
             class cost:
-                Q = np.eye(3)
+                # Intermediate quadratic cost on state
+                Q = np.zeros((13,13))
+                Q[10,10] = 1e-2
+                Q[11,11] = 1e-2
+                Q[12,12] = 1e-2
+
+                # Intermediate cost on input
                 R = 1e-3 * np.eye(12)
+
+                # Terminal quadratic cost on position
+                Q_e = np.eye(3)
