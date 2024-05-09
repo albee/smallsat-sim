@@ -55,14 +55,14 @@ class NominalMPCController(BaseController):
         acados_model.name = "OCPsolver"
 
         # Assign parameters and model
-        Ts = 0.05
+        Ts = self.ctrl_cfg.Ts
         p = ca.vertcat(SX.sym("xref"), SX.sym("yref"), SX.sym("zref"))
         acados_model.p = p
         ocp.model = acados_model
 
         # Define and assign cost functions
-        Q = SX.eye(3)
-        R = 1e-3 * SX.eye(12)
+        Q = self.ctrl_cfg.cost.Q
+        R = self.ctrl_cfg.cost.R
         ocp.cost.cost_type = "EXTERNAL"
         ocp.cost.cost_type_e = "EXTERNAL"
         ocp.model.cost_expr_ext_cost = (

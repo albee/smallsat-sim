@@ -1,5 +1,8 @@
 from smallsat_sim.envs.base_env_config import BaseEnvConfig
 
+import numpy as np
+
+
 class Body:
     def __init__(self, name, pos=[0, 0, 0], euler=[0, 0, 0]) -> None:
         self.name = name
@@ -46,9 +49,11 @@ class EnvConfig(BaseEnvConfig):
             # Decimate the controller frequency such that it doesn't
             # run equally fast to the simulation discretization
             control_decimation = 25
+            Ts = BaseEnvConfig.sim.dt * control_decimation
 
             # Define MPC's horizon
             N = 80
 
             class cost:
-                pass
+                Q = np.eye(3)
+                R = 1e-3 * np.eye(12)
