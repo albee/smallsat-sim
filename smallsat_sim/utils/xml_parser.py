@@ -248,10 +248,10 @@ def generate_mujoco_xml(env_config, model_config):
             <geom mesh="astrobee_27" material="Material_002" class="visual"/>
             <geom mesh="astrobee_28" material="Material_019" class="visual"/>
             <geom type="box" size="0.16 0.16 0.16" class="collision"/>\n"""
-        for thruster in thrusters.thruster_list:
-            xml_content += f"            <site name='{thruster.site}' pos='{xmlify(thruster.pos)}' size='{thruster.size}'/>\n"
-    
-        xml_content += "        </body>\n"
+            for thruster in thrusters.thruster_list:
+                xml_content += f"            <site name='{body.name}_{thruster.site}' pos='{xmlify(thruster.pos)}' size='{thruster.size}'/>\n"
+        
+            xml_content += "        </body>\n"
     else:
         # Define all free floating bodies
         for body in bodies.bodies_list:
@@ -266,11 +266,8 @@ def generate_mujoco_xml(env_config, model_config):
                 else:
                     xml_content += f"            <geom type='{geom.type}' size='{xmlify(geom.size)}' pos='{xmlify(geom.pos)}' euler='{xmlify(geom.euler)}'/>\n"
             for thruster in thrusters.thruster_list:
-                xml_content += f"            <site name='{thruster.site}' pos='{xmlify(thruster.pos)}' size='{thruster.size}'/>\n"
-            # for thruster_name, thruster_obj in vars(thrusters).items():
-            #     if isinstance(thruster_obj, Thruster):
-            #         xml_content += f"            <site name='{thruster_obj.site}' pos='{thruster_obj.pos}' size='{thruster_obj.size}'/>\n"
-            xml_content += "        </body>\n"
+                xml_content += f"            <site name='{body.name}_{thruster.site}' pos='{xmlify(thruster.pos)}' size='{thruster.size}'/>\n"
+                xml_content += "        </body>\n"
 
     xml_content += """    </worldbody>
 """
@@ -278,15 +275,17 @@ def generate_mujoco_xml(env_config, model_config):
 """
     xml_content += """    <actuator>
 """
-    # Create thruster sites (these do not need to be duplicated for each body)
-    for thruster in thrusters.thruster_list:
-        xml_content += f"""        <general name="{thruster.name}"
-                    site="{thruster.site}"
-                    gear="{xmlify(thruster.gear)}"
-                    forcerange="{xmlify(thruster.forcerange)}"
-                    ctrlrange="{xmlify(thruster.ctrlrange)}"
-                    forcelimited="{thruster.forcelimited}"
-                />
+    for body in bodies.bodies_list:
+        # Create thruster sites
+        for thruster in thrusters.thruster_list:
+            unique_site_name = f"{body.name}_{thruster.site}"
+            xml_content += f"""        <general name="{body.name}_{thruster.name}"
+                        site="{unique_site_name}"
+                        gear="{xmlify(thruster.gear)}"
+                        forcerange="{xmlify(thruster.forcerange)}"
+                        ctrlrange="{xmlify(thruster.ctrlrange)}"
+                        forcelimited="{thruster.forcelimited}"
+                    />
 """
     xml_content += "    </actuator>\n"
     xml_content += "</mujoco>"
