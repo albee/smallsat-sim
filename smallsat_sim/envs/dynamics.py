@@ -16,21 +16,24 @@ class SymbolicModel:
     """
 
     def __init__(self, cfg: dict) -> None:
+        """
+        Initialize the symbolic model using the given configuration.
+
+        Args:
+            cfg (dict): Configuration containing physical properties and thruster info.
+        """
         # Load physical properties
         props = cfg.pp
-
         self.mass = props.mass
         self.inertia = props.diag_inertia
         self.com_offset = props.com_offset
-        
+
         # Load thruster information
         self.thrusters = cfg.Thrusters
         self.nu = self.thrusters.n_thrusters
 
-        # Calculate mixer matrix
+        # Calculate mixer matrix and set up the CasADi model
         self._calc_mixer()
-
-        # Setup the CasADi model
         self._setup_model()
 
     def _calc_mixer(self) -> None:
@@ -50,7 +53,7 @@ class SymbolicModel:
             self.mixer[:, idx] = np.concatenate(
                 (
                     thruster.gear,
-                    np.cross(thruster.gear, thruster.pos),
+                    np.cross(thruster.pos, thruster.gear),
                 )
             )
 
@@ -58,81 +61,48 @@ class SymbolicModel:
         """
         Sets up the symbolic model for integration and generation of solvers in CasADi
         """
-        # CasADi: states
-        # r = [rx,ry,rz]': position vector
-        rx, ry, rz = SX.sym("rx"), SX.sym("ry"), SX.sym("rz")
-        r = ca.vertcat(rx, ry, rz)
-
-        # q = [eta,eps1,eps2,eps3]': quaternion
-        eta, eps1, eps2, eps3 = (
-            SX.sym("eta"),
-            SX.sym("eps1"),
-            SX.sym("eps2"),
-            SX.sym("eps3"),
+        # Create state and input symbols
+        r = ca.vertcat(*[SX.sym(name) for name in ["rx", "ry", "rz"]])
+        q = ca.vertcat(*[SX.sym(name) for name in ["eta", "eps1", "eps2", "eps3"]])
+        v = ca.vertcat(*[SX.sym(name) for name in ["vx", "vy", "vz"]])
+        omega = ca.vertcat(
+            *[SX.sym(name) for name in ["omega_x", "omega_y", "omega_z"]]
         )
-        q = ca.vertcat(eta, eps1, eps2, eps3)
-        eps = ca.vertcat(eps1, eps2, eps3)
-
-        # v = [vx,vy,vz]': velocity vector
-        vx, vy, vz = SX.sym("vx"), SX.sym("vy"), SX.sym("vz")
-        v = ca.vertcat(vx, vy, vz)
-
-        # omega = [omega_x,omega_y,omega_z]': angular velocity vector
-        omega_x, omega_y, omega_z = (
-            SX.sym("omega_x"),
-            SX.sym("omega_y"),
-            SX.sym("omega_z"),
-        )
-        omega = ca.vertcat(omega_x, omega_y, omega_z)
-
-        # x = [r,q,v,omega]': full state vector
         x = ca.vertcat(r, q, v, omega)
-
-        # CasADi: inputs
-        Fx, Fy, Fz = SX.sym("Fx"), SX.sym("Fy"), SX.sym("Fz")
-        F = ca.vertcat(Fx, Fy, Fz)
-
-        Tx, Ty, Tz = SX.sym("Tx"), SX.sym("Ty"), SX.sym("Tz")
-        T = ca.vertcat(Tx, Ty, Tz)
-
         u = SX.sym("u", self.nu)  # Thruster inputs
-        d = SX.sym("d", 6)
 
-        # Casadi: derivatives
-        rx_dot = SX.sym("rx_dot")
-        ry_dot = SX.sym("ry_dot")
-        rz_dot = SX.sym("rz_dot")
-        r_dot = ca.vertcat(rx_dot, ry_dot, rz_dot)
-
-        eta_dot = SX.sym("eta_dot")
-        eps1_dot = SX.sym("eps1_dot")
-        eps2_dot = SX.sym("eps2_dot")
-        eps3_dot = SX.sym("eps3_dot")
-        q_dot = ca.vertcat(eta_dot, eps1_dot, eps2_dot, eps3_dot)
-
-        vx_dot = SX.sym("vx_dot")
-        vy_dot = SX.sym("vy_dot")
-        vz_dot = SX.sym("vz_dot")
-        v_dot = ca.vertcat(vx_dot, vy_dot, vz_dot)
-
-        omega_x_dot = SX.sym("omega_x_dot")
-        omega_y_dot = SX.sym("omega_y_dot")
-        omega_z_dot = SX.sym("omega_z_dot")
-        omega_dot = ca.vertcat(omega_x_dot, omega_y_dot, omega_z_dot)
-
+        # Create derivative symbols for each state
+        r_dot = ca.vertcat(
+            *[SX.sym(f"{name}_dot") for name in ["rx_dot", "ry_dot", "rz_dot"]]
+        )
+        q_dot = ca.vertcat(
+            *[
+                SX.sym(f"{name}_dot")
+                for name in ["eta_dot", "eps1_dot", "eps2_dot", "eps3_dot"]
+            ]
+        )
+        v_dot = ca.vertcat(
+            *[SX.sym(f"{name}_dot") for name in ["vx_dot", "vy_dot", "vz_dot"]]
+        )
+        omega_dot = ca.vertcat(
+            *[
+                SX.sym(f"{name}_dot")
+                for name in ["omega_x_dot", "omega_y_dot", "omega_z_dot"]
+            ]
+        )
         x_dot = ca.vertcat(r_dot, q_dot, v_dot, omega_dot)
 
-        # Casadi: parameters
+        # Initialize CasADi parameter and algebraic symbols
+        z = ca.vertcat([])  # Empty since not used
+        p = ca.vertcat([])  # Empty by default, can be adjusted later on
+
+        # Mass matrix setup
         m = self.mass
         I = SX(3, 3)
-        I = np.diag(self.inertia)
+        I[0:3, 0:3] = np.diag(self.inertia)
         M_com = SX(6, 6)  # Full inertia matrix (6x6)
         M_com[0:3, 0:3] = m * SX.eye(3)
         M_com[3:6, 3:6] = I
-
-        C_com = SX(6, 6)  # Coriolis matrix (6x6)
-        C_com[0:3, 0:3] = m * ca.skew(omega)
-        C_com[3:6, 3:6] = -ca.skew(ca.mtimes(I, omega))
 
         # System transformation matrix from CG to CO
         # CG = Center of Gravity, CO = Center origin (body frame)
@@ -144,41 +114,57 @@ class SymbolicModel:
         # Transform system matrices to body frame by similarity transformation
         M_body = ca.mtimes(ca.mtimes(ca.transpose(H), M_com), H)
         M_body_inv = ca.solve(M_body, SX.eye(M_body.size1()))
-        C_body = ca.mtimes(ca.mtimes(ca.transpose(H), C_com), H)
 
-        R_quat = SX(3, 3)
+        # Rotation matrix from quaternion
+        eta, eps = q[0], q[1:4]
         S = ca.skew(eps)
         R_quat = SX.eye(3) + 2 * eta * S + 2 * ca.mtimes(S, S)
 
-        T_quat = SX(4, 3)
+        # Quaternion kinematics transformation
         T_quat = 0.5 * np.array(
             [
-                [-eps1, -eps2, -eps3],
-                [eta, -eps3, eps2],
-                [eps3, eta, -eps1],
-                [-eps2, eps1, eta],
+                [-eps[0], -eps[1], -eps[2]],
+                [eta, -eps[2], eps[1]],
+                [eps[2], eta, -eps[0]],
+                [-eps[1], eps[0], eta],
             ]
         )
 
+        # System Jacobian
         J_quat = SX(7, 6)
         J_quat[0:3, 0:3] = R_quat
         J_quat[3:7, 3:6] = T_quat
 
-        dynamics = ca.vertcat(
-            ca.mtimes(J_quat, ca.vertcat(v, omega)),
+        # Coriolis effect in body frame
+        c = ca.vertcat(
+            m * ca.mtimes([ca.skew(omega), ca.skew(omega), self.com_offset]),
             ca.mtimes(
-                M_body_inv,
-                -ca.mtimes(C_body, ca.vertcat(v, omega)) + ca.mtimes(DM(self.mixer), u),
+                [
+                    ca.skew(omega),
+                    (
+                        I
+                        - m
+                        * ca.mtimes(ca.skew(self.com_offset), ca.skew(self.com_offset))
+                    ),
+                    omega,
+                ]
             ),
         )
 
-        # Create model struct to collect all relevant components
-        self.model = {"vars": {"x": x, "u": u}, "dynamics": dynamics}
-
-        # Define explicit (continuous time) dynamics x_dot = f_expl(x,u,p)
-        self.f_expl = ca.Function("f_expl", [x, u], [dynamics], ["x", "u"], ["f"])
-
-        # Define integrator dynamics
-        self.f_int = ca.integrator(
-            "f_impl", "rk", {"x": x, "p": u, "ode": dynamics}, 0, 0.002, {"number_of_finite_elements": 1}
+        # State space equations
+        f_expl = ca.vertcat(
+            ca.mtimes(J_quat, ca.vertcat(v, omega)),
+            ca.mtimes(
+                M_body_inv,
+                -c + ca.mtimes(DM(self.mixer), u),
+            ),
         )
+
+        # Save everything to symbolic model object
+        self.x = x
+        self.xdot = x_dot
+        self.u = u
+        self.z = z
+        self.p = p
+        self.f_expl_expr = f_expl
+        self.f_impl_expr = x_dot - f_expl

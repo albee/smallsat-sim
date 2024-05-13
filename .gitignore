@@ -12,3 +12,6 @@ __pycache__/
 
 # os specific files
 .DS_Store
+
+# generated acados code
+c_generated_code/
