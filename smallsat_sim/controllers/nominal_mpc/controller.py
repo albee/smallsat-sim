@@ -12,6 +12,14 @@ from casadi import SX
 
 
 class NominalMPCController(BaseController):
+    """
+    This class implements a nominal MPC controller based on acados.
+    More specifically. this is a positional tracking controller,
+    taking waypoints from some external planner module.
+
+    See acados documentation for details:
+    https://docs.acados.org/
+    """
     def __init__(self, env, planner) -> None:
         # Fetch correct controller config
         self.ctrl_cfg = env.env_cfg.control.NominalMPC
@@ -70,14 +78,15 @@ class NominalMPCController(BaseController):
         ocp.model.cost_expr_ext_cost_e = (model.x[0:3] - p).T @ Q_e @ (model.x[0:3] - p)
 
         # Set OCP dimensions
-        nx = model.x.size()[0]
-        nu = model.u.size()[0]
+        nx = model.x.size()[0] # number of states
+        nu = model.u.size()[0] # number of inputs
         ocp.dims.nx = nx
         ocp.dims.nu = nu
-        ocp.dims.np = p.size()[0]
-        ocp.dims.N = self.ctrl_cfg.N
+        ocp.dims.np = p.size()[0] # number of parameters
+        ocp.dims.N = self.ctrl_cfg.N # prediction horizon length
 
         # Define state constraints
+        # Lower and Upper bound constraints for intermediate stages
         ocp.constraints.lbx = np.array(
             [-100, -100, -100, -1.1, -1, -1, -1, -1, -1, -1, -0.5, -0.5, -0.5]
         )
@@ -86,6 +95,7 @@ class NominalMPCController(BaseController):
         )
         ocp.constraints.idxbx = np.arange(nx)
 
+        # Lower and Upper bound constraints for final stage of horizon (terminal cost)
         ocp.constraints.lbx_e = np.array(
             [-100, -100, -100, -1.1, -1, -1, -1, -1, -1, -1, -0.5, -0.5, -0.5]
         )
@@ -95,6 +105,7 @@ class NominalMPCController(BaseController):
         ocp.constraints.idxbx_e = np.arange(nx)
 
         # Define input constraints
+        # Fetch thurster limits from the model configuration
         thruster_forces = [
             thruster.forcerange for thruster in env.model_cfg.Thrusters.thruster_list
         ]
@@ -130,6 +141,9 @@ class NominalMPCController(BaseController):
         print("Solver generated successfully.")
 
     def _initialize_solver(self, env: BaseEnv) -> np.ndarray:
+        """
+        Initializes the solver. Also known as "warm start".
+        """
         xinit = env.obs[0:13]
 
         [self.ocp_solver.set(i, "x", xinit) for i in range(self.ctrl_cfg.N + 1)]
