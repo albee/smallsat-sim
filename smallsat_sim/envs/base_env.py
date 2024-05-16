@@ -61,8 +61,8 @@ class BaseEnv(object):
         #        v (3), --> in BODY frame
         #        omega (3)]
 
-        # Convert current quaternion to rotation matrix
-        R = Rquat(self.data.qpos[3:])
+        # Retrieve current rotation matrix
+        R = np.reshape(self.data.body('body0').xmat, (3,3))
 
         # Rotate intertial velocity to body velocity
         vel_body = R.T @ self.data.qvel[:3]
