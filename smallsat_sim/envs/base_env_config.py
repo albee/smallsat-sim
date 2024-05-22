@@ -8,3 +8,6 @@ class BaseEnvConfig:
     class viewer:
         # Standard viewer rendering @50Hz
         viewer_decimation = 10
+
+    class sim:
+        dt = 1/500 # simulation runs @500Hz
