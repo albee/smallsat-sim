@@ -2,6 +2,7 @@ from smallsat_sim.controllers.base_controller import BaseController
 
 import gpytorch
 import numpy as np
+import torch
 
 
 class GPMPC(BaseController):
@@ -33,9 +34,41 @@ class GPMPC(BaseController):
         # Initialize covariance module
         self.covar = gpytorch.kernels.RBFKernel()
 
+        # Initialize empty feature tensor (z)
+        self.z = torch.empty((0,22), dtype=torch.float32)
+
+        # Initialize empty ouput tensor (y)
+        self.y = torch.empty((0,13), dtype=torch.float32)
+
     def get_control_input(self, env) -> np.ndarray:
         """
         Calculate the control input based on current observation
         """
         
         return np.random.uniform(0,0.6,(12,))
+    
+    def _obs_to_features(self, env) -> torch.Tensor:
+        """
+        Converts the environment observations to features used
+        for Gaussian Process Regression
+        """
+
+        pass
+
+    def _calc_outputs(self, env) -> torch.Tensor:
+        """
+        Calculates the output data y which is necessary for training
+        the GP appropriately.
+
+        y_k = B_d^(-1) (x_{k+1} - f(x_k,u_k))
+        """
+
+        pass
+
+    def _add_training_point(self, env) -> None:
+        """
+        Add a feature and its corresponding output to the list of 
+        points used for the GP.
+        """
+
+        pass
