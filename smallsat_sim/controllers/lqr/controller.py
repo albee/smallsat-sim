@@ -4,7 +4,7 @@ from smallsat_sim.envs.base_env import BaseEnv
 import numpy as np
 import casadi as ca
 
-from scipy.linalg import solve_discrete_are
+from scipy.linalg import solve_discrete_are, solve_continuous_are, expm
 
 
 class LQRController(BaseController):
@@ -27,6 +27,9 @@ class LQRController(BaseController):
         else:
             self._visualize = lambda *args, **kwargs: None
 
+        # Compute the steady-state LQR gain
+        self.K = self.get_ss_lqr_gain(env)
+
 
     def get_ss_lqr_gain(self, env: BaseEnv) -> np.ndarray:
         """
@@ -42,6 +45,10 @@ class LQRController(BaseController):
         # Define the operating point
         x_s = ca.SX.zeros(model.x.shape[0], 1)
         x_s[3] = 1.0
+        x_s[10] = 0.5
+        x_s[11] = 0.6
+        x_s[12] = 0.2
+        x_s = ca.SX(env.obs[0:13])
         u_s = ca.SX.zeros(model.u.shape[0], 1)
 
         # Linearize the model around the operating point
@@ -64,6 +71,10 @@ class LQRController(BaseController):
         Q = self.ctrl_cfg.cost.Q
         R = self.ctrl_cfg.cost.R
 
+        # Discretize the system
+        A = np.eye(A.shape[0]) + A * 0.5
+        B = B * 0.5
+
         # Solve the DARE
         P = solve_discrete_are(A, B, Q, R)
 
@@ -73,7 +84,6 @@ class LQRController(BaseController):
         return K
 
         
-
     def get_control_input(self, env: BaseEnv) -> np.ndarray:
         """
         Calculate the control input based on current observation.
@@ -82,10 +92,7 @@ class LQRController(BaseController):
         # Get current state
         x = env.obs[0:13]
 
-        # Get the LQR gain
-        K = self.get_ss_lqr_gain(env) # Not necessary to compute it every time (move the function to dynamics.py)
-
         # Compute optimal control signal
-        uopt = - K @ x # Penalize the diff. with x_s instead
+        uopt = - self.K @ x # Penalize the diff. with x_s instead
 
         return uopt
