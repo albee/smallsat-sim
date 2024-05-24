@@ -160,7 +160,7 @@ class SymbolicModel:
             ),
         )
 
-        # Save everything to symbolic model object
+        # Save everything to symbolic model object (for MPC generation)
         self.x = x
         self.xdot = x_dot
         self.u = u
@@ -168,3 +168,22 @@ class SymbolicModel:
         self.p = p
         self.f_expl_expr = f_expl
         self.f_impl_expr = x_dot - f_expl
+
+        # Create some utils
+        self.f_expl_expr_func = ca.Function('f_expl_expr_func', [x, u], [f_expl])
+
+    def integrate(self, x, u) -> np.ndarray:
+        """
+        Propagates the system dynamics for a given state and input
+        """
+        return self.f_int(x,[], u, [], [], [], [])[0].toarray()
+    
+    def get_integrator(self, dt: float):
+        """
+        Method which creates an integrator if needed by a control algorithm.
+        """
+        self.f_int = ca.integrator(
+            "f_int", "rk", {"x": self.x, "p": self.u, "ode": self.f_expl_expr}, 0, dt, {"number_of_finite_elements": 1}
+        )
+
+        return self.integrate
