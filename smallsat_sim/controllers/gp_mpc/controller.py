@@ -39,7 +39,7 @@ class GPMPC(BaseController):
         self.covar = gpytorch.kernels.RBFKernel()
 
         # Initialize empty feature tensor (z)
-        z = torch.empty((0, 6), dtype=torch.float32)
+        z = torch.empty((0, 18), dtype=torch.float32)
 
         # Initialize empty ouput tensor (y)
         y = torch.empty((0, 6), dtype=torch.float32)
@@ -89,8 +89,8 @@ class GPMPC(BaseController):
 
         [r,q,v,w] -> [v,w]
         """
-
-        return torch.from_numpy(obs[7:]).unsqueeze(0)
+        
+        return torch.from_numpy(np.concatenate((self.x_past[7:], self.u_past))).unsqueeze(0)
 
     def _calc_outputs(self, obs) -> torch.Tensor:
         """
@@ -146,3 +146,6 @@ class GPMPC(BaseController):
             self.dict["z"] = torch.cat((self.dict["z"], z_k), dim=0)
             self.dict["y"] = torch.cat((self.dict["y"], y_k), dim=0)
             self.dict["t"].append(timestamp)
+
+        # Update Gaussian Process
+
