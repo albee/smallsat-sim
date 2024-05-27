@@ -5,6 +5,23 @@ import numpy as np
 import torch
 
 
+class GP(gpytorch.models.ExactGP):
+    def __init__(self, train_x, train_y, likelihood):
+        super(GP, self).__init__(train_x, train_y, likelihood)
+        self.mean_module = gpytorch.means.ConstantMean(batch_shape=torch.Size([6]))
+        self.covar_module = gpytorch.kernels.ScaleKernel(
+            gpytorch.kernels.RBFKernel(batch_shape=torch.Size([6])),
+            batch_shape=torch.Size([6]),
+        )
+
+    def forward(self, x):
+        mean_x = self.mean_module(x)
+        covar_x = self.covar_module(x)
+        return gpytorch.distributions.MultitaskMultivariateNormal.from_batch_mvn(
+            gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
+        )
+
+
 class GPMPC(BaseController):
     """
     This class implements a GP MPC controller based on GPyTorch and acados.
@@ -32,11 +49,8 @@ class GPMPC(BaseController):
         """
         Initializes all needed quantaties for the Gaussian Process
         """
-        # Initialize mean module
-        self.mean = gpytorch.means.ConstantMean()
-
-        # Initialize covariance module
-        self.covar = gpytorch.kernels.RBFKernel()
+        # Create the GP
+        self._create_gp()
 
         # Initialize empty feature tensor (z)
         z = torch.empty((0, 18), dtype=torch.float32)
@@ -62,6 +76,15 @@ class GPMPC(BaseController):
         # Initialize some hyperparameters for GP
         # TODO: Move to configuration file
         self.M = 300  # number of points in list
+        self.gp_update_counter = 0  # Keep track how many times dict has been updated
+        self.gp_initialized = False  # Keep track if GP is already initialized
+
+    def _create_gp(self) -> None:
+        # Initialize mean module
+        self.mean = gpytorch.means.ConstantMean()
+
+        # Initialize covariance module
+        self.covar = gpytorch.kernels.RBFKernel()
 
     def get_control_input(self, env) -> np.ndarray:
         """
@@ -89,8 +112,10 @@ class GPMPC(BaseController):
 
         [r,q,v,w] -> [v,w]
         """
-        
-        return torch.from_numpy(np.concatenate((self.x_past[7:], self.u_past))).unsqueeze(0)
+
+        return torch.from_numpy(
+            np.concatenate((self.x_past[7:], self.u_past))
+        ).unsqueeze(0)
 
     def _calc_outputs(self, obs) -> torch.Tensor:
         """
@@ -132,6 +157,19 @@ class GPMPC(BaseController):
         y_k = self._calc_outputs(obs)
 
         if len(self.dict["t"]) == self.M:
+            # Train GP first time dict is full
+            if not self.gp_initialized:
+                self.likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(
+                    num_tasks=6
+                )
+                self.gp = GP(
+                    train_x=self.dict["z"],
+                    train_y=self.dict["y"],
+                    likelihood=self.likelihood,
+                )
+                self._train_gp(self.gp)
+                self.gp_initialized = True
+
             # Identify oldest element
             oldest_idx = self.dict["t"].index(min(self.dict["t"]))
 
@@ -139,6 +177,16 @@ class GPMPC(BaseController):
             self.dict["z"][oldest_idx, :] = z_k
             self.dict["y"][oldest_idx, :] = y_k
             self.dict["t"][oldest_idx] = timestamp
+
+            # Replace data in GP
+            self.gp.set_train_data(inputs=self.dict["z"], targets=self.dict["y"])
+
+            self.gp_update_counter += 1
+
+            # Retrain hyperparameter every 100 updates
+            if self.gp_update_counter == 100:
+                self._train_gp(self.gp)
+                self.gp_update_counter = 0
 
         else:
             # Append to current data
@@ -149,3 +197,24 @@ class GPMPC(BaseController):
 
         # Update Gaussian Process
 
+    def _train_gp(self, gp: GP) -> None:
+        # Set opimizer
+        optimizer = torch.optim.Adam(
+            gp.parameters(), lr=0.1
+        )  # Includes GaussianLikelihood parameters
+        mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, gp)
+
+        self.gp.train()
+        self.likelihood.train()
+
+        training_steps = 50
+        for i in range(training_steps):
+            # Zero gradients from previous iteration
+            optimizer.zero_grad(training_steps)
+            # Output from model
+            output = gp(self.dict["z"])
+            # Calc loss and backprop gradients
+            loss = -mll(output, self.dict["y"])
+            loss.backward()
+            print("Iter %d/%d - Loss: %.3f" % (i + 1, i, loss.item()))
+            optimizer.step()
