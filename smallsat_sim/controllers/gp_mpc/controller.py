@@ -10,7 +10,7 @@ class GP(gpytorch.models.ExactGP):
         super(GP, self).__init__(train_x, train_y, likelihood)
         self.mean_module = gpytorch.means.ConstantMean(batch_shape=torch.Size([6]))
         self.covar_module = gpytorch.kernels.ScaleKernel(
-            gpytorch.kernels.RBFKernel(batch_shape=torch.Size([6])),
+            gpytorch.kernels.RBFKernel(batch_shape=torch.Size([6]), ard_num_dims=18),
             batch_shape=torch.Size([6]),
         )
 
@@ -66,7 +66,7 @@ class GPMPC(BaseController):
 
         # Initialize subspace matrix B_d
         # Shape: (nx, 6)
-        self.B_d = torch.cat((torch.zeros(7, 6), torch.eye(6))).to(torch.float64)
+        self.B_d = torch.cat((torch.zeros(7, 6), torch.eye(6))).to(torch.float32)
         self.B_d_inv = torch.linalg.pinv(self.B_d)
 
         # Initialize buffers to keep track of past state and input
@@ -98,8 +98,10 @@ class GPMPC(BaseController):
         # Check if GP needs to be updated
         self._update_gp(obs, timestamp)
 
+        # Record error statistics
+        self._record_stats(obs, timestamp)
+
         u = np.random.uniform(0, 0.3, (12,))
-        # u = np.array([0.3,0.3])
 
         self.x_past, self.u_past = obs, u
 
@@ -115,7 +117,7 @@ class GPMPC(BaseController):
 
         return torch.from_numpy(
             np.concatenate((self.x_past[7:], self.u_past))
-        ).unsqueeze(0)
+        ).unsqueeze(0).to(torch.float32)
 
     def _calc_outputs(self, obs) -> torch.Tensor:
         """
@@ -124,9 +126,11 @@ class GPMPC(BaseController):
 
         y_k = B_d^(-1) (x_{k+1} - f(x_k,u_k))
         """
-        model_error = torch.from_numpy(
-            obs - self.f_int(self.x_past, self.u_past).squeeze(-1)
-        ).unsqueeze(-1)
+        model_error = (
+            torch.from_numpy(obs - self.f_int(self.x_past, self.u_past).squeeze(-1))
+            .to(torch.float32)
+            .unsqueeze(-1)
+        )
 
         return (self.B_d_inv @ model_error).T
 
@@ -207,7 +211,7 @@ class GPMPC(BaseController):
         self.gp.train()
         self.likelihood.train()
 
-        training_steps = 50
+        training_steps = 100
         for i in range(training_steps):
             # Zero gradients from previous iteration
             optimizer.zero_grad(training_steps)
@@ -218,3 +222,40 @@ class GPMPC(BaseController):
             loss.backward()
             print("Iter %d/%d - Loss: %.3f" % (i + 1, i, loss.item()))
             optimizer.step()
+
+    def _record_stats(self, obs, timestamp) -> None:
+        """
+        Record error statistics of the GP
+        Can be used for plotting and printing
+        """
+        if self.gp_initialized:
+            # Calculate nominal model error
+            e_nom = np.linalg.norm(
+                obs - self.f_int(self.x_past, self.u_past).squeeze(-1)
+            )
+
+            # Calculate GP error
+            self.gp.eval()
+            self.likelihood.eval()
+
+            with torch.no_grad(), gpytorch.settings.fast_pred_var():
+                features = self._obs_to_features(obs)
+                prediction = self.likelihood(self.gp(features))
+                mean = prediction.mean
+
+            e_gp = np.linalg.norm(
+                (
+                    obs
+                    - self.f_int(self.x_past, self.u_past).squeeze(-1)
+                    - torch.matmul(
+                        self.B_d,
+                        mean.T,
+                    )
+                    .squeeze(-1)
+                    .detach()
+                    .numpy()
+                )
+            )
+
+            print(f"Nominal model error: {e_nom}")
+            print(f"Corrected model error: {e_gp}")
