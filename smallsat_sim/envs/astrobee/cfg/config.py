@@ -3,10 +3,10 @@ import numpy as np
 
 
 class Body:
-    def __init__(self, name, pos=[0, 0, 0], quat=[1, 0, 0, 0]) -> None:
+    def __init__(self, name, pos=[0, 0, 0], euler=[0, 0, 0]) -> None:
         self.name = name
         self.pos = pos
-        self.quat = quat
+        self.euler = euler
 
 
 class EnvConfig(BaseEnvConfig):
@@ -26,7 +26,7 @@ class EnvConfig(BaseEnvConfig):
         num_bodies = 1
         bodies_list = []
         for i in range(num_bodies):
-            bodies_list.append(Body(name=f"body{i}", pos=[i, 0, 10]))
+            bodies_list.append(Body(name=f"body{i}", pos=[i, 0.0, 10.5]))
 
     # Holds all information for the controller in use
     class control:

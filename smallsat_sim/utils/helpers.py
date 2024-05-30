@@ -76,7 +76,7 @@ def Rquat(q) -> np.ndarray:
         eps = q[1:4]
 
         S = skew(eps)
-        R = np.eye(3) + 2*eta*S + 2*np.dot(S,S)
+        R = np.eye(3) + 2*eta*S + 2*S@S
         
     else:
         raise ValueError('input must be of dim. 4 (unit quaternion)')

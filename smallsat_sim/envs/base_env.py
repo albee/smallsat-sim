@@ -4,7 +4,9 @@ import mujoco.viewer
 
 from smallsat_sim.envs.dynamics import SymbolicModel
 from smallsat_sim.utils import xml_parser
+from smallsat_sim.utils.helpers import Rquat
 from smallsat_sim.envs.perturbations import PerturbationList
+
 
 from argparse import Namespace
 
@@ -47,16 +49,26 @@ class BaseEnv(object):
             # Step in MuJoCo engine
             mujoco.mj_step(self.model, self.data)
 
+        # Execute post physics steps
+        self._post_physics_step()
+
     def get_obs(self) -> np.array:
         """
         Return all states
         """
         # obs = [r (3),
         #        q (4),
-        #        v (3),
+        #        v (3), --> in BODY frame
         #        omega (3)]
 
-        obs = np.concatenate((self.data.qpos, self.data.qvel))
+        # Retrieve current rotation matrix
+        R = np.reshape(self.data.body('body0').xmat, (3,3))
+
+        # Rotate intertial velocity to body velocity
+        vel_body = R.T @ self.data.qvel[:3]
+
+        # Create array of observations
+        obs = np.concatenate((self.data.qpos, vel_body, self.data.qvel[3:]))
 
         return obs
 
@@ -129,9 +141,6 @@ class BaseEnv(object):
             - Adding perturbations to control input and model dynamics
             - ...
         """
-        # Fetch most recent observations
-        self.obs = self.get_obs()
-
         # External disturbances
         if self.disturbance:
             self.data.qfrc_applied = self.disturbance.apply()
@@ -141,6 +150,13 @@ class BaseEnv(object):
             self.data.ctrl = self.perturbations.apply(input)
         else:
             self.data.ctrl = input
+
+    def _post_physics_step(self) -> None:
+        """
+        Executes actions after stepping simulation
+        """
+        # Fetch most recent observations
+        self.obs = self.get_obs()
 
     def _key_callback(self, keycode) -> None:
         """

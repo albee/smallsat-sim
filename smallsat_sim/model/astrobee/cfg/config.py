@@ -21,7 +21,7 @@ class ModelConfig(BaseModelConfig):
         height=0.32,
         mass=9.583788668,
         diag_inertia=[0.153427995, 0.14271405, 0.162302759],
-        com_offset=[0.003713818, -0.000326347, -0.002532192],
+        com_offset=[0.003713818, -0.000326347, -0.002532192], #TODO: Check the CoM offset behaves as expected.
     )
 
     class Thrusters:
