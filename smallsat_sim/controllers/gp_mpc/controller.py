@@ -4,13 +4,16 @@ import gpytorch
 import numpy as np
 import torch
 
+# Set default torch dtype
+torch.set_default_dtype(torch.float64)
+
 
 class GP(gpytorch.models.ExactGP):
     def __init__(self, train_x, train_y, likelihood):
         super(GP, self).__init__(train_x, train_y, likelihood)
         self.mean_module = gpytorch.means.ConstantMean(batch_shape=torch.Size([6]))
         self.covar_module = gpytorch.kernels.ScaleKernel(
-            gpytorch.kernels.RBFKernel(batch_shape=torch.Size([6]), ard_num_dims=18),
+            gpytorch.kernels.RBFKernel(batch_shape=torch.Size([6])),
             batch_shape=torch.Size([6]),
         )
 
@@ -49,14 +52,11 @@ class GPMPC(BaseController):
         """
         Initializes all needed quantaties for the Gaussian Process
         """
-        # Create the GP
-        self._create_gp()
-
         # Initialize empty feature tensor (z)
-        z = torch.empty((0, 18), dtype=torch.float32)
+        z = torch.empty((0, 18), dtype=torch.float64)
 
         # Initialize empty ouput tensor (y)
-        y = torch.empty((0, 6), dtype=torch.float32)
+        y = torch.empty((0, 6), dtype=torch.float64)
 
         # Initialize empty timestamp tensor(t)
         t = []
@@ -66,8 +66,8 @@ class GPMPC(BaseController):
 
         # Initialize subspace matrix B_d
         # Shape: (nx, 6)
-        self.B_d = torch.cat((torch.zeros(7, 6), torch.eye(6))).to(torch.float32)
-        self.B_d_inv = torch.linalg.pinv(self.B_d)
+        self.B_d = torch.cat((torch.zeros(7, 6), torch.eye(6))).to(torch.float64)
+        self.B_d_inv = torch.linalg.pinv(self.B_d).to(torch.float64)
 
         # Initialize buffers to keep track of past state and input
         self.x_past = np.zeros(13)
@@ -79,13 +79,6 @@ class GPMPC(BaseController):
         self.gp_update_counter = 0  # Keep track how many times dict has been updated
         self.gp_initialized = False  # Keep track if GP is already initialized
 
-    def _create_gp(self) -> None:
-        # Initialize mean module
-        self.mean = gpytorch.means.ConstantMean()
-
-        # Initialize covariance module
-        self.covar = gpytorch.kernels.RBFKernel()
-
     def get_control_input(self, env) -> np.ndarray:
         """
         Calculate the control input based on current observation
@@ -93,16 +86,16 @@ class GPMPC(BaseController):
         obs = env.get_obs()
         timestamp = env.data.time
 
-        print(f"Timestamp: {timestamp}")
-
         # Check if GP needs to be updated
         self._update_gp(obs, timestamp)
 
         # Record error statistics
         self._record_stats(obs, timestamp)
 
+        # Return random input
         u = np.random.uniform(0, 0.3, (12,))
 
+        # Save current observation and input
         self.x_past, self.u_past = obs, u
 
         return u
@@ -115,9 +108,11 @@ class GPMPC(BaseController):
         [r,q,v,w] -> [v,w]
         """
 
-        return torch.from_numpy(
-            np.concatenate((self.x_past[7:], self.u_past))
-        ).unsqueeze(0).to(torch.float32)
+        return (
+            torch.from_numpy(np.concatenate((self.x_past[7:], self.u_past)))
+            .unsqueeze(0)
+            .to(torch.float64)
+        )
 
     def _calc_outputs(self, obs) -> torch.Tensor:
         """
@@ -128,19 +123,11 @@ class GPMPC(BaseController):
         """
         model_error = (
             torch.from_numpy(obs - self.f_int(self.x_past, self.u_past).squeeze(-1))
-            .to(torch.float32)
+            .to(torch.float64)
             .unsqueeze(-1)
         )
 
         return (self.B_d_inv @ model_error).T
-
-    def _add_training_point(self, env) -> None:
-        """
-        Add a feature and its corresponding output to the list of
-        points used for the GP.
-        """
-
-        pass
 
     def _update_gp(self, obs, timestamp) -> None:
         """
@@ -183,8 +170,9 @@ class GPMPC(BaseController):
             self.dict["t"][oldest_idx] = timestamp
 
             # Replace data in GP
-            self.gp.set_train_data(inputs=self.dict["z"], targets=self.dict["y"])
 
+            self.gp.set_train_data(inputs=self.dict["z"], targets=self.dict["y"])
+            
             self.gp_update_counter += 1
 
             # Retrain hyperparameter every 100 updates
@@ -220,7 +208,7 @@ class GPMPC(BaseController):
             # Calc loss and backprop gradients
             loss = -mll(output, self.dict["y"])
             loss.backward()
-            print("Iter %d/%d - Loss: %.3f" % (i + 1, i, loss.item()))
+            print("Iter %d/%d - Loss: %.3f" % (i + 1, training_steps, loss.item()))
             optimizer.step()
 
     def _record_stats(self, obs, timestamp) -> None:
@@ -257,5 +245,19 @@ class GPMPC(BaseController):
                 )
             )
 
-            print(f"Nominal model error: {e_nom}")
-            print(f"Corrected model error: {e_gp}")
+            if self.gp_update_counter == 50:
+                print(f"Nominal model error: {e_nom}")
+                print(f"Corrected model error: {e_gp}")
+
+                # Print the different hyperparameters
+                print("Mean Module Hyperparameters:")
+                for name, param in self.gp.mean_module.named_parameters():
+                    print(f"{name}: {param}")
+
+                print("\nCovariance Module Hyperparameters:")
+                for name, param in self.gp.covar_module.named_parameters():
+                    print(f"{name}: {param}")
+
+                print("\nLikelihood Hyperparameters:")
+                for name, param in self.gp.likelihood.named_parameters():
+                    print(f"{name}: {param}")
