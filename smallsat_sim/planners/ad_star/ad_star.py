@@ -11,45 +11,38 @@ class ADStarPlanner(BasePlanner):
     """
     This class implements the Anytime Dynamic A* (AD*) path planning algorithm.
     It is based on:
-    Maxim Likhachev, David Ferguson, Geoff Gordon, Anthony Stentz, and Sebastian Thrun. 
+    "Maxim Likhachev, David Ferguson, Geoff Gordon, Anthony Stentz, and Sebastian Thrun. (2005)
     “Anytime Dynamic A*: An Anytime, Replanning Algorithm.” In Proc. Int. Conf. Automated Planning and Scheduling, 15. 
-    https://aaai.org/papers/icaps-05-027-anytime-dynamic-a-an-anytime-replanning-algorithm/.
+    https://aaai.org/papers/icaps-05-027-anytime-dynamic-a-an-anytime-replanning-algorithm/."
     """
-    def __init__(self, env, start: tuple, goal: tuple) -> None:  # Not using env in planner yet
+    def __init__(self, env) -> None:  # Not using env in planner yet
         super().__init__(env)
         self.env = env
+        # Resolution of discrete grid
         self.resolution = env.env_cfg.planner.resolution
-        self.start = start  # Initial position of the agent
-        self.goal = goal  # Goal position of the agent
+        # Scaling factor for the heuristic (inflation factor)
+        self.epsilon = env.env_cfg.planner.epsilon
+        self.epsilon_increment = env.env_cfg.planner.epsilon_increment
+        self.epsilon_decrement = env.env_cfg.planner.epsilon_decrement
+        self.bounds = env.env_cfg.planner.bounds  # Bounds of the environment
+        # Define the possible directions and their costs (with scale)
+        self.directions = self._scale_directions(env.env_cfg.planner.unit_directions)
+        self.start = env.env_cfg.planner.start_pos  # Initial position of the agent
+        self.goal = env.env_cfg.planner.goal_pos  # Goal position of the agent
+
         # Inconsistent states "s": Overconsistent: g(s) > rhs(s), Underconsistent: g(s) < rhs(s)
         self.OPEN = []  # Priority queue of inconsistent states to be expanded
         self.OPEN_SET = set()  # Set of states that are in the priority queue
-        self.g = {start: np.inf, goal: np.inf}  # Dictionary of costs from each state to goal
-        self.rhs = {start: np.inf, goal: 0}  # Dictionary of one-step lookahead costs
-        self.epsilon = 2.5  # Scaling factor for the heuristic (inflation factor)
-        #self.resolution = 1  # Resolution of the grid
-        self.bounds = np.array([[0,0,0], [20, 10, 10]])  # Hardcoded bounds for the environment
+        self.g = {self.start: np.inf, self.goal: np.inf}  # Dictionary of costs from each state to goal
+        self.rhs = {self.start: np.inf, self.goal: 0}  # Dictionary of one-step lookahead costs
 
         # Insert the goal into the priority queue to start the expansion
         heapq.heappush(self.OPEN, (self._key(self.goal), self.goal))
         self.OPEN_SET.add(self.goal)
         self.CLOSED = set()  # Set of states that have been expanded
         self.INCONS = set()  # Set of states that have been expanded and are inconsistent
-        #self.removed = set()  # Set of states that have been removed from the priority queue
 
-        # Define the possible directions and their costs
-        # Could later be defined in the env config instead
-        unit_directions = {(1, 0, 0): 1, (0, 1, 0): 1, (0, 0, 1): 1, \
-                           (-1, 0, 0): 1, (0, -1, 0): 1, (0, 0, -1): 1, \
-                           (1, 1, 0): np.sqrt(2), (1, 0, 1): np.sqrt(2), (0, 1, 1): np.sqrt(2), \
-                           (-1, -1, 0): np.sqrt(2), (-1, 0, -1): np.sqrt(2), (0, -1, -1): np.sqrt(2), \
-                           (1, -1, 0): np.sqrt(2), (-1, 1, 0): np.sqrt(2), (1, 0, -1): np.sqrt(2), \
-                           (-1, 0, 1): np.sqrt(2), (0, 1, -1): np.sqrt(2), (0, -1, 1): np.sqrt(2), \
-                           (1, 1, 1): np.sqrt(3), (-1, -1, -1): np.sqrt(3), \
-                           (1, -1, -1): np.sqrt(3), (-1, 1, -1): np.sqrt(3), (-1, -1, 1): np.sqrt(3), \
-                           (1, 1, -1): np.sqrt(3), (1, -1, 1): np.sqrt(3), (-1, 1, 1): np.sqrt(3)}
-        self.directions = self._scale_directions(unit_directions)
-
+        # Define the colors for the path visualization
         self.colors = np.array([
             [0.0, 1.0, 0.0, 1.0],  # Green
             [1.0, 0.0, 0.0, 1.0],  # Red
@@ -63,39 +56,12 @@ class ADStarPlanner(BasePlanner):
             [0.0, 0.5, 0.5, 1.0]   # Teal
         ])
         self.num_colors = 10
-        self.color_idx = 0
+        self.color_idx = 0  # Visualize different paths with different colors
 
         self.path = [(0,0,10)]  # List of states that form the optimal path
         self.idx_reference_point = 0  # Index of the current reference point
-
-        # Define preliminary obstacles in the environment
-        self.obstacles = self.define_obstacles()
         
-    def define_obstacles(self) -> set:
-        """
-        Define obstacles that cover multiple nodes and return a set of obstacle coordinates.
-        """
-        obstacles = set()
-
-        # Example 1: Cubic obstacle from (2,2,2) to (4,4,4)
-        # for x in range(2, 5):
-        #     for y in range(2, 5):
-        #         for z in range(2, 5):
-        #             obstacles.add((x, y, z))
-
-        # # Example 2: Rectangular obstacle from (5,0,0) to (5,9,9)
-        # for x in range(5, 6):
-        #     for y in range(0, 10):
-        #         for z in range(0, 10):
-        #             obstacles.add((x, y, z))
-
-        # # Example 3: Line obstacle from (8,0,0) to (8,9,0)
-        # for y in range(0, 10):
-        #     obstacles.add((8, y, 0))
-
-        # Add more obstacle definitions as needed
-
-        return obstacles
+        self.start_planning_thread()
     
     def _scale_directions(self, unit_directions) -> dict:
         """
@@ -162,7 +128,6 @@ class ADStarPlanner(BasePlanner):
             if s not in self.CLOSED:  # Line 10 AD*
                 heapq.heappush(self.OPEN, (self._key(s), s))  # Line 11 AD*
                 self.OPEN_SET.add(s)
-                #print(f"Pushed {s} to open list with new key {self.key(s)}.")
             else:
                 self.INCONS.add(s)  # Line 13 AD*
 
@@ -170,8 +135,6 @@ class ADStarPlanner(BasePlanner):
         """
         Calculate the cost of moving from node u to node v based on predefined directions.
         """
-        #direction = tuple(np.array(v) - np.array(u))
-        #return self.directions.get(direction, np.inf)  # Return inf if direction is not defined
         return utils.get_distance(u, v)
 
     def _get_neighbors(self, u: tuple) -> list[tuple]:
@@ -184,18 +147,33 @@ class ADStarPlanner(BasePlanner):
         for direction in self.directions:
             v = tuple(np.array(u) + np.array(direction))
             if utils.is_in_bound(np.array(v), self.bounds):
-                dist = self._check_collision(u, direction)
-                if dist < 0 or dist > self.resolution:  # Check for collision
-                    neighbors.append(v)  # Add neighbors that are within the bounds and not in obstacles
+                if not self._check_collision(u, direction):  # Check for collision
+                    # Add valid neighbor
+                    neighbors.append(v)
         return neighbors
     
-    def _check_collision(self, p: np.ndarray, direction) -> tuple[bool, float]:
+    def _check_collision(self, point: np.ndarray, direction) -> tuple[bool, float]:
         """
-        [Placeholder] Returns True if there is a collision between points p1 and p2, False otherwise.
+        Checks if a ray from a point in a certain direction 
+        intersects with an obstacle.
+
+        Returns distance to collision or -1 if no intersection.
         """
-        test2 = np.zeros((1, 1), dtype=np.int32)
-        test = mujoco.mj_ray(self.env.model, self.env.data, np.array(p, dtype=np.float64), np.array(direction, dtype=np.float64), None, 1, 2, test2)
-        return test
+        _ = np.zeros((1, 1), dtype=np.int32)  # Pointer that is needed but unused
+        body_exclude_id = 2  # Exclude the SmallSat body from collision check
+        flg_static = 1  # 0: exclude static geoms, 1: include static geoms
+        group_exclusion = None  # Exclude no geom groups
+        point = np.array(point, dtype=np.float64)  # Cast to float64
+        direction = np.array(direction, dtype=np.float64)  # Cast to float64
+        # Calculate distance to collision
+        dist = mujoco.mj_ray(self.env.model, self.env.data, point, direction,
+                             group_exclusion, flg_static, body_exclude_id, _)
+        
+        # Check if collision is imminent
+        if dist < 0 or dist > self.resolution:
+            return False
+        else:
+            return True
     
     def _update_open_keys(self):
         """
@@ -224,7 +202,6 @@ class ADStarPlanner(BasePlanner):
             if self._get_g(current) > self._get_rhs(current):  # Line 16 AD*
                 self.g[current] = self.rhs[current]  # Line 17 AD*, make consistent
                 self.CLOSED.add(current)  # Line 18 AD*
-                #print(current)
                 for s in self._get_neighbors(current):  # Line 19 AD*
                     self._update_state(s)
             else:
@@ -232,18 +209,6 @@ class ADStarPlanner(BasePlanner):
                 self._update_state(current)  # Part of line 22 (union of neighbors and current)
                 for s in self._get_neighbors(current):  # Line 22 AD*
                     self._update_state(s)
-
-    # TODO: Make MJ convex hulls accessible to path planner
-    # Might be possible to do this directly through MJ functions (ray casting)
-    # def _create_convex_hull(self, env):
-    #     # Create a convex hull around the mesh points
-    #     gateway = env.model.body('gateway_full')
-    #     gateway_mesh_idx = list(range(gateway.geomadr[0], gateway.geomadr[0] + gateway.geomnum[0]))
-    #     graph_adr = env.model.graphadr[gateway_mesh_idx]
-    #     num_vertices = env.model.graph[graph_adr + 0]
-    #     if model.
-    #     hull = ConvexHull(self.mesh_points)
-    #     return hull
 
     def generate_path(self) -> list[tuple]:
         """
@@ -255,7 +220,6 @@ class ADStarPlanner(BasePlanner):
         i = 0
 
         while utils.get_distance(s, self.goal) > self.resolution:
-            #visited.add(s)
             neighbors = self._get_neighbors(s)
             if not neighbors:
                 print("No neighbors found.")
@@ -278,7 +242,7 @@ class ADStarPlanner(BasePlanner):
             s = next_node
             if i > 100:
                 print("Path reconstruction failed.")
-                break
+                return []
             i += 1
 
         return path
@@ -287,14 +251,20 @@ class ADStarPlanner(BasePlanner):
         """
         Main planning loop for the AD* algorithm.
         """
-        self.compute_shortest_path()
-        self.path = self.generate_path()
-        #self.visualize([np.array(t) for t in self.path])
-        while True:
-            if False:
-                self.epsilon += 0.2
+        while self.path == []:  # Initial planning
+            self.compute_shortest_path()
+            self.path = self.generate_path()
+            if self.path == []:
+                self.epsilon -= self.epsilon_decrement
+                continue
+        prev_path = self.path
+
+        while True:  # TODO: Keep planner loop ready for replanning
+            if False:  # TODO: if replanning is needed
+                self.epsilon += self.epsilon_increment
             elif self.epsilon > 1:
-                self.epsilon = max(1, self.epsilon - 0.2)
+                # Limit epsilon to 1 from below
+                self.epsilon = max(1, self.epsilon - self.epsilon_decrement)
             # Move states from INCONS to OPEN
             for s in list(self.INCONS):
                 self.INCONS.remove(s)
@@ -307,13 +277,12 @@ class ADStarPlanner(BasePlanner):
             self.CLOSED = set()
             self.compute_shortest_path()
             self.color_idx += 1
-            time.sleep(1)
             self.path = self.generate_path()
-            #self.visualize([np.array(t) for t in self.path])
-            if self.epsilon <= 1:
+            if self.path == []:  # If failure, keep previous path
+                self.path = prev_path
+            if self.epsilon <= 1:  # Optimal path, break afterwards
                 self.color_idx += 1
                 self.path = self.generate_path()
-                #self.visualize([np.array(t) for t in self.path])
                 break
 
     def start_planning_thread(self):
@@ -388,20 +357,4 @@ if __name__ == "__main__":
             #path = planner.generate_path()
             print(len(path))
             print(path)
-            #print(planner.obstacles)
             break
-
-    x1, y1 = zip(*[(a, b) for a, b, c in path])
-    x2, y2 = zip(*[(a, b) for a, b, c in planner.obstacles])
-    plt.figure()
-    plt.plot(x1, y1, label='List 1 (lines)', marker='o', linestyle='-')
-    for (x, y) in zip(x2, y2):
-        square = patches.Rectangle((x - 0.5, y - 0.5), 1, 1, linewidth=1, edgecolor='red', facecolor='red', alpha=0.5)
-        plt.gca().add_patch(square)
-
-    plt.grid(True)
-    plt.show()
-
-    # print(planner.generate_path())
-    # print(f"Execution time: {time.time() - start_time} seconds.")
-    # print('done')
