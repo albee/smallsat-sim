@@ -6,6 +6,7 @@ CasADi is used to achieve this task, which is a symbolic framework.
 
 import numpy as np
 import casadi as ca
+from smallsat_sim.utils.helpers import skew
 
 from casadi import SX, DM
 
@@ -98,22 +99,19 @@ class SymbolicModel:
 
         # Mass matrix setup
         m = self.mass
-        I = SX(3, 3)
-        I[0:3, 0:3] = np.diag(self.inertia)
-        M_com = SX(6, 6)  # Full inertia matrix (6x6)
-        M_com[0:3, 0:3] = m * SX.eye(3)
+        I = np.diag(self.inertia)
+        M_com = np.eye(6, 6)  # Full inertia matrix (6x6)
+        M_com[0:3, 0:3] = m * np.eye(3)
         M_com[3:6, 3:6] = I
 
         # System transformation matrix from CG to CO
         # CG = Center of Gravity, CO = Center origin (body frame)
-        H = SX(6, 6)
-        H[0:3, 0:3] = SX.eye(3)
-        H[0:3, 3:6] = ca.transpose(ca.skew(np.array(self.com_offset)))
-        H[3:6, 3:6] = SX.eye(3)
+        H = np.eye(6, 6)
+        H[0:3, 3:6] = np.transpose(skew(np.array(self.com_offset)))
 
         # Transform system matrices to body frame by similarity transformation
-        M_body = ca.mtimes(ca.mtimes(ca.transpose(H), M_com), H)
-        M_body_inv = ca.solve(M_body, SX.eye(M_body.size1()))
+        M_body = H.T @ M_com @ H
+        M_body_inv = np.linalg.inv(M_body)
 
         # Rotation matrix from quaternion
         eta, eps = q[0], q[1:4]
@@ -121,13 +119,11 @@ class SymbolicModel:
         R_quat = SX.eye(3) + 2 * eta * S + 2 * ca.mtimes(S, S)
 
         # Quaternion kinematics transformation
-        T_quat = 0.5 * np.array(
-            [
-                [-eps[0], -eps[1], -eps[2]],
-                [eta, -eps[2], eps[1]],
-                [eps[2], eta, -eps[0]],
-                [-eps[1], eps[0], eta],
-            ]
+        T_quat = 0.5 * ca.vertcat(
+            ca.horzcat(-eps[0], -eps[1], -eps[2]),
+            ca.horzcat(eta, -eps[2], eps[1]),
+            ca.horzcat(eps[2], eta, -eps[0]),
+            ca.horzcat(-eps[1], eps[0], eta)
         )
 
         # System Jacobian
@@ -170,20 +166,23 @@ class SymbolicModel:
         self.f_impl_expr = x_dot - f_expl
 
         # Create some utils
-        self.f_expl_expr_func = ca.Function('f_expl_expr_func', [x, u], [f_expl])
+        self.f_expl_expr_func = ca.Function("f_expl_expr_func", [x, u], [f_expl])
 
     def integrate(self, x, u) -> np.ndarray:
         """
         Propagates the system dynamics for a given state and input
         """
-        return self.f_int(x,[], u, [], [], [], [])[0].toarray()
-    
+        return self.f_int(x, u).toarray()
+
     def get_integrator(self, dt: float):
         """
         Method which creates an integrator if needed by a control algorithm.
         """
-        self.f_int = ca.integrator(
-            "f_int", "rk", {"x": self.x, "p": self.u, "ode": self.f_expl_expr}, 0, dt, {"number_of_finite_elements": 1}
-        )
+        # Euler forward integration
+        x_next = self.x + dt * self.f_expl_expr_func(self.x, self.u)
+
+        self.f_int = ca.Function("f_int", [self.x, self.u], [x_next])
+
+        # TODO: Implement Euler semi-implicit integration?
 
         return self.integrate
