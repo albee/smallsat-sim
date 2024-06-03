@@ -5,7 +5,7 @@ import numpy as np
 import casadi as ca
 import control
 
-from scipy.linalg import solve_discrete_are, solve_continuous_are, expm
+from scipy.linalg import solve_discrete_are
 
 
 class LQRController(BaseController):
@@ -44,9 +44,11 @@ class LQRController(BaseController):
         Check if the system is controllable.
         """
         ctrb_matrix = control.ctrb(A, B)
+
         if (np.linalg.matrix_rank(ctrb_matrix) != A.shape[0]):
             print("System is not controllable.")
             return False
+        
         return True
 
 
