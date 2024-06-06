@@ -17,7 +17,7 @@ ctrl = OpenLoopController()
 start_time = time.time()
 
 # Simulation loop
-while True:
+while env.data.time <= env.env_cfg.sim.sim_time:
     
     real_time = time.time() - start_time
 
