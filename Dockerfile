@@ -1,5 +1,5 @@
 # Choose a base image
-FROM ubuntu:20.04
+FROM nvidia/cuda:11.6.2-devel-ubuntu20.04
 
 # Choose a Python image
 FROM python:3.10-bookworm
@@ -45,9 +45,19 @@ COPY requirements.txt .
 # Install the specified dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# # Define 
+# Define use case (on which hardware the container should run)
+ENV USE_CASE=default
+
+# Define Python path
 ENV PYTHONPATH="/smallsat-sim"
-ENTRYPOINT ["python"]
+
+# Copy the entrypoint-docker script for lambda-quad and make it executable
+COPY .docker/entrypoint-docker.sh /entrypoint-docker.sh
+RUN chmod +x /entrypoint-docker.sh
+
+# Define the command/script to be executed when the container starts
+# ENTRYPOINT [ "/entrypoint-docker.sh"]
+ENTRYPOINT [ "python"]
 
 # Use a dummy command to keep the container running indefinitely
 # CMD ["tail", "-f", "/dev/null"]

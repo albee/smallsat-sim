@@ -1,6 +1,10 @@
 import torch
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if torch.cuda.is_available():
+    print("cuda")
+else:
+    print("cpu")
 
 tensor_cpu = torch.tensor([[1., 2.], [3., 4.]])
 print(tensor_cpu)

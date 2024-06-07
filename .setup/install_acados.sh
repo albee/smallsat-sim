@@ -1,3 +1,5 @@
+#!/bin/bash
+
 # Clone the acados repo
 git clone https://github.com/acados/acados.git
 git submodule update --recursive --init
