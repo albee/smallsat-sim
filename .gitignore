@@ -15,3 +15,6 @@ __pycache__/
 
 # generated acados code
 c_generated_code/
+
+# utils for lamda-quad
+.lamda-quad
