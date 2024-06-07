@@ -48,6 +48,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Define use case (on which hardware the container should run)
 ENV USE_CASE=default
 
+# NVIDIA container runtime
+ENV NVIDIA_VISIBLE_DEVICES ${NVIDIA_VISIBLE_DEVICES:-all}
+ENV NVIDIA_DRIVER_CAPABILITIES ${NVIDIA_DRIVER_CAPABILITIES:+$NVIDIA_DRIVER_CAPABILITIES,}graphics,video,compute,utility
+
 # Define Python path
 ENV PYTHONPATH="/smallsat-sim"
 
