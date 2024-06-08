@@ -17,6 +17,8 @@ class BasePlanner(object):
         else:
             self.visualize = lambda *args, **kwargs: None
 
+        self.renderer = env.renderer
+
     def get_reference(self, obs: np.ndarray) -> np.ndarray:
         """
         Returns a reference point based on current observations
@@ -35,6 +37,15 @@ class BasePlanner(object):
             z = point[2]
             mujoco.mjv_initGeom(
                 self.viewer.user_scn.geoms[i],
+                type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                size=[0.05, 0, 0],
+                pos=np.array([x, y, z]),
+                mat=np.eye(3).flatten(),
+                rgba=np.array([1, 0, 0, 2]),
+            )
+            self.renderer.scene.ngeom += 1
+            mujoco.mjv_initGeom(
+                self.renderer.scene.geoms[self.renderer.scene.ngeom-1],
                 type=mujoco.mjtGeom.mjGEOM_SPHERE,
                 size=[0.05, 0, 0],
                 pos=np.array([x, y, z]),
