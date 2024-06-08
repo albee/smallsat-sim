@@ -79,7 +79,7 @@ class BaseEnv(object):
         Create a save a video rendering of the experiment.
         """
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        fps = 30
+        fps = 60
         height, width, _ = self.frames[0].shape
         
         video_writer = cv2.VideoWriter(output_filename + '.mp4', fourcc, fps, (width, height))
@@ -111,18 +111,14 @@ class BaseEnv(object):
         Creates a renderer to visualize the experiments (to later save them to a video).
         """
         # Create instance of MuJoCo renderer
-        # self.renderer = mujoco.Renderer(self.model, width=1200, height=900)
+        self.renderer = mujoco.Renderer(self.model, width=1920, height=1080)
 
         # Set up the scene and the default camera options
-        self.scene = mujoco.MjvScene(self.model, 1000)
         self.cam = mujoco.MjvCamera()
-        self.cam.distance = 3.0
+        self.cam.distance = 5.0
         self.cam.trackbodyid = 2  # tracks smallsat
         self.cam.azimuth = 10.0
         self.cam.type = 1
-
-        # Create an offscreen framebuffer for rendering
-        self.viewport = mujoco.MjrRect(0, 0, 1200, 900)
 
         # Save frames to create the video
         self.frames = []
@@ -179,17 +175,9 @@ class BaseEnv(object):
         """
         Updates the renderer.
         """
-        # self.renderer.update_scene(self.data)
-        # sim_img = self.renderer.render().copy()
-        # self.frames.append(sim_img)
-        mujoco.mjv_updateScene(self.model, self.data, mujoco.MjvOption(), mujoco.MjvPerturb(), self.cam, mujoco.mjtCatBit.mjCAT_ALL, self.scene)
-        # sim_img = self.renderer.render(self.scene).copy()
-        # self.frames.append(sim_img)
-        rgb_buffer = np.zeros((900, 1200, 3), dtype=np.uint8)
-        upside_down_depth = np.empty((900, 1200, 1))
-        mujoco.mjr_readPixels(rgb_buffer, upside_down_depth, self.viewport, mujoco.MjrContext(self.model, mujoco.mjtFontScale.mjFONTSCALE_100))
-        rgb_buffer = np.flipud(rgb_buffer)
-        self.frames.append(rgb_buffer)
+        self.renderer.update_scene(self.data, self.cam)
+        sim_img = self.renderer.render().copy()
+        self.frames.append(sim_img)
 
     def _pre_physics_step(self, input: np.ndarray) -> None:
         """

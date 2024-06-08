@@ -11,4 +11,4 @@ class BaseEnvConfig:
 
     class sim:
         dt = 1/500 # simulation runs @500Hz
-        max_sim_time = 10 # max. simulation time
+        max_sim_time = 30 # max. simulation time
