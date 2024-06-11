@@ -54,7 +54,7 @@ class PDController(BaseController):
             ).pos  # Position of thruster 'i' relative to body origin
             # Add direct forces and torques to B matrix. Then calculate force arms and add
             B_matrix[:, i] = actuator.gear + np.append(
-                [0, 0, 0], np.cross(force, actuator_pos)
+                [0, 0, 0], np.cross(actuator_pos, force)
             )
         return B_matrix
 
@@ -105,7 +105,7 @@ class PDController(BaseController):
         )
         # PD, angular part, (alpha=angular acceleration).
         # Note: angular velocity is decomposed in the body frame
-        desired_alpha = -(
+        desired_alpha = (
             self.Kp_q * sgn_quat(eta_error) * eps_error
             + self.Kd_q * (desired_angvel - current_angvel)
         )
