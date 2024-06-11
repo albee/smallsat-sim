@@ -28,6 +28,9 @@ class BaseEnv(object):
         # Initialize observations
         self.obs = self.get_obs()
 
+        # Initialize arguments
+        self.args = args
+
     def reset(self) -> None:
         """
         Resets environment to a desired state.
@@ -154,8 +157,6 @@ class BaseEnv(object):
         self.model = mujoco.MjModel.from_xml_string(xml)
         self.data = mujoco.MjData(self.model)
 
-        self._create_renderer()
-
         # Launch the viewer
         if not args.headless:
             self._create_viewer()
@@ -164,6 +165,14 @@ class BaseEnv(object):
             # to a lambda function which essentially does nothing
             self.viewer = None
             self._update_viewer = lambda *args, **kwargs: None
+
+        # Launch the renderer to create a video
+        if args.video:
+            self._create_renderer()
+        else:
+            # Same logic as for the viewer
+            self.renderer = None
+            self._update_renderer = lambda *args, **kwargs: None
 
     def _update_viewer(self):
         """

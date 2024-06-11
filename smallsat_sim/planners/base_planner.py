@@ -19,6 +19,9 @@ class BasePlanner(object):
 
         self.renderer = env.renderer
 
+        # Use parser args
+        self.args = env.args
+
     def get_reference(self, obs: np.ndarray) -> np.ndarray:
         """
         Returns a reference point based on current observations
@@ -43,14 +46,15 @@ class BasePlanner(object):
                 mat=np.eye(3).flatten(),
                 rgba=np.array([1, 0, 0, 2]),
             )
-            self.renderer.scene.ngeom += 1
-            mujoco.mjv_initGeom(
-                self.renderer.scene.geoms[self.renderer.scene.ngeom-1],
-                type=mujoco.mjtGeom.mjGEOM_SPHERE,
-                size=[0.05, 0, 0],
-                pos=np.array([x, y, z]),
-                mat=np.eye(3).flatten(),
-                rgba=np.array([1, 0, 0, 2]),
-            )
+            if self.args.video:
+                self.renderer.scene.ngeom += 1
+                mujoco.mjv_initGeom(
+                    self.renderer.scene.geoms[self.renderer.scene.ngeom-1],
+                    type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                    size=[0.05, 0, 0],
+                    pos=np.array([x, y, z]),
+                    mat=np.eye(3).flatten(),
+                    rgba=np.array([1, 0, 0, 2]),
+                )
             i += 1
         self.viewer.user_scn.ngeom = i
