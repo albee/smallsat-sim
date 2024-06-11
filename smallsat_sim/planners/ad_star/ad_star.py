@@ -14,6 +14,8 @@ class ADStarPlanner(BasePlanner):
     "Maxim Likhachev, David Ferguson, Geoff Gordon, Anthony Stentz, and Sebastian Thrun. (2005)
     “Anytime Dynamic A*: An Anytime, Replanning Algorithm.” In Proc. Int. Conf. Automated Planning and Scheduling, 15. 
     https://aaai.org/papers/icaps-05-027-anytime-dynamic-a-an-anytime-replanning-algorithm/."
+
+    @author: Markus H. Iversflaten
     """
     def __init__(self, env) -> None:  # Not using env in planner yet
         super().__init__(env)
