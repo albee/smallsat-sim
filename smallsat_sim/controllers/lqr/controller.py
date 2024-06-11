@@ -20,13 +20,17 @@ class LQRController(BaseController):
         # Initialize base class
         super().__init__(env, planner, self.ctrl_cfg)
 
-        # Check if there is a viewer. In case there is not,
-        # dynamically allocate the visualize method to a lambda
-        # function doing nothing.
-        if env.viewer:
-            self.viewer = env.viewer
-        else:
-            self._visualize = lambda *args, **kwargs: None
+        # Fetch symbolic model
+        self.model = env.symbolic_model
+        self.f = self.model.f_expl_expr
+        self.x = self.model.x
+        self.u = self.model.u
+        self.nx = self.x.shape[0]
+        self.nu = self.u.shape[0]
+
+        # Compute the Jacobians
+        self.A_sym = ca.jacobian(self.f, self.x)
+        self.B_sym = ca.jacobian(self.f, self.u)
 
         # Set reference values for parts of the states
         self.quat_ref = np.array([1.0, 0.0, 0.0, 0.0]).reshape(4,)
@@ -34,8 +38,7 @@ class LQRController(BaseController):
         self.omega_ref = np.zeros((3, 1)).reshape(3,)
 
         # Get the cost function matrices
-        nx = self.ctrl_cfg.cost.Q.shape[0]
-        self.Q = self.ctrl_cfg.cost.Q + 1e-5 * np.eye(nx, nx) # Perturb for numerical stability
+        self.Q = self.ctrl_cfg.cost.Q + 1e-5 * np.eye(self.nx, self.nx) # Perturb for numerical stability
         self.R = self.ctrl_cfg.cost.R
 
     
@@ -52,41 +55,25 @@ class LQRController(BaseController):
         return True
 
 
-    def get_lqr_gain(self, env: BaseEnv) -> np.ndarray:
+    def get_lqr_gain(self, x: np.ndarray) -> np.ndarray:
         """
         Calculate the LQR gain.
         """
 
-        # Fetch symbolic model
-        model = env.symbolic_model
-        f = model.f_expl_expr
-        x = model.x
-        u = model.u
-        nx = x.shape[0]
-        nu = u.shape[0]
-
         # Define the operating point
-        x_s = ca.SX(env.obs[0:nx])
-        u_s = ca.SX.zeros(model.nu, 1)
+        x_s = ca.SX(x)
+        u_s = ca.SX.zeros(self.model.nu, 1)
 
         # Linearize the model around the operating point
-        A_sym = ca.jacobian(f, x)
-        A_num = ca.substitute(A_sym, x, x_s)
-        B_sym = ca.jacobian(f, u)
-        B_num = ca.substitute(B_sym, u, u_s)
+        A_num = ca.substitute(self.A_sym, self.x, x_s)
+        B_num = ca.substitute(self.B_sym, self.u, u_s)
 
         # Convert the A and B matrices to NumPy
-        A = np.zeros((nx, nx))
-        for i in range(nx):
-            for j in range(nx):
-                A[i, j] = A_num[i, j]
-        B = np.zeros((nx, nu))
-        for i in range(nx):
-            for j in range(nu):
-                B[i, j] = B_num[i, j]
+        A = np.array(ca.DM(A_num).full())
+        B = np.array(ca.DM(B_num).full())
 
         # Discretize the system (Euler discretization)
-        A = np.eye(nx) + A * 0.5
+        A = np.eye(self.nx) + A * 0.5
         B = B * 0.5
 
         # Check if the system is controllable (for debugging purposes)
@@ -110,7 +97,7 @@ class LQRController(BaseController):
         x = env.obs[0:13]
 
         # Compute the LQR gain
-        self.K = self.get_lqr_gain(env)
+        self.K = self.get_lqr_gain(x)
         
         # Get the reference position
         r_ref = self.planner.get_reference(env.obs).reshape(3,)
