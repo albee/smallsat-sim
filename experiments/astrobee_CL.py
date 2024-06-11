@@ -15,7 +15,7 @@ env = AstrobeeEnv(args=args)
 planner = OraclePlanner(env)
 
 # Create controller
-ctrl = NominalMPCController(env, planner)
+ctrl = PDController(env, planner)
 
 # Define start time
 start_time = time.time()
@@ -32,4 +32,4 @@ while True:
         ctrl_input = ctrl.get_control_input(env)
 
         # Advance simulation
-        env.step(input=ctrl_input)
+        env.step(args=args, input=ctrl_input)

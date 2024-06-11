@@ -1,6 +1,8 @@
 import numpy as np
 import mujoco
 import mujoco.viewer
+from mujoco import mjx
+import jax
 
 from smallsat_sim.envs.dynamics import SymbolicModel
 from smallsat_sim.utils import xml_parser
@@ -27,13 +29,16 @@ class BaseEnv(object):
         # Initialize observations
         self.obs = self.get_obs()
 
+        # Perform a Just In Time compilation of mjx.step() so that it runs efficiently on GPU
+        self.jit_step = jax.jit(mjx.step)
+
     def reset(self) -> None:
         """
         Resets environment to a desired state.
         """
         pass
 
-    def step(self, input: np.array) -> None:
+    def step(self, args, input: np.array) -> None:
         """
         Simulate environment for one timestep.
         """
@@ -46,8 +51,13 @@ class BaseEnv(object):
             if substep % self.env_cfg.viewer.viewer_decimation == 0:
                 self._update_viewer()
 
-            # Step in MuJoCo engine
-            mujoco.mj_step(self.model, self.data)
+            # Step in MuJoCo or MJX engine
+            if not args.mjx:
+                mujoco.mj_step(self.model, self.data)
+            else:
+                # self.mjx_data = self.jit_step(self.mjx_model, self.mjx_data)
+                self.mjx_data = mjx.step(self.mjx_model, self.mjx_data)
+                self.data = mjx.get_data(self.model, self.mjx_data)
 
         # Execute post physics steps
         self._post_physics_step()
@@ -72,11 +82,19 @@ class BaseEnv(object):
 
         return obs
 
-    def _create_viewer(self) -> None:
+    def _create_viewer(self, args) -> None:
         """
         Creates a viewer to visualize simulation
         """
-        # Create instance of MuJoCo viewer
+        # Create instance of MuJoCo or MJX viewer
+        # if not args.mjx:
+        #     self.viewer = mujoco.viewer.launch_passive(
+        #         self.model, self.data, key_callback=self._key_callback
+        #     )
+        # else:
+        #     self.viewer = mujoco.viewer.launch_passive(
+        #         self.mjx_model, self.mjx_data, key_callback=self._key_callback
+        # )
         self.viewer = mujoco.viewer.launch_passive(
             self.model, self.data, key_callback=self._key_callback
         )
@@ -117,10 +135,12 @@ class BaseEnv(object):
         # Create model and data instances
         self.model = mujoco.MjModel.from_xml_string(xml)
         self.data = mujoco.MjData(self.model)
+        self.mjx_model = mjx.put_model(self.model)
+        self.mjx_data = mjx.put_data(self.model, self.data)
 
         # Launch the viewer
         if not args.headless:
-            self._create_viewer()
+            self._create_viewer(args)
         else:
             # If sim is run in headless mode, set the update_viewer method
             # to a lambda function which essentially does nothing
