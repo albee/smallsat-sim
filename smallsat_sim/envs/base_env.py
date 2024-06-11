@@ -55,6 +55,8 @@ class BaseEnv(object):
             if not args.mjx:
                 mujoco.mj_step(self.model, self.data)
             else:
+                print(self.data.time)
+                # self.mjx_data = mjx.put_data(self.model, self.data)
                 # self.mjx_data = self.jit_step(self.mjx_model, self.mjx_data)
                 self.mjx_data = mjx.step(self.mjx_model, self.mjx_data)
                 self.data = mjx.get_data(self.model, self.mjx_data)
@@ -101,7 +103,7 @@ class BaseEnv(object):
 
         # Set default camera options
         self.viewer.cam.distance = 3.0
-        self.viewer.cam.trackbodyid = 2  # tracks smallsat
+        self.viewer.cam.trackbodyid = 1  # tracks smallsat
         self.viewer.cam.azimuth = 10.0
         self.viewer.cam.type = 1
 
@@ -168,8 +170,10 @@ class BaseEnv(object):
         # Perturbations
         if self.perturbations:
             self.data.ctrl = self.perturbations.apply(input)
+            self.mjx_data.ctrl = self.perturbations.apply(input)
         else:
             self.data.ctrl = input
+            self.mjx_data.ctrl = input
 
     def _post_physics_step(self) -> None:
         """
