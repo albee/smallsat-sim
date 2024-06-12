@@ -38,7 +38,6 @@ class EnvConfig(BaseEnvConfig):
             control_decimation = 10
 
             class gains:
-<<<<<<< smallsat_sim/envs/astrobee/cfg/config.py
                 Kp_x = 0.2
                 Kd_x = 1.0
                 Kp_q = 3.0
@@ -63,7 +62,6 @@ class EnvConfig(BaseEnvConfig):
                 # Terminal quadratic cost on position
                 Q_e = np.eye(3)
             
->>>>>>> smallsat_sim/envs/astrobee/cfg/config.py
         # Nominal MPC controller parameters
         class NominalMPC:
             # Decimate the controller frequency such that it doesn't
