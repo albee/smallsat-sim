@@ -13,5 +13,5 @@ python = "^3.10"  # Specify your Python version requirement here
 casadi = "3.6.4"
 numpy = "1.26"
 pyyaml = "6.0.1"
-mujoco = "3.1.5"
-mujoco-mjx = "3.1.5"
+mujoco = "3.1.6"
+mujoco-mjx = "3.1.6"
