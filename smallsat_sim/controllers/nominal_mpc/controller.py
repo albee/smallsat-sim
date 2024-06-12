@@ -20,6 +20,7 @@ class NominalMPCController(BaseController):
     See acados documentation for details:
     https://docs.acados.org/
     """
+
     def __init__(self, env, planner) -> None:
         # Fetch correct controller config
         self.ctrl_cfg = env.env_cfg.control.NominalMPC
@@ -62,47 +63,74 @@ class NominalMPCController(BaseController):
         acados_model.p = model.p
         acados_model.name = "OCPsolver"
 
+        # Define artificial reference points which are opt. variables
+        x_a = ca.SX.sym('x_a', 13, 1)
+        #u_a = ca.SX.sym('u_a', 12, 1)
+
+        x_a_dot = ca.SX.sym('x_a_dot', 13, 1)
+        #u_a_dot = ca.SX.sym('u_a_dot', 12, 1)
+
+        acados_model.x = ca.vertcat(acados_model.x,
+                                    x_a)
+        
+        acados_model.f_expl_expr = ca.vertcat(acados_model.f_expl_expr,
+                                              ca.SX.zeros(13, 1))
+        
+        acados_model.f_impl_expr = ca.vertcat(acados_model.f_impl_expr,
+                                              x_a_dot)
+        
+        acados_model.con_h_expr_e = model.x - x_a
+
         # Assign parameters and model
         Ts = self.ctrl_cfg.Ts
-        p = ca.vertcat(SX.sym("xref"), SX.sym("yref"), SX.sym("zref"))
+        p = ca.vertcat(
+            SX.sym("x_r"),
+            SX.sym("y_r"),
+            SX.sym("z_r"),
+            SX.sym("eta_r"),
+            SX.sym("eps1_r"),
+            SX.sym("eps2_r"),
+            SX.sym("eps3_r"),
+            SX.sym("vx_r"),
+            SX.sym("vy_r"),
+            SX.sym("vz_r"),
+            SX.sym("omega_x_r"),
+            SX.sym("omega_y_r"),
+            SX.sym("omega_z_r"),
+        )
         acados_model.p = p
         ocp.model = acados_model
 
         # Define and assign cost functions
         Q = self.ctrl_cfg.cost.Q
         R = self.ctrl_cfg.cost.R
+        S = R
+        T = Q
         Q_e = self.ctrl_cfg.cost.Q_e
         ocp.cost.cost_type = "EXTERNAL"
-        ocp.cost.cost_type_e = "EXTERNAL"
-        ocp.model.cost_expr_ext_cost = model.u.T @ R @ model.u + model.x.T @ Q @ model.x
-        ocp.model.cost_expr_ext_cost_e = (model.x[0:3] - p).T @ Q_e @ (model.x[0:3] - p)
+        ocp.model.cost_expr_ext_cost = (model.u.T) @ R @ (model.u) + (model.x.T-x_a.T) @ Q @ (model.x-x_a) + (x_a - p).T @ T @ (x_a - p)
 
         # Set OCP dimensions
-        nx = model.x.size()[0] # number of states
-        nu = model.u.size()[0] # number of inputs
+        nx = acados_model.x.size()[0]  # number of states
+        nu = acados_model.u.size()[0]  # number of inputs
         ocp.dims.nx = nx
         ocp.dims.nu = nu
-        ocp.dims.np = p.size()[0] # number of parameters
-        ocp.dims.N = self.ctrl_cfg.N # prediction horizon length
+        ocp.dims.np = p.size()[0]  # number of parameters
+        ocp.dims.N = self.ctrl_cfg.N  # prediction horizon length
+        ocp.dims.nh_e  = 1
 
         # Define state constraints
         # Lower and Upper bound constraints for intermediate stages
         ocp.constraints.lbx = np.array(
-            [-100, -100, -100, -1.1, -1, -1, -1, -1, -1, -1, -0.5, -0.5, -0.5]
+            [-100, -100, -100, -1.1, -1, -1, -1, -1, -1, -1, -0.5, -0.5, -0.5, 100, -100, -100, -1.1, -1, -1, -1, 0, 0, 0, 0, 0, 0]
         )
         ocp.constraints.ubx = np.array(
-            [100, 100, 100, 1.1, 1, 1, 1, 1, 1, 1, 0.5, 0.5, 0.5]
+            [100, 100, 100, 1.1, 1, 1, 1, 1, 1, 1, 0.5, 0.5, 0.5, 100, 100, 100, 1.1, 1, 1, 1, 0, 0, 0, 0, 0, 0]
         )
         ocp.constraints.idxbx = np.arange(nx)
 
-        # Lower and Upper bound constraints for final stage of horizon (terminal cost)
-        ocp.constraints.lbx_e = np.array(
-            [-100, -100, -100, -1.1, -1, -1, -1, -1, -1, -1, -0.5, -0.5, -0.5]
-        )
-        ocp.constraints.ubx_e = np.array(
-            [100, 100, 100, 1.1, 1, 1, 1, 1, 1, 1, 0.5, 0.5, 0.5]
-        )
-        ocp.constraints.idxbx_e = np.arange(nx)
+        ocp.constraints.lh_e = np.zeros((13,1))
+        ocp.constraints.uh_e = np.zeros((13,1))
 
         # Define input constraints
         # Fetch thurster limits from the model configuration
@@ -114,8 +142,9 @@ class NominalMPCController(BaseController):
         ocp.constraints.idxbu = np.arange(nu)
 
         # Set intial condition
-        ocp.constraints.x0 = env.obs[0:13]
-        ocp.constraints.idxbx_0 = np.arange(nx)
+        ocp.constraints.idxbx_0 = np.arange(13)
+        ocp.constraints.lbx_0 = env.obs[0:13]
+        ocp.constraints.ubx_0 = env.obs[0:13]
         ocp.parameter_values = np.zeros(ocp.dims.np)
 
         # Configure solver options
@@ -145,8 +174,9 @@ class NominalMPCController(BaseController):
         Initializes the solver. Also known as "warm start".
         """
         xinit = env.obs[0:13]
+        x_guess = np.concatenate((xinit, np.zeros((13,))))
 
-        [self.ocp_solver.set(i, "x", xinit) for i in range(self.ctrl_cfg.N + 1)]
+        [self.ocp_solver.set(i, "x", x_guess) for i in range(self.ctrl_cfg.N + 1)]
         [self.ocp_solver.set(i, "u", np.zeros((12, 1))) for i in range(self.ctrl_cfg.N)]
 
     def get_control_input(self, env: BaseEnv) -> np.ndarray:
@@ -160,7 +190,12 @@ class NominalMPCController(BaseController):
 
         # Set the reference position
         ref_pos = self.planner.get_reference(env.obs).reshape(3, 1)
-        [self.ocp_solver.set(i, "p", ref_pos) for i in range(self.ctrl_cfg.N + 1)]
+        ref_quat = np.array([1,0,0,0]).reshape(4,1)
+        ref_vel = np.zeros((3,1))
+        ref_omega = np.zeros((3,1))
+        ref = np.concatenate((ref_pos, ref_quat, ref_vel, ref_omega))
+
+        [self.ocp_solver.set(i, "p", ref) for i in range(self.ctrl_cfg.N + 1)]
 
         # Solve for the first control input in receding horizon fashion
         u0 = self.ocp_solver.solve_for_x0(env.obs[0:13], print_stats_on_failure=True)

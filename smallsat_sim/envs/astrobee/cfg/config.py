@@ -57,12 +57,30 @@ class EnvConfig(BaseEnvConfig):
             class cost:
                 # Intermediate quadratic cost on state
                 Q = np.zeros((13,13))
+
+                # Penalize position
+                Q[0,0] = 1e-1
+                Q[1,1] = 1e-1
+                Q[2,2] = 1e-1
+
+                # Penalize attitude
+                Q[3,3] = 1e-2
+                Q[4,4] = 1e-2
+                Q[5,5] = 1e-2
+                Q[6,6] = 1e-2
+
+                # Penalize linear velocity
+                Q[7,7] = 1e-3
+                Q[8,8] = 1e-3
+                Q[9,9] = 1e-3
+
+                # Penalize angular velocity
                 Q[10,10] = 1e-2
                 Q[11,11] = 1e-2
                 Q[12,12] = 1e-2
 
                 # Intermediate cost on input
-                R = 1e-3 * np.eye(12)
+                R = 1e-4 * np.eye(12)
 
                 # Terminal quadratic cost on position
                 Q_e = np.eye(3)

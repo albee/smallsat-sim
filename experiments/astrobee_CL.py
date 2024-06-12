@@ -1,7 +1,7 @@
 import time
 from smallsat_sim.utils.helpers import get_args
 from smallsat_sim.controllers.pd.controller import PDController
-from smallsat_sim.controllers.nominal_mpc.controller import NominalMPCController
+from smallsat_sim.controllers.nominal_mpc.controller import NominalMPCController 
 from smallsat_sim.envs.astrobee.env import AstrobeeEnv
 from smallsat_sim.planners.oracle.oracle import OraclePlanner
 
