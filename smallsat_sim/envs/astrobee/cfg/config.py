@@ -1,5 +1,4 @@
 from smallsat_sim.envs.base_env_config import BaseEnvConfig
-
 import numpy as np
 
 
@@ -39,10 +38,11 @@ class EnvConfig(BaseEnvConfig):
             control_decimation = 10
 
             class gains:
-                Kp_x = 20.0
-                Kd_x = 20.0
-                Kp_q = 1.0
-                Kd_q = 2.0
+<<<<<<< smallsat_sim/envs/astrobee/cfg/config.py
+                Kp_x = 0.2
+                Kd_x = 1.0
+                Kp_q = 3.0
+                Kd_q = 5.0
 
         # LQR controller params
         class LQR:
@@ -62,7 +62,8 @@ class EnvConfig(BaseEnvConfig):
 
                 # Terminal quadratic cost on position
                 Q_e = np.eye(3)
-
+            
+>>>>>>> smallsat_sim/envs/astrobee/cfg/config.py
         # Nominal MPC controller parameters
         class NominalMPC:
             # Decimate the controller frequency such that it doesn't
@@ -85,3 +86,24 @@ class EnvConfig(BaseEnvConfig):
 
                 # Terminal quadratic cost on position
                 Q_e = np.eye(3)
+
+
+    class planner:
+        resolution = 1  # Resolution of the grid
+        epsilon = 2.5  # Initial heuristic inflation factor
+        epsilon_increment = 0.2 # Increment of the heuristic inflation factor
+        epsilon_decrement = 0.2 # Decrement of the heuristic inflation factor
+        bounds = np.array([[-10,-10,-10], [10, 10, 10]])  # Bounds for the planner
+        # Define the possible directions and their costs
+        unit_directions = {(1, 0, 0): 1, (0, 1, 0): 1, (0, 0, 1): 1, \
+                           (-1, 0, 0): 1, (0, -1, 0): 1, (0, 0, -1): 1, \
+                           (1, 1, 0): np.sqrt(2), (1, 0, 1): np.sqrt(2), (0, 1, 1): np.sqrt(2), \
+                           (-1, -1, 0): np.sqrt(2), (-1, 0, -1): np.sqrt(2), (0, -1, -1): np.sqrt(2), \
+                           (1, -1, 0): np.sqrt(2), (-1, 1, 0): np.sqrt(2), (1, 0, -1): np.sqrt(2), \
+                           (-1, 0, 1): np.sqrt(2), (0, 1, -1): np.sqrt(2), (0, -1, 1): np.sqrt(2), \
+                           (1, 1, 1): np.sqrt(3), (-1, -1, -1): np.sqrt(3), \
+                           (1, -1, -1): np.sqrt(3), (-1, 1, -1): np.sqrt(3), (-1, -1, 1): np.sqrt(3), \
+                           (1, 1, -1): np.sqrt(3), (1, -1, 1): np.sqrt(3), (-1, 1, 1): np.sqrt(3)}
+        
+        start_pos = (0, 0, 10)
+        goal_pos = (0, 3, -10)
