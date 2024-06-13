@@ -79,6 +79,8 @@ class EnvConfig(BaseEnvConfig):
                 Q[11,11] = 1e-2
                 Q[12,12] = 1e-2
 
+                Q = np.eye(13)
+
                 # Intermediate cost on input
                 R = 1e-4 * np.eye(12)
 

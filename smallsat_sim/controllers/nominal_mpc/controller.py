@@ -105,8 +105,7 @@ class NominalMPCController(BaseController):
         Q = self.ctrl_cfg.cost.Q
         R = self.ctrl_cfg.cost.R
         S = R
-        T = Q
-        Q_e = self.ctrl_cfg.cost.Q_e
+        T = 2*Q
         ocp.cost.cost_type = "EXTERNAL"
         ocp.model.cost_expr_ext_cost = (model.u.T) @ R @ (model.u) + (model.x.T-x_a.T) @ Q @ (model.x-x_a) + (x_a - p).T @ T @ (x_a - p)
 
@@ -122,10 +121,10 @@ class NominalMPCController(BaseController):
         # Define state constraints
         # Lower and Upper bound constraints for intermediate stages
         ocp.constraints.lbx = np.array(
-            [-100, -100, -100, -1.1, -1, -1, -1, -1, -1, -1, -0.5, -0.5, -0.5, 100, -100, -100, -1.1, -1, -1, -1, 0, 0, 0, 0, 0, 0]
+            [-100, -100, -100, -1.0, -1, -1, -1, -1, -1, -1, -0.5, -0.5, -0.5, -100, -100, -100, -1.0, -1, -1, -1, 0, 0, 0, 0, 0, 0]
         )
         ocp.constraints.ubx = np.array(
-            [100, 100, 100, 1.1, 1, 1, 1, 1, 1, 1, 0.5, 0.5, 0.5, 100, 100, 100, 1.1, 1, 1, 1, 0, 0, 0, 0, 0, 0]
+            [100, 100, 100, 1.0, 1, 1, 1, 1, 1, 1, 0.5, 0.5, 0.5, 100, 100, 100, 1.0, 1, 1, 1, 0, 0, 0, 0, 0, 0]
         )
         ocp.constraints.idxbx = np.arange(nx)
 
@@ -174,7 +173,7 @@ class NominalMPCController(BaseController):
         Initializes the solver. Also known as "warm start".
         """
         xinit = env.obs[0:13]
-        x_guess = np.concatenate((xinit, np.zeros((13,))))
+        x_guess = np.concatenate((xinit, xinit))
 
         [self.ocp_solver.set(i, "x", x_guess) for i in range(self.ctrl_cfg.N + 1)]
         [self.ocp_solver.set(i, "u", np.zeros((12, 1))) for i in range(self.ctrl_cfg.N)]
