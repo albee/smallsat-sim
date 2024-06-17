@@ -3,6 +3,7 @@ import mujoco
 import mujoco.viewer
 from mujoco import mjx
 import jax
+import glfw
 
 from smallsat_sim.envs.dynamics import SymbolicModel
 from smallsat_sim.utils import xml_parser
@@ -38,7 +39,7 @@ class BaseEnv(object):
         """
         pass
 
-    def step(self, args, input: np.array) -> None:
+    def step(self, args, input: np.array, window) -> None:
         """
         Simulate environment for one timestep.
         """
@@ -50,6 +51,9 @@ class BaseEnv(object):
             # Update viewer
             if substep % self.env_cfg.viewer.viewer_decimation == 0:
                 self._update_viewer()
+                self._update_renderer()
+                glfw.swap_buffers(window)
+                glfw.poll_events()
 
             # Step in MuJoCo or MJX engine
             if not args.mjx:
@@ -88,15 +92,7 @@ class BaseEnv(object):
         """
         Creates a viewer to visualize simulation
         """
-        # Create instance of MuJoCo or MJX viewer
-        # if not args.mjx:
-        #     self.viewer = mujoco.viewer.launch_passive(
-        #         self.model, self.data, key_callback=self._key_callback
-        #     )
-        # else:
-        #     self.viewer = mujoco.viewer.launch_passive(
-        #         self.mjx_model, self.mjx_data, key_callback=self._key_callback
-        # )
+        # Create instance of the viewer
         self.viewer = mujoco.viewer.launch_passive(
             self.model, self.data, key_callback=self._key_callback
         )
@@ -106,6 +102,23 @@ class BaseEnv(object):
         self.viewer.cam.trackbodyid = 1  # tracks smallsat
         self.viewer.cam.azimuth = 10.0
         self.viewer.cam.type = 1
+
+    def _create_renderer(self) -> None:
+        """
+        Creates a renderer to visualize the experiments (to later save them to a video).
+        """
+        # Create instance of MuJoCo renderer
+        self.renderer = mujoco.Renderer(self.model, width=1920, height=1080)
+
+        # Set up the scene and the default camera options
+        self.cam = mujoco.MjvCamera()
+        self.cam.distance = 5.0
+        self.cam.trackbodyid = 2  # tracks smallsat
+        self.cam.azimuth = 10.0
+        self.cam.type = 1
+
+        # Save frames to create the video
+        self.frames = []
 
     def _load_cfg(self, env_name: str, model_name: str) -> dict:
         """
@@ -140,6 +153,8 @@ class BaseEnv(object):
         self.mjx_model = mjx.put_model(self.model)
         self.mjx_data = mjx.put_data(self.model, self.data)
 
+        self._create_renderer()
+
         # Launch the viewer
         if not args.headless:
             self._create_viewer(args)
@@ -154,6 +169,16 @@ class BaseEnv(object):
         Updates the viewer
         """
         self.viewer.sync()
+
+    def _update_renderer(self):
+        """
+        Updates the renderer.
+        """
+        self.renderer.update_scene(self.data, self.cam)
+        # sim_img = self.renderer.render().copy()
+        # self.frames.append(sim_img)
+        self.renderer.render()
+
 
     def _pre_physics_step(self, input: np.ndarray) -> None:
         """
