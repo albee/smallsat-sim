@@ -38,12 +38,12 @@ class BaseEnv(object):
         """
         pass
 
-    def step(self, args, input: np.array) -> None:
+    def step(self, args: Namespace, input: np.array) -> None:
         """
         Simulate environment for one timestep.
         """
         # Prepare env for simulation step
-        self._pre_physics_step(input)
+        self._pre_physics_step(args, input)
 
         # Advance simulation
         for substep in range(self.env_cfg.control.control_decimation):
@@ -58,7 +58,6 @@ class BaseEnv(object):
                 print(self.data.time)
                 # self.mjx_data = mjx.put_data(self.model, self.data)
                 self.mjx_data = self.jit_step(self.mjx_model, self.mjx_data)
-                # self.mjx_data = mjx.step(self.mjx_model, self.mjx_data)
                 self.data = mjx.get_data(self.model, self.mjx_data)
 
         # Execute post physics steps
@@ -88,7 +87,7 @@ class BaseEnv(object):
         """
         Creates a viewer to visualize simulation
         """
-        # Create instance of the viewer
+        # Create instance of viewer
         self.viewer = mujoco.viewer.launch_passive(
             self.model, self.data, key_callback=self._key_callback
         )
@@ -147,7 +146,7 @@ class BaseEnv(object):
         """
         self.viewer.sync()
 
-    def _pre_physics_step(self, input: np.ndarray) -> None:
+    def _pre_physics_step(self, args: Namespace, input: np.ndarray) -> None:
         """
         Prepares the environment for the simulation step in MuJoCo.
         This includes:
@@ -162,10 +161,15 @@ class BaseEnv(object):
         # Perturbations
         if self.perturbations:
             self.data.ctrl = self.perturbations.apply(input)
-            self.mjx_data.ctrl = self.perturbations.apply(input)
+            if args.mjx:
+                print(self.mjx_data.ctrl)
+                # self.mjx_data.ctrl = self.perturbations.apply(input)
+                self.mjx_data = self.mjx_data.replace(ctrl=jax.numpy.asarray(self.perturbations.apply(input)))
+                print(self.mjx_data.ctrl)
         else:
             self.data.ctrl = input
-            self.mjx_data.ctrl = input
+            # if args.mjx:
+            #     self.mjx_data.ctrl = input
 
     def _post_physics_step(self) -> None:
         """
