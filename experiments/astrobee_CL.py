@@ -33,5 +33,3 @@ while True:
 
         # Advance simulation
         env.step(args=args, input=ctrl_input)
-
-glfw.terminate()

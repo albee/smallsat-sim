@@ -55,7 +55,6 @@ class BaseEnv(object):
             if not args.mjx:
                 mujoco.mj_step(self.model, self.data)
             else:
-                print(self.data.time)
                 # self.mjx_data = mjx.put_data(self.model, self.data)
                 self.mjx_data = self.jit_step(self.mjx_model, self.mjx_data)
                 self.data = mjx.get_data(self.model, self.mjx_data)
@@ -162,10 +161,8 @@ class BaseEnv(object):
         if self.perturbations:
             self.data.ctrl = self.perturbations.apply(input)
             if args.mjx:
-                print(self.mjx_data.ctrl)
                 # self.mjx_data.ctrl = self.perturbations.apply(input)
                 self.mjx_data = self.mjx_data.replace(ctrl=jax.numpy.asarray(self.perturbations.apply(input)))
-                print(self.mjx_data.ctrl)
         else:
             self.data.ctrl = input
             # if args.mjx:
