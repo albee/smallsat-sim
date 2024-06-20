@@ -32,4 +32,4 @@ while True:
         ctrl_input = ctrl.get_control_input(env)
 
         # Advance simulation
-        env.step(args=args, input=ctrl_input)
+        env.step(input=ctrl_input)
