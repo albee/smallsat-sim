@@ -104,8 +104,7 @@ class NominalMPCController(BaseController):
         # Define and assign cost functions
         Q = self.ctrl_cfg.cost.Q
         R = self.ctrl_cfg.cost.R
-        S = R
-        T = 2*Q
+        T = self.ctrl_cfg.cost.T
         ocp.cost.cost_type = "EXTERNAL"
         ocp.model.cost_expr_ext_cost = (model.u.T) @ R @ (model.u) + (model.x.T-x_a.T) @ Q @ (model.x-x_a) + (x_a - p).T @ T @ (x_a - p)
 
