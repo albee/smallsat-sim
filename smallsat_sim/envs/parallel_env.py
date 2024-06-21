@@ -1,5 +1,142 @@
 from smallsat_sim.envs.base_env import BaseEnv
+import numpy as np
+import mujoco
+import mujoco.viewer
+import jax
+import jax.numpy as jnp
+
+from smallsat_sim.utils import xml_parser
+
+from mujoco import mjx
+
+from argparse import Namespace
+
 
 class ParallelEnv(BaseEnv):
     def __init__(self, args) -> None:
         super().__init__(args)
+
+        # Perform a Just In Time compilation of mjx.step() so that it runs efficiently on GPU
+        self.jit_step = jax.jit(jax.vmap(mjx.step, in_axes=(None, 0)))
+
+    def reset(self) -> None:
+        """
+        Resets environment to a desired state.
+        """
+        pass
+
+    def step(self, input) -> None:
+        """
+        Simulate environment for one timestep.
+        """
+        # Prepare env for simulation step
+        self._pre_physics_step(input)
+
+        # Advance simulation
+        for substep in range(self.env_cfg.control.control_decimation):
+            # Update viewer
+            if substep % self.env_cfg.viewer.viewer_decimation == 0:
+                self._update_viewer()
+
+            self.batch = self.jit_step(self.mjx_model, self.batch)
+
+        # Print some information for debugging
+        print(f"Time: {self.batch.time[0]} and Pos = {self.batch.qpos[0]}")
+
+        # Execute post physics steps
+        self._post_physics_step()
+
+    def get_obs(self) -> np.array:
+        """
+        Return all states
+        """
+        # obs = [r (3),
+        #        q (4),
+        #        v (3), --> in BODY frame
+        #        omega (3)]
+
+        # Retrieve current rotation matrix
+        R = self.batch.xmat[:,1,:,:]
+
+        # Rotate matrix
+        R = jnp.transpose(R, (0,2,1))
+
+        @jax.vmap
+        def multiply_transpose_velocity(R, vel):
+            return jnp.matmul(R, vel)  # Shape (3,)
+
+        # Rotate intertial velocity to body velocity
+        vel_body = multiply_transpose_velocity(R, self.batch.qvel[:,:3])
+
+        # Create array of observations
+        obs = jnp.concatenate((self.batch.qpos, vel_body, self.batch.qvel[:,3:]), axis=1)
+
+        return obs
+    
+    def _create_viewer(self, args) -> None:
+        """
+        Creates a viewer to visualize simulation
+        """
+        self.viewer = None
+
+    def _setup_sim(self, args: Namespace):
+        """
+        Prepares simulation according to args.
+        Creates a viewer depending on headless flag.
+        """
+        # Generate xml using env and model config files
+        xml = xml_parser.generate_mujoco_xml(self.env_cfg, self.model_cfg)
+        # Create model and data instances
+        self.model = mujoco.MjModel.from_xml_string(xml)
+        self.data = mujoco.MjData(self.model)
+        self.mjx_model = mjx.put_model(self.model)
+        self.mjx_data = mjx.put_data(self.model, self.data)
+
+        # Batch the data
+        rng = jax.random.PRNGKey(0)
+        rng = jax.random.split(rng, 4096)
+        self.batch = jax.vmap(lambda rng: self.mjx_data.replace(qpos=self.mjx_data.qpos))(rng)
+        self.batched_mj_data = mjx.get_data(self.model, self.batch)
+
+        # Launch the viewer
+        if not args.headless:
+            self._create_viewer(args)
+        else:
+            # If sim is run in headless mode, set the update_viewer method
+            # to a lambda function which essentially does nothing
+            self.viewer = None
+            self._update_viewer = lambda *args, **kwargs: None
+
+    def _update_viewer(self):
+        """
+        Updates the viewer
+        """
+        pass
+
+    def _pre_physics_step(self, input: np.ndarray) -> None:
+        """
+        Prepares the environment for the simulation step in MuJoCo.
+        This includes:
+            - Adding external disturbances
+            - Adding perturbations to control input and model dynamics
+            - ...
+        """
+        # External disturbances
+        if self.disturbance:
+            self.data.qfrc_applied = self.disturbance.apply()
+
+        # Perturbations
+        if self.perturbations:
+                self.mjx_data = self.mjx_data.replace(ctrl=jax.numpy.asarray(self.perturbations.apply(input)))
+                self.data = mjx.get_data(self.model, self.mjx_data)
+        else:
+                self.batch = self.batch.replace(ctrl=jax.numpy.asarray(input))
+                self.batched_mj_data = mjx.get_data(self.model, self.batch)
+
+        print(f"Input: {input}")
+
+    def _key_callback(self, keycode) -> None:
+        """
+        Callback function for keypressed detected in the MuJoCo viewer
+        """
+        raise NotImplementedError("Key callbacks are not supported for simulation in parallel.")

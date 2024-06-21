@@ -1,21 +1,27 @@
 import time
 from smallsat_sim.utils.helpers import get_args
+
 from smallsat_sim.controllers.pd.controller import PDController
 from smallsat_sim.controllers.nominal_mpc.controller import NominalMPCController
+from smallsat_sim.controllers.dummy_rl.controller import DummyRL
+
 from smallsat_sim.envs.astrobee.env import AstrobeeEnv
+from smallsat_sim.envs.astrobee_parallel.env import AstrobeeEnvParallel
+
 from smallsat_sim.planners.oracle.oracle import OraclePlanner
+from smallsat_sim.planners.parallel_planner.parallel_planner import ParallelPlanner
 
 # Get arguments for script execution
 args = get_args()
 
 # Create environment
-env = AstrobeeEnv(args=args)
+env = AstrobeeEnvParallel(args=args)
 
 # Create planner
-planner = OraclePlanner(env)
+planner = ParallelPlanner(env)
 
 # Create controller
-ctrl = PDController(env, planner)
+ctrl = DummyRL(env, planner)
 
 # Define start time
 start_time = time.time()

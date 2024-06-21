@@ -84,10 +84,10 @@ class PDController(BaseController):
         desired_quat = self.quat_ref
         desired_linvel = self.v_ref  # Linear
         desired_angvel = np.zeros((3, 1))
-        current_pos = np.reshape(env.data.qpos[:3], (3, 1))
-        current_quat = np.reshape(env.data.qpos[3:], (4, 1))
-        current_linvel = np.reshape(env.data.qvel[:3], (3, 1))  # Linear
-        current_angvel = np.reshape(env.data.qvel[3:], (3, 1))  # Angular
+        current_pos = np.reshape(env.obs[:3], (3, 1))
+        current_quat = np.reshape(env.obs[3:7], (4, 1))
+        current_linvel = np.reshape(env.obs[7:10], (3, 1))  # Linear
+        current_angvel = np.reshape(env.obs[10:13], (3, 1))  # Angular
 
         x_error = desired_pos - current_pos  # Linear, world frame
         v_error = desired_linvel - current_linvel  # Linear, world frame
