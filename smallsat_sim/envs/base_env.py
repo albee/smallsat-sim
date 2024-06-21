@@ -49,7 +49,7 @@ class BaseEnv(object):
             # Update viewer
             if substep % self.env_cfg.viewer.viewer_decimation == 0:
                 self._update_viewer()
-                self._update_renderer()
+                # self._update_renderer()
 
             # Step in MuJoCo engine
             mujoco.mj_step(self.model, self.data)

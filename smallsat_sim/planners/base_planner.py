@@ -18,6 +18,9 @@ class BasePlanner(object):
             self.visualize = lambda *args, **kwargs: None
 
         self.renderer = env.renderer
+        self.frames = env.frames
+        self.data = env.data
+        self.cam = env.cam
 
         # Use parser args
         self.args = env.args
@@ -34,6 +37,8 @@ class BasePlanner(object):
         """
         self.viewer.user_scn.ngeom = 0
         i = 0
+        if self.args.video:
+            self.renderer.update_scene(self.data, self.cam)
         for point in points:
             x = point[0]
             y = point[1]
@@ -56,5 +61,7 @@ class BasePlanner(object):
                     mat=np.eye(3).flatten(),
                     rgba=np.array([1, 0, 0, 2]),
                 )
+                sim_img = self.renderer.render().copy()
+                self.frames.append(sim_img)
             i += 1
         self.viewer.user_scn.ngeom = i
