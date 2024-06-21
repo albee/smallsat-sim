@@ -115,7 +115,7 @@ class NominalMPCController(BaseController):
         ocp.dims.nu = nu
         ocp.dims.np = p.size()[0]  # number of parameters
         ocp.dims.N = self.ctrl_cfg.N  # prediction horizon length
-        ocp.dims.nh_e  = 1
+        ocp.dims.nh_e  = acados_model.con_h_expr_e.size()[0]
 
         # Define state constraints
         # Lower and Upper bound constraints for intermediate stages
