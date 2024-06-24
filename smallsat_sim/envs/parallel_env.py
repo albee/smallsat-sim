@@ -14,6 +14,7 @@ from argparse import Namespace
 
 class ParallelEnv(BaseEnv):
     def __init__(self, args) -> None:
+        self.n_envs = 4096
         super().__init__(args)
 
         # Perform a Just In Time compilation of mjx.step() so that it runs efficiently on GPU
@@ -77,7 +78,18 @@ class ParallelEnv(BaseEnv):
         """
         Creates a viewer to visualize simulation
         """
-        self.viewer = None
+        # self.viewer = None
+
+        # Create instance of MuJoCo viewer
+        self.viewer = mujoco.viewer.launch_passive(
+            self.model, self.batched_mj_data[0], key_callback=self._key_callback
+        )
+
+        # Set default camera options
+        self.viewer.cam.distance = 3.0
+        self.viewer.cam.trackbodyid = 1  # tracks smallsat
+        self.viewer.cam.azimuth = 10.0
+        self.viewer.cam.type = 1
 
     def _setup_sim(self, args: Namespace):
         """
@@ -94,9 +106,10 @@ class ParallelEnv(BaseEnv):
 
         # Batch the data
         rng = jax.random.PRNGKey(0)
-        rng = jax.random.split(rng, 4096)
+        rng = jax.random.split(rng, self.n_envs)
         self.batch = jax.vmap(lambda rng: self.mjx_data.replace(qpos=self.mjx_data.qpos))(rng)
         self.batched_mj_data = mjx.get_data(self.model, self.batch)
+        mjx.get_data_into(self.batched_mj_data, self.model, self.batch)
 
         # Launch the viewer
         if not args.headless:
@@ -111,7 +124,8 @@ class ParallelEnv(BaseEnv):
         """
         Updates the viewer
         """
-        pass
+        # pass
+        self.viewer.sync()
 
     def _pre_physics_step(self, input: np.ndarray) -> None:
         """
@@ -131,7 +145,8 @@ class ParallelEnv(BaseEnv):
                 self.data = mjx.get_data(self.model, self.mjx_data)
         else:
                 self.batch = self.batch.replace(ctrl=jax.numpy.asarray(input))
-                self.batched_mj_data = mjx.get_data(self.model, self.batch)
+                # self.batched_mj_data = mjx.get_data(self.model, self.batch)
+                mjx.get_data_into(self.batched_mj_data, self.model, self.batch)
 
         print(f"Input: {input}")
 

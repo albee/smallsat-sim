@@ -15,7 +15,7 @@
 # under the License.
 
 from smallsat_sim.controllers.base_controller import BaseController
-from smallsat_sim.envs.base_env import BaseEnv
+from smallsat_sim.envs.parallel_env import ParallelEnv
 from smallsat_sim.utils.helpers import quat_multiply, quat_conjugate, Rquat, sgn_quat
 
 import numpy as np
@@ -33,7 +33,7 @@ class DummyRL(BaseController):
 
         
 
-    def get_control_input(self, env: BaseEnv):
+    def get_control_input(self, env: ParallelEnv):
         """Defines the controller callback for the simulation step."""
         
-        return jax.random.uniform(jax.random.PRNGKey(0), (4096, 12), minval=0.0, maxval=0.3)
+        return jax.random.uniform(jax.random.PRNGKey(0), (env.n_envs, 12), minval=0.0, maxval=0.3)
