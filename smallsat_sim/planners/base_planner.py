@@ -17,13 +17,15 @@ class BasePlanner(object):
         else:
             self.visualize = lambda *args, **kwargs: None
 
-        self.renderer = env.renderer
-        self.frames = env.frames
-        self.data = env.data
-        self.cam = env.cam
-
         # Use parser args
         self.args = env.args
+
+        # Get the renderer to visulaize the reference
+        self.renderer = env.renderer
+        if self.args.video:
+            self.frames = env.frames
+            self.data = env.data
+            self.cam = env.cam
 
     def get_reference(self, obs: np.ndarray) -> np.ndarray:
         """
@@ -61,7 +63,9 @@ class BasePlanner(object):
                     mat=np.eye(3).flatten(),
                     rgba=np.array([1, 0, 0, 2]),
                 )
-                sim_img = self.renderer.render().copy()
-                self.frames.append(sim_img)
+                # sim_img = self.renderer.render().copy()
+                # self.frames.append(sim_img)
             i += 1
+        sim_img = self.renderer.render().copy()
+        self.frames.append(sim_img)
         self.viewer.user_scn.ngeom = i

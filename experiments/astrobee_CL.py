@@ -34,5 +34,5 @@ while env.data.time <= env.env_cfg.sim.max_sim_time:
         # Advance simulation
         env.step(input=ctrl_input)
 
-# Create simulation video
+# Create simulation video if desired
 env.get_sim_rendering(env.env_name)

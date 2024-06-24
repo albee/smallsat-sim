@@ -41,11 +41,6 @@ class NominalMPCController(BaseController):
         else:
             self._visualize = lambda *args, **kwargs: None
 
-        self.renderer = env.renderer
-
-        # Use parser args
-        self.args = env.args
-
     def _generate_solver(self, env) -> None:
         """
         This method generates the necessary solver C code
@@ -188,16 +183,4 @@ class NominalMPCController(BaseController):
                 mat=np.eye(3).flatten(),
                 rgba=np.array([0, 0, 1, 2]),
             )
-            if self.args.video:
-                tmp = self.renderer.scene.ngeom
-                self.renderer.scene.ngeom += self.ctrl_cfg.N
-                mujoco.mjv_initGeom(
-                    self.renderer.scene.geoms[tmp + i],
-                    type=mujoco.mjtGeom.mjGEOM_SPHERE,
-                    size=[0.05, 0, 0],
-                    pos=point,
-                    mat=np.eye(3).flatten(),
-                    rgba=np.array([0, 0, 1, 2]),
-                )
-
         self.viewer.user_scn.ngeom += self.ctrl_cfg.N + 1

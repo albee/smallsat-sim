@@ -49,7 +49,7 @@ class BaseEnv(object):
             # Update viewer
             if substep % self.env_cfg.viewer.viewer_decimation == 0:
                 self._update_viewer()
-                # self._update_renderer()
+                # self._update_renderer() # Moved to planner to visualize ref. as well
 
             # Step in MuJoCo engine
             mujoco.mj_step(self.model, self.data)
@@ -81,8 +81,11 @@ class BaseEnv(object):
         """
         Create a save a video rendering of the experiment.
         """
+        if not self.args.video:
+            return
+        
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        fps = 60
+        fps = 60 / 3 # Divide by number of reference points that you visualize
         height, width, _ = self.frames[0].shape
         
         video_writer = cv2.VideoWriter(output_filename + '.mp4', fourcc, fps, (width, height))
