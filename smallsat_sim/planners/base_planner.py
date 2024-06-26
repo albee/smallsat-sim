@@ -39,7 +39,7 @@ class BasePlanner(object):
         """
         self.viewer.user_scn.ngeom = 0
         i = 0
-        if self.args.video:
+        if self.args.video and self.data.time >= self.args.video_start and self.data.time <= self.args.video_end:
             self.renderer.update_scene(self.data, self.cam)
         for point in points:
             x = point[0]
@@ -53,7 +53,7 @@ class BasePlanner(object):
                 mat=np.eye(3).flatten(),
                 rgba=np.array([1, 0, 0, 2]),
             )
-            if self.args.video:
+            if self.args.video and self.data.time >= self.args.video_start and self.data.time <= self.args.video_end:
                 self.renderer.scene.ngeom += 1
                 mujoco.mjv_initGeom(
                     self.renderer.scene.geoms[self.renderer.scene.ngeom-1],
@@ -63,9 +63,8 @@ class BasePlanner(object):
                     mat=np.eye(3).flatten(),
                     rgba=np.array([1, 0, 0, 2]),
                 )
-                # sim_img = self.renderer.render().copy()
-                # self.frames.append(sim_img)
             i += 1
-        sim_img = self.renderer.render().copy()
-        self.frames.append(sim_img)
+        if self.args.video and self.data.time >= self.args.video_start and self.data.time <= self.args.video_end:
+            sim_img = self.renderer.render().copy()
+            self.frames.append(sim_img)
         self.viewer.user_scn.ngeom = i

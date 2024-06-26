@@ -18,6 +18,8 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--headless', action='store_true', help='Run in headless mode')
     parser.add_argument('--num_bodies', type=int, help='Number of bodies in the simulation', default=1)
     parser.add_argument('--video', action='store_true', help='Create a video of the experiment')
+    parser.add_argument('--video_start', type=int, help='Start time of the recording', default=0.0)
+    parser.add_argument('--video_end', type=int, help='End time of the recording', default=60.0)
 
     # Parse the arguments
     args = parser.parse_args()

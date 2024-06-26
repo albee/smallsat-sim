@@ -2,6 +2,7 @@ import numpy as np
 import mujoco
 import mujoco.viewer
 import cv2
+from datetime import datetime
 
 from smallsat_sim.envs.dynamics import SymbolicModel
 from smallsat_sim.utils import xml_parser
@@ -88,14 +89,15 @@ class BaseEnv(object):
         fps = 60 / 3 # Divide by number of reference points that you visualize
         height, width, _ = self.frames[0].shape
         
-        video_writer = cv2.VideoWriter(output_filename + '.mp4', fourcc, fps, (width, height))
+        curr_datetime = datetime.now()
+        video_writer = cv2.VideoWriter(output_filename + "_" + curr_datetime.strftime("%Y-%m-%d_%H:%M:%S") + '.mp4', fourcc, fps, (width, height))
 
         for frame in self.frames:
             video_writer.write(frame)
 
         video_writer.release()
 
-        print("Video saved as " + output_filename + ".mp4\n")
+        print("Video saved as " + output_filename + "_" + curr_datetime.strftime("%Y-%m-%d_%H:%M:%S") + ".mp4\n")
 
     def _create_viewer(self) -> None:
         """
