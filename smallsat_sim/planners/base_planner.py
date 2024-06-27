@@ -2,6 +2,8 @@ import numpy as np
 import mujoco
 import itertools
 
+from smallsat_sim.envs.base_env_config import BaseEnvConfig
+
 
 class BasePlanner(object):
     """
@@ -39,7 +41,7 @@ class BasePlanner(object):
         """
         self.viewer.user_scn.ngeom = 0
         i = 0
-        if self.args.video and self.data.time >= self.args.video_start and self.data.time <= self.args.video_end:
+        if self.args.video and self.data.time >= BaseEnvConfig.renderer.start_recording and BaseEnvConfig.renderer.end_recording:
             self.renderer.update_scene(self.data, self.cam)
         for point in points:
             x = point[0]
@@ -53,7 +55,7 @@ class BasePlanner(object):
                 mat=np.eye(3).flatten(),
                 rgba=np.array([1, 0, 0, 2]),
             )
-            if self.args.video and self.data.time >= self.args.video_start and self.data.time <= self.args.video_end:
+            if self.args.video and self.data.time >= BaseEnvConfig.renderer.start_recording and self.data.time <= BaseEnvConfig.renderer.end_recording:
                 self.renderer.scene.ngeom += 1
                 mujoco.mjv_initGeom(
                     self.renderer.scene.geoms[self.renderer.scene.ngeom-1],
@@ -64,7 +66,7 @@ class BasePlanner(object):
                     rgba=np.array([1, 0, 0, 2]),
                 )
             i += 1
-        if self.args.video and self.data.time >= self.args.video_start and self.data.time <= self.args.video_end:
+        if self.args.video and self.data.time >= BaseEnvConfig.renderer.start_recording and BaseEnvConfig.renderer.end_recording:
             sim_img = self.renderer.render().copy()
             self.frames.append(sim_img)
         self.viewer.user_scn.ngeom = i

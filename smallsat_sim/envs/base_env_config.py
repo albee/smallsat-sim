@@ -12,3 +12,7 @@ class BaseEnvConfig:
     class sim:
         dt = 1/500 # simulation runs @500Hz
         max_sim_time = 15 # max. simulation time
+
+    class renderer:
+        start_recording = 0.0 # Start time of the recorded window
+        end_recording = 60.0 # Finish time of the recorded window
