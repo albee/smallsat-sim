@@ -84,3 +84,8 @@ class EnvConfig(BaseEnvConfig):
 
                 # Terminal quadratic cost on position
                 Q_e = np.eye(3)
+
+        # RL controller params
+        class RL:
+            pass
+            # TODO: add RL params here
