@@ -1,6 +1,7 @@
+from abc import ABC, abstractmethod
 import numpy as np
 
-class Disturbance(object):
+class Disturbance(ABC):
     """
     Base class for all disturbances applied to the model.
     Disturbances are defined as an external influence,
@@ -9,6 +10,7 @@ class Disturbance(object):
     def __init__(self) -> None:
         pass
 
+    @abstractmethod
     def apply(self):
         pass
 
@@ -16,9 +18,7 @@ class DisturbanceList(Disturbance):
     """
     Applies multiple disturbances sequentially
     """
-    def __init__(self,
-                 disturbances: list[Disturbance]
-                 ) -> None:
+    def __init__(self, disturbances: list[Disturbance]) -> None:
         super().__init__()
         self.disturbances = disturbances
 
@@ -29,10 +29,7 @@ class ConstantForceDisturbance(Disturbance):
     """
     Applies a constant force disturbance in a specified direction
     """ 
-    def __init__(self,
-                 magnitude: float,
-                 direction: np.ndarray
-                 ) -> None:
+    def __init__(self, magnitude: float, direction: np.ndarray) -> None:
         super().__init__()
 
         # Check dimensions

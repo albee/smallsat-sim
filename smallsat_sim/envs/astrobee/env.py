@@ -11,4 +11,4 @@ class AstrobeeEnv(BaseEnv):
         super().__init__(args=args)
 
         # Instantiate perturbations
-        self.perturbations = PerturbationList([StuckOffThrusters(self.model_cfg)])
+        self.perturbations = PerturbationList([StuckOffThrusters(self.model_cfg).stuck_off_thruster(1)])
