@@ -16,7 +16,7 @@ env = AstrobeeEnv(args=args)
 planner = OraclePlanner(env)
 
 # Create controller
-ctrl = LQRController(env, planner)
+ctrl = NominalMPCController(env, planner)
 
 # Define start time
 start_time = time.time()
