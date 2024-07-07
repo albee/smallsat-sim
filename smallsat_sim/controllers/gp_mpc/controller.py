@@ -9,15 +9,27 @@ import numpy as np
 import torch
 import casadi as ca
 import mujoco
+from scipy.stats import norm
+import time
 
 # Acados
-from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
+from acados_template import (
+    AcadosModel,
+    AcadosOcp,
+    AcadosOcpSolver,
+    AcadosSimSolver,
+    ZoroDescription,
+)
 from casadi import SX
 
 # Zero Order GPMPC
 import smallsat_sim.controllers.gp_mpc.external.zero_order_gpmpc as zero_order_gpmpc
-from smallsat_sim.controllers.gp_mpc.external.zero_order_gpmpc.controllers import ZeroOrderGPMPC
-from smallsat_sim.controllers.gp_mpc.external.zero_order_gpmpc.controllers.zoro_acados_utils import setup_sim_from_ocp
+from smallsat_sim.controllers.gp_mpc.external.zero_order_gpmpc.controllers import (
+    ZeroOrderGPMPC,
+)
+from smallsat_sim.controllers.gp_mpc.external.zero_order_gpmpc.controllers.zoro_acados_utils import (
+    setup_sim_from_ocp,
+)
 
 # gpytorch utilities
 from smallsat_sim.controllers.gp_mpc.external.gpytorch_utils.gp_hyperparam_training import (
@@ -32,9 +44,13 @@ from smallsat_sim.controllers.gp_mpc.external.gpytorch_utils.gp_utils import (
     generate_grid_points,
 )
 
+from smallsat_sim.controllers.gp_mpc.external.zero_order_gpmpc.models.gpytorch_models.gpytorch_residual_model import (
+    GPyTorchResidualModel,
+)
+
 # GPyTorch models
 from smallsat_sim.controllers.gp_mpc.external.zero_order_gpmpc.models.gpytorch_models.gpytorch_gp import (
-    BatchIndependentMultitaskGPModel
+    BatchIndependentMultitaskGPModel,
 )
 
 
@@ -71,6 +87,7 @@ class GPMPC(BaseController):
     def __init__(self, env, planner) -> None:
         # Fetch correct controller config
         self.ctrl_cfg = env.env_cfg.control.GPMPC
+        self.N = self.ctrl_cfg.N
 
         # Initialize base class
         super().__init__(env, planner, self.ctrl_cfg)
@@ -83,7 +100,29 @@ class GPMPC(BaseController):
         self._setup_gp()
 
         # Generate solver
-        self._generate_solver(env)
+        self._generate_nominal_ocp(env)
+
+        # Create Zoro description
+        self._create_zoro_description(env)
+
+        # Generate the GP-MPC
+        self._generate_gpmpc(env)
+
+        # Miscellaneous
+        self.last_solution = {
+            "states": np.tile(
+                np.zeros(
+                    26,
+                ),
+                (self.N + 1, 1),
+            ),
+            "inputs": np.tile(
+                np.zeros(
+                    12,
+                ),
+                (self.N, 1),
+            ),
+        }
 
         # Initialize solver
         self._initialize_solver(env)
@@ -95,7 +134,6 @@ class GPMPC(BaseController):
             self.viewer = env.viewer
         else:
             self._visualize = lambda *args, **kwargs: None
-
 
     def _setup_gp(self):
         """
@@ -128,7 +166,10 @@ class GPMPC(BaseController):
         self.gp_update_counter = 0  # Keep track how many times dict has been updated
         self.gp_initialized = False  # Keep track if GP is already initialized
 
-    def _generate_solver(self, env) -> None:
+    def _generate_nominal_ocp(self, env) -> None:
+        """
+        Generates the nominal ocp (w/o residual dynamics)
+        """
         # Initialize OCP instance
         ocp = AcadosOcp()
 
@@ -147,21 +188,18 @@ class GPMPC(BaseController):
         acados_model.name = "OCPsolver"
 
         # Define artificial reference points which are opt. variables
-        x_a = ca.SX.sym('x_a', 13, 1)
-        #u_a = ca.SX.sym('u_a', 12, 1)
+        x_a = ca.SX.sym("x_a", 13, 1)
 
-        x_a_dot = ca.SX.sym('x_a_dot', 13, 1)
-        #u_a_dot = ca.SX.sym('u_a_dot', 12, 1)
+        x_a_dot = ca.SX.sym("x_a_dot", 13, 1)
 
-        acados_model.x = ca.vertcat(acados_model.x,
-                                    x_a)
-        
-        acados_model.f_expl_expr = ca.vertcat(acados_model.f_expl_expr,
-                                              ca.SX.zeros(13, 1))
-        
-        acados_model.f_impl_expr = ca.vertcat(acados_model.f_impl_expr,
-                                              x_a_dot)
-        
+        acados_model.x = ca.vertcat(acados_model.x, x_a)
+
+        acados_model.f_expl_expr = ca.vertcat(
+            acados_model.f_expl_expr, ca.SX.zeros(13, 1)
+        )
+
+        acados_model.f_impl_expr = ca.vertcat(acados_model.f_impl_expr, x_a_dot)
+
         acados_model.con_h_expr_e = model.x - x_a
 
         # Assign parameters and model
@@ -189,7 +227,11 @@ class GPMPC(BaseController):
         R = self.ctrl_cfg.cost.R
         T = self.ctrl_cfg.cost.T
         ocp.cost.cost_type = "EXTERNAL"
-        ocp.model.cost_expr_ext_cost = (model.u.T) @ R @ (model.u) + (model.x.T-x_a.T) @ Q @ (model.x-x_a) + (x_a - p).T @ T @ (x_a - p)
+        ocp.model.cost_expr_ext_cost = (
+            (model.u.T) @ R @ (model.u)
+            + (model.x.T - x_a.T) @ Q @ (model.x - x_a)
+            + (x_a - p).T @ T @ (x_a - p)
+        )
 
         # Set OCP dimensions
         nx = acados_model.x.size()[0]  # number of states
@@ -198,20 +240,74 @@ class GPMPC(BaseController):
         ocp.dims.nu = nu
         ocp.dims.np = p.size()[0]  # number of parameters
         ocp.dims.N = self.ctrl_cfg.N  # prediction horizon length
-        ocp.dims.nh_e  = acados_model.con_h_expr_e.size()[0]
+        ocp.dims.nh_e = acados_model.con_h_expr_e.size()[0]
 
         # Define state constraints
         # Lower and Upper bound constraints for intermediate stages
         ocp.constraints.lbx = np.array(
-            [-100, -100, -100, -1.0, -1, -1, -1, -1, -1, -1, -0.5, -0.5, -0.5, -100, -100, -100, -1.0, -1, -1, -1, 0, 0, 0, 0, 0, 0]
+            [
+                -100,
+                -100,
+                -100,
+                -1.0,
+                -1,
+                -1,
+                -1,
+                -1,
+                -1,
+                -1,
+                -0.5,
+                -0.5,
+                -0.5,
+                -100,
+                -100,
+                -100,
+                -1.0,
+                -1,
+                -1,
+                -1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
         )
         ocp.constraints.ubx = np.array(
-            [100, 100, 100, 1.0, 1, 1, 1, 1, 1, 1, 0.5, 0.5, 0.5, 100, 100, 100, 1.0, 1, 1, 1, 0, 0, 0, 0, 0, 0]
+            [
+                100,
+                100,
+                100,
+                1.0,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0.5,
+                0.5,
+                0.5,
+                100,
+                100,
+                100,
+                1.0,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
         )
         ocp.constraints.idxbx = np.arange(nx)
 
-        ocp.constraints.lh_e = np.zeros((13,1))
-        ocp.constraints.uh_e = np.zeros((13,1))
+        ocp.constraints.lh_e = np.zeros((13, 1))
+        ocp.constraints.uh_e = np.zeros((13, 1))
 
         # Define input constraints
         # Fetch thurster limits from the model configuration
@@ -238,18 +334,100 @@ class GPMPC(BaseController):
         ocp.solver_options.print_level = 0
 
         # Set code generation directory
-        save_dir = os.path.join(
+        self.save_dir = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "c_generated_code"
         )
-        ocp.code_export_directory = save_dir
+        ocp.code_export_directory = self.save_dir
 
         # Create solver with agent specific code files
-        filename = os.path.join(save_dir, "acados_pacejka_mpcc_solver_config.json")
+        filename = os.path.join(self.save_dir, "acados_pacejka_mpcc_solver_config.json")
 
-        self.ocp_solver = AcadosOcpSolver(ocp, json_file=filename)
+        self.ocp_init = ocp
 
-        print("Solver generated successfully.")
+        # Create integrator for nominal model
+        print(
+            "---------------------------------------------------------------------------------"
+        )
+        print("Start Nominal Sim generation.")
+        self.nominal_sim = setup_sim_from_ocp(self.ocp_init)
+        print("End Nominal Sim generation.")
+        print(
+            "---------------------------------------------------------------------------------"
+        )
 
+        print(
+            "---------------------------------------------------------------------------------"
+        )
+        print("Start Nominal Sim Solver generation.")
+        self.acados_integrator = AcadosSimSolver(
+            self.nominal_sim,
+            json_file=self.save_dir
+            + "/acados_sim_"
+            + self.nominal_sim.model.name
+            + ".json",
+        )
+        print("End Nominal Sim Solver generation.")
+        print(
+            "---------------------------------------------------------------------------------"
+        )
+
+    def _create_zoro_description(self, env: BaseEnv) -> None:
+        """
+        Creates a zoro description for the GP interface
+        """
+        # Uncertainty description
+        sigma_theta = (0.0001 / 360.0) * 2 * np.pi
+        sigma_omega = (0.0001 / 360.0) * 2 * np.pi
+        w_theta = 0.005
+        w_omega = 0.005
+        Sigma_x0 = np.array([[sigma_theta**2, 0], [0, sigma_omega**2]])
+        Sigma_W = np.array([[w_theta**2, 0], [0, w_omega**2]])
+
+        Sigma_x0 = np.zeros((self.ocp_init.dims.nx, self.ocp_init.dims.nx))
+        Sigma_W = np.zeros((self.ocp_init.dims.nx, self.ocp_init.dims.nx))
+
+        # create zoro_description
+        zoro_description = ZoroDescription()
+        zoro_description.backoff_scaling_gamma = 0  # set this to 0 for now
+        zoro_description.P0_mat = Sigma_x0  # TODO: Check
+        zoro_description.fdbk_K_mat = np.zeros(
+            (self.ocp_init.dims.nu, self.ocp_init.dims.nx)
+        )
+        # zoro_description.unc_jac_G_mat = B
+        """G in (nx, nw) describes how noise affects dynamics. I.e. x+ = ... + G@w"""
+        zoro_description.W_mat = Sigma_W  # TODO: Check
+        """W in (nw, nw) describes the covariance of the noise on the system"""
+        zoro_description.input_P0_diag = False
+        zoro_description.input_P0 = False
+        zoro_description.input_W_diag = False
+        zoro_description.input_W_add_diag = False
+        zoro_description.output_P_matrices = False
+        zoro_description.idx_lh_t = []
+        self.ocp_init.zoro_description = zoro_description
+
+    def _generate_gpmpc(self, env: BaseEnv) -> None:
+        """
+        Generates the residual model GP-MPC
+        """
+        # residual_model = GPyTorchResidualModel(self.gp)
+
+        print(
+            "---------------------------------------------------------------------------------"
+        )
+        print("Start Zero Order GPMPC generation.")
+        self.gp_mpc = ZeroOrderGPMPC(
+            self.ocp_init,
+            self.nominal_sim,
+            gp_model=None,
+            path_json_ocp=self.save_dir + "/residual_mpc_ocp_solver_config.json",
+            path_json_sim=self.save_dir + "/residual_mpc_sim_solver_config.json",
+            build_c_code=True,
+            use_cython=False,
+        )
+        print("End Zero Order GPMPC generation.")
+        print(
+            "---------------------------------------------------------------------------------"
+        )
 
     def get_control_input(self, env) -> np.ndarray:
         """
@@ -265,21 +443,51 @@ class GPMPC(BaseController):
         self._record_stats(obs, timestamp)
 
         # Check solver status and re-initialize if needed
-        if self.ocp_solver.status != 0:
-            print(f"Solution optimal, solver status: {self.ocp_solver.status}")
+        if self.gp_mpc.ocp_solver.status != 0:
+            print(f"Solution optimal, solver status: {self.gp_mpc.ocp_solver.status}")
             self._initialize_solver(env)
 
-        # Set the reference position
+        # Get the reference position
         ref_pos = self.planner.get_reference(env.obs).reshape(3, 1)
-        ref_quat = np.array([1,0,0,0]).reshape(4,1)
-        ref_vel = np.zeros((3,1))
-        ref_omega = np.zeros((3,1))
+        ref_quat = np.array([1, 0, 0, 0]).reshape(4, 1)
+        ref_vel = np.zeros((3, 1))
+        ref_omega = np.zeros((3, 1))
         ref = np.concatenate((ref_pos, ref_quat, ref_vel, ref_omega))
+        # print(f"ref: {ref}")
 
-        [self.ocp_solver.set(i, "p", ref) for i in range(self.ctrl_cfg.N + 1)]
+        # Set the reference and warm start in solver
+        for i in range(self.ctrl_cfg.N):
+            i_next = i
+            i_next = min(i_next + 1, self.N - 1)
+            self.gp_mpc.p_hat_nonlin[i, :] = ref.flatten()
+            self.gp_mpc.ocp_solver.set(i, "x", self.last_solution["states"][i_next])
+            self.gp_mpc.ocp_solver.set(i, "u", self.last_solution["inputs"][i_next])
+
+        # Set initial condition
+        self.gp_mpc.ocp_solver.set(0, "lbx", env.obs[0:13])
+        self.gp_mpc.ocp_solver.set(0, "ubx", env.obs[0:13])
 
         # Solve for the first control input in receding horizon fashion
-        u0 = self.ocp_solver.solve_for_x0(env.obs[0:13], print_stats_on_failure=True)
+        start_time = time.time()
+        self.gp_mpc.solve(n_iter_max=1)
+        end_time = time.time()
+
+        execution_time = end_time - start_time
+        print(f"Execution time: {execution_time} seconds")
+
+        self.X_res, U_res = self.gp_mpc.get_solution()
+        u0 = U_res[0, :]
+        solve_time = self.gp_mpc.solve_stats["timings"]["total"]
+        print(f"Total CPU time: {solve_time}")
+        # u0 = self.gp_mpc.ocp_solver.solve_for_x0(env.obs[0:13], print_stats_on_failure=True)
+        # print(f"input: {u0}")
+
+        # Save current solution
+        for i in range(self.N):
+            self.last_solution["states"][i] = self.gp_mpc.ocp_solver.get(i, "x")
+            self.last_solution["inputs"][i] = self.gp_mpc.ocp_solver.get(i, "u")
+        self.last_solution["states"][self.N] = self.gp_mpc.ocp_solver.get(self.N, "x")
+
         self._visualize()
 
         # Save current observation and input
@@ -405,8 +613,19 @@ class GPMPC(BaseController):
         xinit = env.obs[0:13]
         x_guess = np.concatenate((xinit, xinit))
 
-        [self.ocp_solver.set(i, "x", x_guess) for i in range(self.ctrl_cfg.N + 1)]
-        [self.ocp_solver.set(i, "u", np.zeros((12, 1))) for i in range(self.ctrl_cfg.N)]
+        [
+            self.gp_mpc.ocp_solver.set(i, "x", x_guess)
+            for i in range(self.ctrl_cfg.N + 1)
+        ]
+        [
+            self.gp_mpc.ocp_solver.set(i, "u", np.zeros((12, 1)))
+            for i in range(self.ctrl_cfg.N)
+        ]
+
+        for i in range(self.N):
+            self.last_solution["states"][i] = x_guess
+            self.last_solution["inputs"][i] = np.zeros((12))
+        self.last_solution["states"][self.N] = x_guess
 
     def _visualize(self) -> None:
         """
@@ -414,7 +633,7 @@ class GPMPC(BaseController):
         """
         offset = self.viewer.user_scn.ngeom
         for i in range(self.ctrl_cfg.N + 1):
-            point = self.ocp_solver.get(i, "x")[0:3]
+            point = self.X_res[i, :3]
             mujoco.mjv_initGeom(
                 self.viewer.user_scn.geoms[i + offset],
                 type=mujoco.mjtGeom.mjGEOM_SPHERE,
@@ -425,7 +644,7 @@ class GPMPC(BaseController):
             )
 
         self.viewer.user_scn.ngeom += self.ctrl_cfg.N + 1
-    
+
     def _record_stats(self, obs, timestamp) -> None:
         """
         Record error statistics of the GP
