@@ -2,6 +2,10 @@
 from smallsat_sim.controllers.base_controller import BaseController
 from smallsat_sim.envs.base_env import BaseEnv
 
+# Utils
+from smallsat_sim.utils.helpers import calc_model_error
+from smallsat_sim.utils.logger import Logger
+
 # General libraries
 import gpytorch
 import os
@@ -58,6 +62,16 @@ from smallsat_sim.controllers.gp_mpc.external.zero_order_gpmpc.models.gpytorch_m
 torch.set_default_dtype(torch.float64)
 
 
+class SolveTimeTracker:
+    def __init__(self):
+        self.solve_times = []
+
+    def add_solve_time(self, solve_time):
+        self.solve_times.append(solve_time)
+        mean_solve_time = sum(self.solve_times) / len(self.solve_times)
+        print(f"Mean solve time: {mean_solve_time}")
+
+
 class GP(gpytorch.models.ExactGP):
     def __init__(self, train_x, train_y, likelihood):
         super(GP, self).__init__(train_x, train_y, likelihood)
@@ -96,8 +110,17 @@ class GPMPC(BaseController):
         self.f = env.symbolic_model.f_expl_expr_func
         self.f_int = env.symbolic_model.get_integrator(dt=self.ctrl_cfg.Ts)
 
+        # Initialize logger
+        self.logger = Logger()
+        _, self.logged_data = self.logger.load_data_from_hdf5(
+            "mujoco_log_20240707_145725.h5"
+        )
+
         # Setup Gaussian Process
         self._setup_gp()
+
+        # Train the GP offline
+        self._train_gp()
 
         # Generate solver
         self._generate_nominal_ocp(env)
@@ -127,6 +150,9 @@ class GPMPC(BaseController):
         # Initialize solver
         self._initialize_solver(env)
 
+        # Solve time tracker
+        self.solve_time_tracker = SolveTimeTracker()
+
         # Check if there is a viewer. In case there is not,
         # dynamically allocate the visualize method to a lambda
         # function doing nothing.
@@ -140,20 +166,16 @@ class GPMPC(BaseController):
         Initializes all needed quantaties for the Gaussian Process
         """
         # Initialize empty feature tensor (z)
-        z = torch.empty((0, 18), dtype=torch.float64)
+        self.z = torch.from_numpy(self.logged_data["z"].squeeze(1))
 
         # Initialize empty ouput tensor (y)
-        y = torch.empty((0, 6), dtype=torch.float64)
-
-        # Initialize empty timestamp tensor(t)
-        t = []
-
-        # Create dictionary
-        self.dict = {"z": z, "y": y, "t": t}
+        self.y = torch.from_numpy(self.logged_data["y"].squeeze(1))
 
         # Initialize subspace matrix B_d
         # Shape: (nx, 6)
-        self.B_d = torch.cat((torch.zeros(7, 6), torch.eye(6))).to(torch.float64)
+        self.B_d = torch.cat((torch.zeros(7, 6), torch.eye(6), torch.zeros(13, 6))).to(
+            torch.float64
+        )
         self.B_d_inv = torch.linalg.pinv(self.B_d).to(torch.float64)
 
         # Initialize buffers to keep track of past state and input
@@ -162,9 +184,19 @@ class GPMPC(BaseController):
 
         # Initialize some hyperparameters for GP
         # TODO: Move to configuration file
-        self.M = 300  # number of points in list
+        self.M = 501  # number of points in list
         self.gp_update_counter = 0  # Keep track how many times dict has been updated
         self.gp_initialized = False  # Keep track if GP is already initialized
+
+        # Initialize GP itself
+        self.likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=6)
+        self.gp_model = BatchIndependentMultitaskGPModel(
+            train_x=self.z, train_y=self.y, likelihood=self.likelihood
+        )
+
+        # EVAL mode
+        self.gp_model.eval()
+        self.likelihood.eval()
 
     def _generate_nominal_ocp(self, env) -> None:
         """
@@ -397,11 +429,11 @@ class GPMPC(BaseController):
         """G in (nx, nw) describes how noise affects dynamics. I.e. x+ = ... + G@w"""
         zoro_description.W_mat = Sigma_W  # TODO: Check
         """W in (nw, nw) describes the covariance of the noise on the system"""
-        zoro_description.input_P0_diag = False
+        zoro_description.input_P0_diag = True
         zoro_description.input_P0 = False
-        zoro_description.input_W_diag = False
-        zoro_description.input_W_add_diag = False
-        zoro_description.output_P_matrices = False
+        zoro_description.input_W_diag = True
+        zoro_description.input_W_add_diag = True
+        zoro_description.output_P_matrices = True
         zoro_description.idx_lh_t = []
         self.ocp_init.zoro_description = zoro_description
 
@@ -418,11 +450,12 @@ class GPMPC(BaseController):
         self.gp_mpc = ZeroOrderGPMPC(
             self.ocp_init,
             self.nominal_sim,
-            gp_model=None,
+            gp_model=self.residual_model,
             path_json_ocp=self.save_dir + "/residual_mpc_ocp_solver_config.json",
             path_json_sim=self.save_dir + "/residual_mpc_sim_solver_config.json",
             build_c_code=True,
             use_cython=False,
+            B=self.B_d.numpy(),
         )
         print("End Zero Order GPMPC generation.")
         print(
@@ -437,7 +470,7 @@ class GPMPC(BaseController):
         timestamp = env.data.time
 
         # Check if GP needs to be updated
-        self._update_gp(obs, timestamp)
+        # self._update_gp(obs, timestamp)
 
         # Record error statistics
         self._record_stats(obs, timestamp)
@@ -473,7 +506,7 @@ class GPMPC(BaseController):
         end_time = time.time()
 
         execution_time = end_time - start_time
-        print(f"Execution time: {execution_time} seconds")
+        self.solve_time_tracker.add_solve_time(execution_time)
 
         self.X_res, U_res = self.gp_mpc.get_solution()
         u0 = U_res[0, :]
@@ -516,10 +549,9 @@ class GPMPC(BaseController):
 
         y_k = B_d^(-1) (x_{k+1} - f(x_k,u_k))
         """
-        model_error = (
-            torch.from_numpy(obs - self.f_int(self.x_past, self.u_past).squeeze(-1))
-            .to(torch.float64)
-            .unsqueeze(-1)
+
+        model_error = calc_model_error(
+            obs=obs, x_past=self.x_past, u_past=self.u_past, f_int=self.f_int
         )
 
         return (self.B_d_inv @ model_error).T
@@ -565,7 +597,6 @@ class GPMPC(BaseController):
             self.dict["t"][oldest_idx] = timestamp
 
             # Replace data in GP
-
             self.gp.set_train_data(inputs=self.dict["z"], targets=self.dict["y"])
 
             self.gp_update_counter += 1
@@ -576,6 +607,8 @@ class GPMPC(BaseController):
                 self.gp_update_counter = 0
 
         else:
+            self.logger.log(sim_timestamp=timestamp, **{"z": z_k, "y": y_k})
+
             # Append to current data
             # Replace older data by new one
             self.dict["z"] = torch.cat((self.dict["z"], z_k), dim=0)
@@ -584,27 +617,65 @@ class GPMPC(BaseController):
 
         # Update Gaussian Process
 
-    def _train_gp(self, gp: GP) -> None:
-        # Set opimizer
-        optimizer = torch.optim.Adam(
-            gp.parameters(), lr=0.1
-        )  # Includes GaussianLikelihood parameters
-        mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, gp)
+    def _train_gp(self) -> None:
+        training_iterations = 200
+        rng_seed = 456
 
-        self.gp.train()
-        self.likelihood.train()
+        self.gp_model, self.likelihood = train_gp_model(
+            self.gp_model, torch_seed=rng_seed, training_iterations=training_iterations
+        )
 
-        training_steps = 100
-        for i in range(training_steps):
-            # Zero gradients from previous iteration
-            optimizer.zero_grad(training_steps)
-            # Output from model
-            output = gp(self.dict["z"])
-            # Calc loss and backprop gradients
-            loss = -mll(output, self.dict["y"])
-            loss.backward()
-            print("Iter %d/%d - Loss: %.3f" % (i + 1, training_steps, loss.item()))
-            optimizer.step()
+        # EVAL mode
+        self.gp_model.eval()
+        self.likelihood.eval()
+
+        # Setup residual model with trained GP
+        input_feature_selection = [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+        ]
+        input_selection = zero_order_gpmpc.models.gpytorch_models.FeatureSelector(
+            input_feature_selection
+        )
+        self.residual_model = GPyTorchResidualModel(
+            gp_model=self.gp_model, feature_selector=input_selection
+        )
 
     def _initialize_solver(self, env: BaseEnv) -> np.ndarray:
         """

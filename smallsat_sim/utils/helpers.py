@@ -5,6 +5,9 @@
 # Parsing
 import argparse
 import numpy as np
+import torch
+
+from typing import Callable
 
 def get_args() -> argparse.Namespace:
     """
@@ -135,3 +138,13 @@ def quat_conjugate(q) -> np.ndarray:
     else:
         raise ValueError('input must be of dim. 4 (unit quaternion)')
     return q_conj
+
+def calc_model_error(obs: np.ndarray, x_past: np.ndarray, u_past: np.ndarray, f_int: Callable) -> np.ndarray:
+    
+    model_error = (
+            torch.from_numpy(obs - f_int(x_past, u_past).squeeze(-1))
+            .to(torch.float64)
+            .unsqueeze(-1)
+        )
+    
+    return model_error
