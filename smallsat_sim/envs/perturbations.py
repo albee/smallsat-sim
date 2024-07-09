@@ -37,7 +37,7 @@ class Perturbation(ABC):
         pass
 
     @abstractmethod
-    def key_callback(keycode=None) -> None:
+    def key_callback(self, keycode=None) -> None:
         pass
 
 
@@ -50,7 +50,7 @@ class PerturbationList(object):
         # Save perturbations in array
         self.perturbations = perturbations
         
-        # Initialize look-up dictionary for keycodes and disturbances
+        # Initialize look-up dictionary for keycodes and perturbations
         self.keycode_dict = {
             " ": {
                 "type": "stuck_off",
@@ -74,6 +74,13 @@ class PerturbationList(object):
             input = perturbation.apply(input, current_sim_time)
 
         return input
+    
+    def reset_thruster(self, index) -> None:
+        """
+        Reset thruster.
+        """
+        self.perturbations[0].thruster_mask[index] = 0 # It doesn't matter which perturbation is used for the reset
+        print(f"Thruster {index} is fully functional.")
 
     def key_callback(self, keycode):
         """
@@ -94,6 +101,16 @@ class PerturbationList(object):
 
         # Print warning if no matching perturbation is found and return None
         print(self.keycode_dict.get(chr(keycode), {}).get("warning", "No perturbation found for keycode."))
+        return None
+    
+    def _get_perturbation_index_from_string(self, desired_perturbation: str) -> None | int:
+        # Iterate over perturbations to find a matching type
+        for idx, perturbation in enumerate(self.perturbations):
+            if perturbation.failure_type == desired_perturbation:
+                return idx
+
+        # Print warning if no matching perturbation is found and return None
+        print("warning", "No perturbation found for keycode.")
         return None
 
 
