@@ -147,7 +147,7 @@ class BaseEnv(object):
 
         # Perturbations
         if self.perturbations:
-            self.data.ctrl = self.perturbations.apply(input)
+            self.data.ctrl = self.perturbations.apply(input, self.data.time)
         else:
             self.data.ctrl = input
 

@@ -14,39 +14,34 @@ class Perturbation(ABC):
         # Extract the number of thrusters
         self.nu = model_config.Thrusters.n_thrusters
 
-        # Create a thruster mask to document the operational status of thrusters
-        # 1 := Thruster fully operational
-        # 0 := Thruster is failing
-        self.thruster_mask = np.ones(12)
+        # Thruster mask to document the operational status of thrusters
+        # 0 := Thruster fully operational
+        # 1 := Thruster is stuck off
+        # 2 := Thruster is stuck on
+        # 3 := Thruster is experiencing a different failure (sampled from a GP)
+        self.thruster_mask = np.zeros(self.nu)
 
-        # Monitor which perturbations are active
-        self.perturbation_status = np.empty(self.nu, dtype=str)
-        self.perturbation_status[:] = 'none'
-
-    def select_thruster(self, index=None) -> int:
+    def select_thruster(self, index) -> int:
         """
-        Return the index of which thruster to fail and modify the mask accordingly. 
-        Random choice if no index is provided.
+        Return index if one is provided, randomly select one of the working thrusters otherwise.
         """
         if index:
-            self.thruster_mask[index] = 0
             return index
         else:
-            indices_with_ones = np.where(self.thruster_mask == 1)[0]
-            random_index = np.random.choice(indices_with_ones)
-            self.thruster_mask[random_index] = 0
+            working_thrusters = np.where(self.thruster_mask == 0)[0]
+            random_index = np.random.choice(working_thrusters)
             return random_index
 
     @abstractmethod
-    def apply(self, input: np.ndarray) -> np.ndarray:
+    def apply(self, input: np.ndarray, current_sim_time=None) -> np.ndarray:
         pass
 
     @abstractmethod
-    def key_callback() -> None:
+    def key_callback(keycode=None) -> None:
         pass
 
 
-class PerturbationList(Perturbation):
+class PerturbationList(object):
     """
     Applies multiple perturbations.
     """
@@ -54,24 +49,29 @@ class PerturbationList(Perturbation):
         super().__init__()
         # Save perturbations in array
         self.perturbations = perturbations
-
+        
         # Initialize look-up dictionary for keycodes and disturbances
         self.keycode_dict = {
             " ": {
                 "type": "stuck_off",
-                "warning": "Could not stuck off thruster."
+                "warning": "Could not stuck off thruster. "
                            "No StuckOffThruster Perturbation module defined.",
             },
             "=": {
                 "type": "stuck_on",
                 "warning": "Could not stuck on thruster. "
                            "No StuckOnThruster Perturbation module defined."
+            },
+            ";": {
+                "type": "sample_perturbation",
+                "warning": "Could not fail thruster. "
+                           "No SamplePerturbation Perturbation module defined."
             }
         }
 
-    def apply(self, input: np.ndarray) -> np.ndarray:
+    def apply(self, input: np.ndarray, current_sim_time=None) -> np.ndarray:
         for perturbation in self.perturbations:
-            input = perturbation.apply(input)
+            input = perturbation.apply(input, current_sim_time)
 
         return input
 
@@ -84,16 +84,16 @@ class PerturbationList(Perturbation):
 
         # Apply the callback function
         if isinstance(perturbation_index, int):
-            self.perturbations[perturbation_index].key_callback()
+            self.perturbations[perturbation_index].key_callback(keycode)
 
     def _check_registered_perturbations(self, keycode) -> None | int:
         # Iterate over perturbations to find a matching type
         for idx, perturbation in enumerate(self.perturbations):
-            if isinstance(perturbation, self.keycode_dict[chr(keycode)]["type"]):
+            if perturbation.failure_type == self.keycode_dict[chr(keycode)]["type"]:
                 return idx
 
         # Print warning if no matching perturbation is found and return None
-        print(self.keycode_dict[chr(keycode)]["warning"])
+        print(self.keycode_dict.get(chr(keycode), {}).get("warning", "No perturbation found for keycode."))
         return None
 
 
@@ -104,8 +104,10 @@ class StuckOffThrusters(Perturbation):
     def __init__(self, model_config) -> None:
         super().__init__(model_config)
 
-    def apply(self, input: np.ndarray) -> np.ndarray:
-        input[self.thruster_mask == 0] = 0.0
+        self.failure_type = 'stuck_off'
+
+    def apply(self, input: np.ndarray, current_sim_time=None) -> np.ndarray:
+        input[self.thruster_mask == 1] = 0.0
 
         return input
 
@@ -113,9 +115,9 @@ class StuckOffThrusters(Perturbation):
         """
         Method to shut off a random thruster or a specific one if provided.
         """
-        idx = self.select_thruster(index=None)
-        print(f"Thruster {idx} is stuck off.")
-        self.perturbation_status[idx] = 'stuck_off'
+        thruster_index = self.select_thruster(index)
+        self.thruster_mask[thruster_index] = 1
+        print(f"Thruster {thruster_index} is stuck off.")
 
     def key_callback(self, keycode=None) -> None:
         # Call correct method for key callbacks
@@ -129,8 +131,17 @@ class StuckOnThrusters(Perturbation):
     def __init__(self, model_config) -> None:
         super().__init__(model_config)
 
-    def apply(self, input: np.ndarray) -> np.ndarray:
-        input[self.thruster_mask == 0] = np.inf
+        self.model_config = model_config
+
+        self.failure_type = 'stuck_on'
+
+    def apply(self, input: np.ndarray, current_sim_time=None) -> np.ndarray:
+        # Find where to apply the perturbation
+        stuck_on_thrusters_indices = np.where(self.thruster_mask == 2)[0]
+
+        # Apply the perturbation
+        for idx in stuck_on_thrusters_indices:
+            input[idx] = self.model_config.Thrusters.thruster_list[idx].forcerange[1] # Max. thruster force
 
         return input
     
@@ -138,9 +149,9 @@ class StuckOnThrusters(Perturbation):
         """
         Method to unable a random thruster or a specific one if provided, to shut off.
         """
-        idx = self.select_thruster(index=None)
-        print(f"Thruster {idx} is stuck on.")
-        self.perturbation_status[idx] = 'stuck_on'
+        thruster_index = self.select_thruster(index)
+        self.thruster_mask[thruster_index] = 2
+        print(f"Thruster {thruster_index} is stuck on.")
     
     def key_callback(self, keycode=None) -> None:
         # Call correct method for key callbacks
@@ -151,55 +162,92 @@ class SamplePerturbation(Perturbation):
     """
     This is a prototype of a non-parametric, time-varying perturbation.
     """
-    def __init__(self, model_config) -> None:
+    def __init__(self, model_config, max_duration) -> None:
         super().__init__(model_config)
 
-    def apply(self, input: np.ndarray) -> np.ndarray:
-        input[self.thruster_mask == 0] = self.get_perturbed_inputs()
+        self.model_config = model_config
+
+        self.failure_type = 'sample_perturbation'
+
+        # Control frequency
+        self.control_frequency = 50 # in Hz
+
+        # Upper bound on the duration of the perturbation
+        self.max_duration = max_duration
+
+        # Thruster mask to document when a perturbation has started
+        self.ongoing_perturbation_mask = np.zeros(self.nu)
+
+        # Number of samples in an input trajectory
+        self.num_samples = 500
+
+        # Matrix to save input trajectories sampled from the GP
+        self.input_trajectories = np.zeros((self.nu, self.num_samples))
+
+    def apply(self, input: np.ndarray, current_sim_time) -> np.ndarray:
+        # Find where to apply the perturbation
+        failing_thrusters_indices = np.where(self.thruster_mask == 3)[0]
+
+        for idx in failing_thrusters_indices:
+            # Update the thruster input
+            u_nominal = input[idx]
+            input[idx] = self.get_perturbed_input(u_nominal, idx, current_sim_time)
+            
+            # Clip the sample to the thruster range
+            input[idx] = np.clip(input[idx], 0, self.model_config.Thrusters.thruster_list[idx].forcerange[1])
+
         return input
     
     def sample_perturbation(self, index=None) -> None:
         """
         Method to fail a random thruster or a specific one if provided.
         """
-        idx = self.select_thruster(index=None)
-        print(f"Thruster {idx} has failed.")
-        self.perturbation_status[idx] = 'sample_perturbation'
+        thruster_index = self.select_thruster(index)
+        self.thruster_mask[thruster_index] = 3
+        print(f"Thruster {thruster_index} is failing.")
 
     def key_callback(self, keycode=None) -> None:
         # Call correct method for key callbacks
         self.sample_perturbation(index=None)
 
-    def get_perturbed_inputs(self):
+    def get_perturbed_input(self, u_nominal, idx, current_sim_time) -> float:
+        """
+        Get the perturbed thruster input from the trajectory sampled from the GP (at the right time).
+        """
+        # If the failure is starting now
+        if self.ongoing_perturbation_mask[idx] == 0:
+            self.input_trajectories[idx, :] = self.sample_input_trajectory(u_nominal)
+            self.ongoing_perturbation_mask[idx] = current_sim_time
+            return self.input_trajectories[idx, 0]
+        # If the failure took place already but is still unraveling
+        else:
+            return self.input_trajectories[idx, int(np.floor(current_sim_time - self.ongoing_perturbation_mask[idx]))]
+    
+
+    def sample_input_trajectory(self, u_nominal) -> np.ndarray:
         """
         Sample the perturbed inputs from a GP.
         """
-        raise NotImplementedError
+        # Time points
+        t = np.linspace(0, self.max_duration, self.num_samples).reshape(-1, 1)
+
+        # Define the mean vector and covariance matrix
+        mu = self.mean_func(t, u_nominal).ravel()
+        cov = self.rbf_kernel(t, t, u_nominal)
+
+        # Sample a trajectory from the GP
+        samples = np.random.multivariate_normal(mu, cov, 1)
+
+        return samples
     
     # Mean function of the GP
-    def mean_function(t, u_nominal):
+    def mean_func(self, t: np.ndarray, u_nominal: float):
         b = 0.2
         c = 1.0
         return u_nominal * np.exp(-b * t) * np.cos(c * t)
 
     # RBF kernel
-    def rbf_kernel(t1, t2, u_nominal, base_length_scale=0.1, sigma_f=0.1):
+    def rbf_kernel(self, t1, t2, u_nominal, base_length_scale=0.1, sigma_f=0.1):
         length_scale = base_length_scale * u_nominal
         sqdist = np.sum(t1**2, 1).reshape(-1, 1) + np.sum(t2**2, 1) - 2 * np.dot(t1, t2.T)
         return sigma_f**2 * np.exp(-0.5 / length_scale**2 * sqdist)
-    
-    # Time points
-    t = np.linspace(0, 1, 100).reshape(-1, 1)  # Time space # TODO: pass time upper bound as an argument
-
-    # Define nominal input, mean vector and covariance matrix
-    u_nominal = np.random.uniform(0, 1.0) # TODO: give actual input
-    mu = mean_function(t, u_nominal).ravel()
-    cov = rbf_kernel(t, t, u_nominal)
-
-    # Sample multiple trajectories from the Gaussian process
-    num_samples = 1 # TODO: number of zeros in the thruster mask
-    samples = np.random.multivariate_normal(mu, cov, num_samples)
-
-    # Clip the samples to the thruster range
-    samples = np.clip(samples, 0, 0.7) # TODO: get force range from config
-    
