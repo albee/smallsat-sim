@@ -6,19 +6,18 @@ from smallsat_sim.controllers.nominal_mpc.controller import NominalMPCController
 from smallsat_sim.controllers.dummy_rl.controller import DummyRL
 
 from smallsat_sim.envs.astrobee.env import AstrobeeEnv
-from smallsat_sim.envs.astrobee_parallel.env import AstrobeeEnvParallel
+from smallsat_sim.envs.astrobee_rl.env import AstrobeeEnvVectorized
 
 from smallsat_sim.planners.oracle.oracle import OraclePlanner
-from smallsat_sim.planners.parallel_planner.parallel_planner import ParallelPlanner
 
 # Get arguments for script execution
 args = get_args()
 
 # Create environment
-env = AstrobeeEnvParallel(args=args)
+env = AstrobeeEnvVectorized(args=args)
 
 # Create planner
-planner = ParallelPlanner(env)
+planner = OraclePlanner(env)
 
 # Create controller
 ctrl = DummyRL(env, planner)

@@ -1,10 +1,9 @@
-from smallsat_sim.controllers.base_controller import BaseController
-
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
+from smallsat_sim.controllers.base_controller import BaseController
 from smallsat_sim.controllers.rl.modules.base_network import Critic
 from smallsat_sim.controllers.rl.modules.base_policy import Actor
 

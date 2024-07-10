@@ -1,30 +1,60 @@
-from smallsat_sim.envs.base_env import BaseEnv
+from argparse import Namespace
 import numpy as np
 import mujoco
 import mujoco.viewer
+from mujoco import mjx
 import jax
 import jax.numpy as jnp
 
-from smallsat_sim.utils import xml_parser
-
-from mujoco import mjx
-
-from argparse import Namespace
+from smallsat_sim.envs.base_env import BaseEnv
+from smallsat_sim.utils import xml_parser_rl
 
 
-class ParallelEnv(BaseEnv):
+class VecEnv(BaseEnv):
+    """
+    Vectorized environment for the smallsat.
+    """
     def __init__(self, args) -> None:
-        self.n_envs = 4096
         super().__init__(args)
+
+        # Number of environments running in parallel
+        self.n_envs = 4096
+
+        # Initial position and velocity
+        self.init_qpos = self.data.qpos # TODO: update to use MJX instead?
+        self.init_qvel = self.data.qvel
 
         # Perform a Just In Time compilation of mjx.step() so that it runs efficiently on GPU
         self.jit_step = jax.jit(jax.vmap(mjx.step, in_axes=(None, 0)))
 
+        self.reset()
+
     def reset(self) -> None:
         """
-        Resets environment to a desired state.
+        Reset the agent to the initial state in all the environment instances.
         """
-        pass
+        self.prev_shaping = None # TODO: adapt this to batched environments
+
+        mujoco.mj_resetData(self.model, self.data)
+        self.data.qpos[:] = self.init_qpos
+        self.data.qvel[:] = self.init_qvel
+        mujoco.forward(self.model, self.data)
+
+    # def transition(self, actions: torch.tensor) -> tuple[torch.tensor, torch.tensor, torch.tensor]:
+    #     """
+    #     Apply input action on the environment. Returns the states, rewards and wether the terminal state has been reached.
+    #     """
+    #     self.step(input=ctrl_input) # TODO: think about what the main loop lokks like and decide how to handle this
+
+    #     rewards = torch.zeros(1)
+    #     shaping = torch.zeros(1) # TODO: implement reward shaping
+    #     if self.prev_shaping is not None:
+    #         rewards = shaping - self.prev_shaping
+    #     self.prev_shaping = shaping
+
+    #     terminal = torch.zeros(1, dtype=bool) # TODO: implement "game over" checking
+
+    #     return states, rewards, terminal
 
     def step(self, input) -> None:
         """
@@ -49,7 +79,7 @@ class ParallelEnv(BaseEnv):
 
     def get_obs(self) -> np.array:
         """
-        Return all states
+        Return all states.
         """
         # obs = [r (3),
         #        q (4),
@@ -97,7 +127,7 @@ class ParallelEnv(BaseEnv):
         Creates a viewer depending on headless flag.
         """
         # Generate xml using env and model config files
-        xml = xml_parser.generate_mujoco_xml(self.env_cfg, self.model_cfg)
+        xml = xml_parser_rl.generate_mujoco_xml(self.env_cfg, self.model_cfg)
         # Create model and data instances
         self.model = mujoco.MjModel.from_xml_string(xml)
         self.data = mujoco.MjData(self.model)
@@ -119,13 +149,6 @@ class ParallelEnv(BaseEnv):
             # to a lambda function which essentially does nothing
             self.viewer = None
             self._update_viewer = lambda *args, **kwargs: None
-
-    def _update_viewer(self):
-        """
-        Updates the viewer
-        """
-        # pass
-        self.viewer.sync()
 
     def _pre_physics_step(self, input: np.ndarray) -> None:
         """

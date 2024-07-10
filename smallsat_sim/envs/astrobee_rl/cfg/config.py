@@ -1,0 +1,60 @@
+import numpy as np
+
+from smallsat_sim.envs.base_env_config import BaseEnvConfig
+
+
+class Body:
+    def __init__(self, name, pos=[0, 0, 0], euler=[0, 0, 0]) -> None:
+        self.name = name
+        self.pos = pos
+        self.euler = euler
+
+
+class EnvConfig(BaseEnvConfig):
+    """Environment configuration class. Contains dynamic vehicle information."""
+
+    model = "cubesat"
+    compiler = {"convexhull": "true"}
+    visual = {
+        "headlight": {
+            "ambient": "0.5 0.5 0.5",
+            "specular": "0.5 0.5 0.5",
+            "diffuse": "0.5 0.5 0.5",
+        }
+    }
+
+    class Bodies:
+        num_bodies = 1
+        bodies_list = []
+        for i in range(num_bodies):
+            bodies_list.append(Body(name=f"body{i}", pos=[i, 0.0, 10.5]))
+
+
+    # Holds all information for the controller in use
+    class control:
+
+        # RL controller params
+        class RL:
+            pass
+            # TODO: add RL params here
+
+
+    class planner:
+        resolution = 1  # Resolution of the grid
+        epsilon = 2.5  # Initial heuristic inflation factor
+        epsilon_increment = 0.2 # Increment of the heuristic inflation factor
+        epsilon_decrement = 0.2 # Decrement of the heuristic inflation factor
+        bounds = np.array([[-10,-10,-10], [10, 10, 10]])  # Bounds for the planner
+        # Define the possible directions and their costs
+        unit_directions = {(1, 0, 0): 1, (0, 1, 0): 1, (0, 0, 1): 1, \
+                           (-1, 0, 0): 1, (0, -1, 0): 1, (0, 0, -1): 1, \
+                           (1, 1, 0): np.sqrt(2), (1, 0, 1): np.sqrt(2), (0, 1, 1): np.sqrt(2), \
+                           (-1, -1, 0): np.sqrt(2), (-1, 0, -1): np.sqrt(2), (0, -1, -1): np.sqrt(2), \
+                           (1, -1, 0): np.sqrt(2), (-1, 1, 0): np.sqrt(2), (1, 0, -1): np.sqrt(2), \
+                           (-1, 0, 1): np.sqrt(2), (0, 1, -1): np.sqrt(2), (0, -1, 1): np.sqrt(2), \
+                           (1, 1, 1): np.sqrt(3), (-1, -1, -1): np.sqrt(3), \
+                           (1, -1, -1): np.sqrt(3), (-1, 1, -1): np.sqrt(3), (-1, -1, 1): np.sqrt(3), \
+                           (1, 1, -1): np.sqrt(3), (1, -1, 1): np.sqrt(3), (-1, 1, 1): np.sqrt(3)}
+        
+        start_pos = (0, 0, 10)
+        goal_pos = (0, 3, -10)

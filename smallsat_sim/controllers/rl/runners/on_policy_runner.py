@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 from torch.optim import Adam
 
-from smallsat_sim.controllers.rl.envs.vec_env import VecEnv
+from smallsat_sim.envs.vec_env import VecEnv
 from smallsat_sim.controllers.rl.algorithms.agent import RLAgent
 from smallsat_sim.controllers.rl.storage.vpg_buffer import VPGBuffer
 
@@ -19,7 +19,6 @@ class OnPolicyRunner(object):
         """
         Main training loop.
         """
-
         # Initialize agent
         agent = RLAgent(self.env)
 
