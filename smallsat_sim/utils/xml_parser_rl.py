@@ -24,6 +24,9 @@ def generate_mujoco_xml(env_config, model_config):
         <visual>
             <headlight ambient="{env_config.visual['headlight']['ambient']}" specular="{env_config.visual['headlight']['specular']}" diffuse="{env_config.visual['headlight']['diffuse']}"/>
         </visual>
+        <visual>
+            <global offwidth="1920" offheight="1080"/>
+        </visual>
         <option gravity="0 0 0"/>
         <default>
             <default class="visual">
@@ -168,45 +171,6 @@ def generate_mujoco_xml(env_config, model_config):
 
     # Import meshes of lunar gateway
     xml_content += """      </asset>
-    <worldbody>
-        <body name="gateway_full">
-            <geom mesh="gateway_0" material="Canadarm" class="visual"/>
-            <geom mesh="gateway_1" material="Habitation_And_Logistics_Outpost" class="visual"/>
-            <geom mesh="gateway_2" material="Espirit_Refueller" class="visual"/>
-            <geom mesh="gateway_3" material="Human_Lander_System" class="visual"/>
-            <geom mesh="gateway_4" material="Logistics_Vehicle" class="visual"/>
-            <geom mesh="gateway_5" material="CrewAirlock" class="visual"/>
-            <geom mesh="gateway_6" material="Orion" class="visual"/>
-            <geom mesh="gateway_7" material="Power_And_Propulsion_Element" class="visual"/>
-            <geom mesh="gateway_8" material="International_Habitation_Module" class="visual"/>
-            <geom mesh="gateway_simple_0" class="collision"/>
-            <geom mesh="gateway_simple_1" class="collision"/>
-            <geom mesh="gateway_simple_2" class="collision"/>
-            <geom mesh="gateway_simple_3" class="collision"/>
-            <geom mesh="gateway_simple_4" class="collision"/>
-            <geom mesh="gateway_simple_5" class="collision"/>
-            <geom mesh="gateway_simple_6" class="collision"/>
-            <geom mesh="gateway_simple_7" class="collision"/>
-            <geom mesh="gateway_simple_8" class="collision"/>
-            <geom mesh="gateway_simple_9" class="collision"/>
-            <geom mesh="gateway_simple_10" class="collision"/>
-            <geom mesh="gateway_simple_11" class="collision"/>
-            <geom mesh="gateway_simple_12" class="collision"/>
-            <geom mesh="gateway_simple_13" class="collision"/>
-            <geom mesh="gateway_simple_14" class="collision"/>
-            <geom mesh="gateway_simple_15" class="collision"/>
-            <geom mesh="gateway_simple_16" class="collision"/>
-            <geom mesh="gateway_simple_17" class="collision"/>
-            <geom mesh="gateway_simple_18" class="collision"/>
-            <geom mesh="gateway_simple_19" class="collision"/>
-            <geom mesh="gateway_simple_20" class="collision"/>
-            <geom mesh="gateway_simple_21" class="collision"/>
-            <geom mesh="gateway_simple_22" class="collision"/>
-            <geom mesh="gateway_simple_23" class="collision"/>
-            <geom mesh="gateway_simple_24" class="collision"/>
-            <geom mesh="gateway_simple_25" class="collision"/>
-        </body>
-    </worldbody>
 
     <worldbody>
 """

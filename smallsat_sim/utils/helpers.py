@@ -5,6 +5,7 @@
 # Parsing
 import argparse
 import numpy as np
+import scipy.signal
 
 def get_args() -> argparse.Namespace:
     """
@@ -136,3 +137,18 @@ def quat_conjugate(q) -> np.ndarray:
     else:
         raise ValueError('input must be of dim. 4 (unit quaternion)')
     return q_conj
+
+def discount_cumsum(x, discount) -> np.ndarray:
+    """
+    Compute cumulative sums of vectors.
+    """
+    return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
+
+def combined_shape(len, shape=None):
+    """
+    Combine two array shapes.
+    """
+    if shape is None:
+        return (len,)
+    
+    return (len, shape) if np.isscalar(shape) else (len, *shape)
