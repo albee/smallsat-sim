@@ -194,10 +194,6 @@ class GPMPC(BaseController):
             train_x=self.z, train_y=self.y, likelihood=self.likelihood
         )
 
-        # EVAL mode
-        self.gp_model.eval()
-        self.likelihood.eval()
-
     def _generate_nominal_ocp(self, env) -> None:
         """
         Generates the nominal ocp (w/o residual dynamics)
@@ -618,9 +614,14 @@ class GPMPC(BaseController):
         # Update Gaussian Process
 
     def _train_gp(self) -> None:
-        training_iterations = 200
+        """
+        Trains the gp on the offline data
+        """
+        # Set training parameters
+        training_iterations = 300
         rng_seed = 456
 
+        # Train GP on data offline
         self.gp_model, self.likelihood = train_gp_model(
             self.gp_model, torch_seed=rng_seed, training_iterations=training_iterations
         )
