@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "A small satellite simulation package"
 authors = ["Your Name <your.email@example.com>"]
 
-[tool.poetry.dependencies]
+[tool.poetry.dependencies] # If you update the dependencies, you may also need to change requirements.txt accordingly
 python = "^3.10"  # Specify your Python version requirement here
 casadi = "3.6.4"
 numpy = "1.26"
@@ -16,5 +16,8 @@ pyyaml = "6.0.1"
 mujoco = "3.1.6"
 mujoco-mjx = "3.1.6"
 brax = "0.10.5"
+glfw = "2.7.0"
+torch = "2.2.2"
+opencv-python = "4.10.0.82"
 scipy="1.13.0"
 control="0.10.0"
