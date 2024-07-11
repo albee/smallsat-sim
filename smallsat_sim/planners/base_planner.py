@@ -23,7 +23,7 @@ class BasePlanner(object):
         """
         pass
 
-    def visualize(self, points: list[np.ndarray], color=[1, 0, 0, 2]):
+    def visualize(self, points: list[np.ndarray], color=[1, 0, 0, 2], size=[0.05, 0, 0]):
         """
         Visualizes reference points in the MuJoCo viewer
         """
@@ -36,7 +36,7 @@ class BasePlanner(object):
             mujoco.mjv_initGeom(
                 self.viewer.user_scn.geoms[i],
                 type=mujoco.mjtGeom.mjGEOM_SPHERE,
-                size=[0.05, 0, 0],
+                size=size,
                 pos=np.array([x, y, z]),
                 mat=np.eye(3).flatten(),
                 rgba=np.array(color),
