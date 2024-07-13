@@ -4,7 +4,6 @@ import numpy as np
 import mujoco
 
 from abc import abstractmethod
-from enum import Enum
 
 
 class Segment:
@@ -113,7 +112,7 @@ class Trajectory:
 
         return length, segments
 
-    def get_intermediate_reference(self, arc_length: float):
+    def get_intermediate_reference(self, arc_length: float) -> np.ndarray:
         """
         Retrieves the correct reference wrt. to the given arc length
         """
@@ -212,7 +211,7 @@ class MissionPlanner(BasePlanner):
         """
         return np.array([0, 0, 10])
 
-    def _visualize_reference(self):
+    def _visualize_reference(self) -> None:
         """
         Visualize the reference as continuous trajectory
         """
