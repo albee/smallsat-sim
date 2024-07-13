@@ -190,12 +190,16 @@ class MissionPlanner(BasePlanner):
             "Line",  # Point 6 to Point 7
             "Line",  # Point 7 to Point 8
             "Line",  # Point 8 to Point 9
-            "Line",  # Point 9 to Point 10
+            "Line",  # Point 9 to Point 1
         ]
 
         # Add first point as last point to ensure continuity
         waypoints.append(waypoints[0])
-        segment_types.append(segment_types[0])
+
+        # Assert that references are setup correctly
+        assert (
+            len(waypoints) == len(segment_types) + 1
+        ), "The number of waypoints must be one more than the number of segment types"
 
         # Convert to numpy for ease of use
         self.waypoints = self._convert_to_numpy(waypoints)
@@ -244,7 +248,7 @@ class MissionPlanner(BasePlanner):
             waypoints=self.waypoints, segment_types=self.segment_types
         )
 
-    def _convert_to_numpy(self, list: list) -> list:
+    def _convert_to_numpy(self, list: list[list[float]]) -> list[np.ndarray]:
         """
         Converts all elements inside list to numpy arrays
         """
