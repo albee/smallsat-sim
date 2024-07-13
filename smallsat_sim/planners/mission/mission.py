@@ -12,7 +12,7 @@ class Segment:
     Base Class which describes a connection geometry between two waypoints
     """
 
-    def __init__(self, start_point, end_point) -> None:
+    def __init__(self, start_point: np.ndarray, end_point: np.ndarray) -> None:
         self.start_point = start_point
         self.end_point = end_point
 
@@ -21,10 +21,16 @@ class Segment:
 
     @abstractmethod
     def calc_length(self) -> float:
+        """
+        Method for calculating the length of a segment
+        """
         pass
 
     @abstractmethod
-    def interpolate(self, arc_length) -> np.ndarray:
+    def interpolate(self, arc_length: float) -> np.ndarray:
+        """
+        Method to calculate an intermediate waypoint
+        """
         pass
 
 
@@ -36,7 +42,7 @@ class Line(Segment):
     def calc_length(self) -> float:
         return np.linalg.norm(self.end_point - self.start_point)
 
-    def interpolate(self, arc_length) -> np.ndarray:
+    def interpolate(self, arc_length: float) -> np.ndarray:
         # Calculate interpolation factor
         frac_length = arc_length / self.length
 
@@ -49,7 +55,11 @@ class Line(Segment):
 
 
 class Trajectory:
-    def __init__(self, waypoints, segment_types: list[str]) -> None:
+    """
+    This class holds all segments making up the entire trajectory
+    """
+
+    def __init__(self, waypoints: list[np.ndarray], segment_types: list[str]) -> None:
 
         # Create the reference
         self._create_reference(waypoints=waypoints, segment_types=segment_types)
@@ -57,7 +67,12 @@ class Trajectory:
         # Calculate the total length of the trajectory
         self.length, self.intervals = self._calc_length_and_intervals()
 
-    def _create_reference(self, waypoints, segment_types: list[str]) -> None:
+    def _create_reference(
+        self, waypoints: list[np.ndarray], segment_types: list[str]
+    ) -> None:
+        """
+        Creates the reference by creating a list of segments
+        """
         self.reference = []
         for i in range(len(waypoints) - 1):
             # Create segment
@@ -78,8 +93,15 @@ class Trajectory:
         """
         if segment_type == "Line":
             return Line(start_point=start_point, end_point=end_point)
+        else:
+            raise ValueError(f"Unsupported segment type: {segment_type}")
 
     def _calc_length_and_intervals(self) -> tuple[float, list]:
+        """
+        Calculates the following quantities:
+            - Total length of trajectory
+            - Length intervals of segments
+        """
         # Initialize length and intervals
         length = 0
         segments = []
@@ -91,7 +113,10 @@ class Trajectory:
 
         return length, segments
 
-    def get_intermediate_reference(self, arc_length):
+    def get_intermediate_reference(self, arc_length: float):
+        """
+        Retrieves the correct reference wrt. to the given arc length
+        """
         # Modulo with total length (to ensure continuity)
         arc_length = arc_length % self.length
 
@@ -117,6 +142,11 @@ class Trajectory:
 
 
 class MissionPlanner(BasePlanner):
+    """
+    Planning module, which contains a hardcoded trajectory of a
+    possible, representative inspection mission around lunar gateway
+    """
+
     def __init__(self, env, spacing=0.5, clearance_dist=0.1) -> None:
         super().__init__(env)
 
