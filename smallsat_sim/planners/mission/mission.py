@@ -249,7 +249,7 @@ class MissionPlanner(BasePlanner):
     possible, representative inspection mission around lunar gateway
     """
 
-    def __init__(self, env, spacing=0.5, clearance_dist=0.1) -> None:
+    def __init__(self, env, spacing=0.2, clearance_dist=0.1) -> None:
         super().__init__(env)
 
         # Initialize paramaters
@@ -383,12 +383,11 @@ class MissionPlanner(BasePlanner):
         tot_len = self.trajectory.length
 
         # Desired spacing
-        N_points = 100
-        spacing = tot_len / N_points
+        N_points = int(tot_len / self.spacing)
 
         offset = self.viewer.user_scn.ngeom
         for i in range(N_points):
-            point = self.trajectory.get_intermediate_reference(i * spacing).position
+            point = self.trajectory.get_intermediate_reference(i * self.spacing).position
             mujoco.mjv_initGeom(
                 self.viewer.user_scn.geoms[i + offset],
                 type=mujoco.mjtGeom.mjGEOM_SPHERE,
