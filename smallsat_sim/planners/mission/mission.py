@@ -178,6 +178,18 @@ class MissionPlanner(BasePlanner):
             [7, 0, -26],  # Point 7
             [7, 0, -4.5],  # Point 8
             [3, 0, -4.5],  # Point 9
+            [3, 0, -8],  # Point 10
+            [3.6, 16, -8],  # Point 11
+            [3.6, 16, 0],  # Point 12
+            [-2.5, 16, 0],  # Point 13
+            [-2.5, 5, 0],  # Point 14
+            [-7.5, 5, 0],  # Point 15
+            [-18, 10, 0],  # Point 16
+            [-18, 0, 0],  # Point 17
+            [-18, 0, -5],  # Point 18
+            [-8, 0, -5],  # Point 19
+            [-3.3, 0, -3.5],  # Point 20
+            [-3.3, -9, -3.5],  # Point 21
         ]
 
         # Define connection type between points
@@ -190,7 +202,19 @@ class MissionPlanner(BasePlanner):
             "Line",  # Point 6 to Point 7
             "Line",  # Point 7 to Point 8
             "Line",  # Point 8 to Point 9
-            "Line",  # Point 9 to Point 1
+            "Line",  # Point 9 to Point 10
+            "Line",  # Point 10 to Point 11
+            "Line",  # Point 11 to Point 12
+            "Line",  # Point 12 to Point 13
+            "Line",  # Point 13 to Point 14
+            "Line",  # Point 14 to Point 15
+            "Line",  # Point 15 to Point 16
+            "Line",  # Point 16 to Point 17
+            "Line",  # Point 17 to Point 18
+            "Line",  # Point 18 to Point 19
+            "Line",  # Point 19 to Point 20
+            "Line",  # Point 20 to Point 21
+            "Line",  # Point 21 to Point 1
         ]
 
         # Add first point as last point to ensure continuity
