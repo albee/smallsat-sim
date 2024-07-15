@@ -4,6 +4,76 @@ import numpy as np
 import mujoco
 
 from abc import abstractmethod
+from typing import Optional
+from scipy.spatial.transform import Slerp, Rotation as R
+
+
+class Waypoint:
+    """
+    Waypoint class which encodes the following references at a setpoint:
+        - Position reference
+        - Attitude reference
+        - [Optional] Velocity reference
+    """
+
+    def __init__(
+        self,
+        position: np.ndarray,
+        attitude: np.ndarray,
+        velocity: Optional[np.ndarray] = None,
+    ) -> None:
+        # Position in intertial frame
+        self._position = position
+
+        # Attitude (convert to quaternion from Euler angles in degrees)
+        euler_angles = np.radians(attitude)
+        quat = R.from_euler("xyz", euler_angles).as_quat(scalar_first=True)
+        self._attitude = quat
+
+        # Velocity in body frame
+        self._velocity = velocity
+
+    @property
+    def position(self) -> np.ndarray:
+        """
+        Getter method for the position
+        """
+        return self._position
+
+    @property
+    def attitude(self) -> np.ndarray:
+        """
+        Getter method for the attitude
+        """
+        return self._attitude
+
+    @property
+    def velocity(self) -> np.ndarray:
+        """
+        Getter method for the velocity
+        """
+        return self._velocity
+
+
+class IntermediateWaypoint(Waypoint):
+    """
+    Intermediate Waypoint class which inherits from Waypoint
+    """
+
+    def __init__(
+        self,
+        position: np.ndarray,
+        attitude: np.ndarray,
+        velocity: np.ndarray | None = None,
+    ) -> None:
+        # Position in intertial frame
+        self._position = position
+
+        # Attitude (already given as quaternion)
+        self._attitude = attitude
+
+        # Velocity in body frame
+        self._velocity = velocity
 
 
 class Segment:
@@ -11,7 +81,7 @@ class Segment:
     Base Class which describes a connection geometry between two waypoints
     """
 
-    def __init__(self, start_point: np.ndarray, end_point: np.ndarray) -> None:
+    def __init__(self, start_point: Waypoint, end_point: Waypoint) -> None:
         self.start_point = start_point
         self.end_point = end_point
 
@@ -26,9 +96,16 @@ class Segment:
         pass
 
     @abstractmethod
-    def interpolate(self, arc_length: float) -> np.ndarray:
+    def interpolate(
+        self, arc_length: float, interpolation_mode: str
+    ) -> IntermediateWaypoint:
         """
-        Method to calculate an intermediate waypoint
+        Method to calculate an intermediate waypoint.
+            - arc_length: Arc length of intermediate waypoint to calculate
+            - interpolation_mode: Method of how to calculate intermediate
+              reference for attitude (or velocity). Possibilites:
+                - Constant
+                - Linear interpolation
         """
         pass
 
@@ -39,18 +116,44 @@ class Line(Segment):
     """
 
     def calc_length(self) -> float:
-        return np.linalg.norm(self.end_point - self.start_point)
+        return np.linalg.norm(self.end_point.position - self.start_point.position)
 
-    def interpolate(self, arc_length: float) -> np.ndarray:
+    def interpolate(
+        self, arc_length: float, interpolation_mode: str = "Linear"
+    ) -> np.ndarray:
         # Calculate interpolation factor
         frac_length = arc_length / self.length
 
-        # Interpolate coordinates
-        interpolated_point = (
-            self.start_point + (self.end_point - self.start_point) * frac_length
+        # Interpolate position
+        interpolated_position = (
+            self.start_point.position
+            + (self.end_point.position - self.start_point.position) * frac_length
         )
 
-        return interpolated_point
+        # Interpolate attitude
+        if interpolation_mode == "Linear":
+            # Create slerp object
+            slerp = Slerp(
+                times=[0, 1],
+                rotations=R.from_quat(
+                    [self.start_point.attitude, self.end_point.attitude],
+                    scalar_first=True,
+                ),
+            )
+            interpolated_attitude = slerp(times=frac_length).as_quat(scalar_first=True)
+        elif interpolation_mode == "Constant":
+            interpolated_attitude = self.end_point.attitude
+        else:
+            raise ValueError(
+                f"Interpolation mode '{interpolation_mode}' is not defined."
+            )
+
+        # Create Waypoint
+        intermediate_waypoint = IntermediateWaypoint(
+            position=interpolated_position, attitude=interpolated_attitude
+        )
+
+        return intermediate_waypoint
 
 
 class Trajectory:
@@ -58,7 +161,7 @@ class Trajectory:
     This class holds all segments making up the entire trajectory
     """
 
-    def __init__(self, waypoints: list[np.ndarray], segment_types: list[str]) -> None:
+    def __init__(self, waypoints: list[Waypoint], segment_types: list[str]) -> None:
 
         # Create the reference
         self._create_reference(waypoints=waypoints, segment_types=segment_types)
@@ -67,7 +170,7 @@ class Trajectory:
         self.length, self.intervals = self._calc_length_and_intervals()
 
     def _create_reference(
-        self, waypoints: list[np.ndarray], segment_types: list[str]
+        self, waypoints: list[Waypoint], segment_types: list[str]
     ) -> None:
         """
         Creates the reference by creating a list of segments
@@ -85,7 +188,7 @@ class Trajectory:
             self.reference.append(segment)
 
     def _create_segment(
-        self, segment_type: str, start_point: np.ndarray, end_point: np.ndarray
+        self, segment_type: str, start_point: Waypoint, end_point: Waypoint
     ) -> Segment:
         """
         Creates a segment as part of the trajectory
@@ -95,7 +198,7 @@ class Trajectory:
         else:
             raise ValueError(f"Unsupported segment type: {segment_type}")
 
-    def _calc_length_and_intervals(self) -> tuple[float, list]:
+    def _calc_length_and_intervals(self) -> tuple[float, list[float]]:
         """
         Calculates the following quantities:
             - Total length of trajectory
@@ -112,7 +215,7 @@ class Trajectory:
 
         return length, segments
 
-    def get_intermediate_reference(self, arc_length: float) -> np.ndarray:
+    def get_intermediate_reference(self, arc_length: float) -> IntermediateWaypoint:
         """
         Retrieves the correct reference wrt. to the given arc length
         """
@@ -167,8 +270,8 @@ class MissionPlanner(BasePlanner):
         """
         Loads the sparse waypoints that shall be reached
         """
-        # Sets list of points
-        waypoints = [
+        # Define positional references
+        positions = [
             [-3.3, -9, 0],  # Point 1
             [-3.3, -25, 0],  # Point 2
             [16, 0, 23],  # Point 3
@@ -192,7 +295,32 @@ class MissionPlanner(BasePlanner):
             [-3.3, -9, -3.5],  # Point 21
         ]
 
-        # Define connection type between points
+        # Define attitude references (Euler angles)
+        attitudes = [
+            [0, 0, 0],  # Point 1
+            [0, 0, 0],  # Point 2
+            [0, 0, 0],  # Point 3
+            [0, 0, 0],  # Point 4
+            [0, 0, 0],  # Point 5
+            [0, 0, 0],  # Point 6
+            [0, 0, 0],  # Point 7
+            [0, 0, 0],  # Point 8
+            [0, 0, 0],  # Point 9
+            [0, 0, 0],  # Point 10
+            [0, 0, 0],  # Point 11
+            [0, 0, 0],  # Point 12
+            [0, 0, 0],  # Point 13
+            [0, 0, 0],  # Point 14
+            [0, 0, 0],  # Point 15
+            [0, 0, 0],  # Point 16
+            [0, 0, 0],  # Point 17
+            [0, 0, 0],  # Point 18
+            [0, 0, 0],  # Point 19
+            [0, 0, 0],  # Point 20
+            [0, 0, 0],  # Point 21
+        ]
+
+        # Define connection type between waypoints
         segment_types = [
             "Line",  # Point 1 to Point 2
             "Line",  # Point 2 to Point 3
@@ -218,20 +346,28 @@ class MissionPlanner(BasePlanner):
         ]
 
         # Add first point as last point to ensure continuity
-        waypoints.append(waypoints[0])
+        positions.append(positions[0])
+        attitudes.append(attitudes[0])
 
         # Assert that references are setup correctly
         assert (
-            len(waypoints) == len(segment_types) + 1
+            len(positions) == len(attitudes) == len(segment_types) + 1
         ), "The number of waypoints must be one more than the number of segment types"
 
         # Convert to numpy for ease of use
-        self.waypoints = self._convert_to_numpy(waypoints)
+        self.positions = self._convert_to_numpy(positions)
+        self.attitudes = self._convert_to_numpy(attitudes)
         self.segment_types = segment_types
 
-        # Visualize wapoints for DEBUG
-        if True:
-            self.visualize(self.waypoints, size=[0.2, 0, 0])
+        # Create Waypoint objects
+        self.waypoints = []
+        for i in range(len(positions)):
+            self.waypoints.append(
+                Waypoint(
+                    position=self.positions[i],
+                    attitude=self.attitudes[i],
+                )
+            )
 
     def get_reference(self, obs: np.ndarray) -> np.ndarray:
         """
@@ -252,7 +388,7 @@ class MissionPlanner(BasePlanner):
 
         offset = self.viewer.user_scn.ngeom
         for i in range(N_points):
-            point = self.trajectory.get_intermediate_reference(i * spacing)
+            point = self.trajectory.get_intermediate_reference(i * spacing).position
             mujoco.mjv_initGeom(
                 self.viewer.user_scn.geoms[i + offset],
                 type=mujoco.mjtGeom.mjGEOM_SPHERE,
