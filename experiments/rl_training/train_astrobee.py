@@ -1,11 +1,10 @@
 import time
+
 from smallsat_sim.utils.helpers import get_args
-
 from smallsat_sim.controllers.rl.runners.on_policy_runner import OnPolicyRunner
-
 from smallsat_sim.envs.astrobee_rl.env import AstrobeeEnvVectorized
+from smallsat_sim.planners.oracle.oracle import OraclePlanner
 
-# from smallsat_sim.planners.oracle.oracle import OraclePlanner
 
 # Get arguments for script execution
 args = get_args()
@@ -14,10 +13,10 @@ args = get_args()
 env = AstrobeeEnvVectorized(args=args)
 
 # Create planner
-# planner = OraclePlanner(env)
+planner = OraclePlanner(env)
 
 # Create runner
-runner = OnPolicyRunner(env)
+runner = OnPolicyRunner(env, planner)
 
 # Learning
 runner.learn(steps_per_epoch=3000,

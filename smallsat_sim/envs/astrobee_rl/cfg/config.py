@@ -35,7 +35,8 @@ class EnvConfig(BaseEnvConfig):
 
         # RL controller params
         class RL:
-            pass
+            control_decimation = 25
+            
             # TODO: add RL params here
 
 

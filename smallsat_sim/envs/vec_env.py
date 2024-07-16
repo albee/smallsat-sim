@@ -9,6 +9,7 @@ import jax.numpy as jnp
 
 from smallsat_sim.envs.base_env import BaseEnv
 from smallsat_sim.utils import xml_parser_rl
+from smallsat_sim.utils.helpers import jax_to_torch
 
 
 class VecEnv(BaseEnv):
@@ -48,21 +49,22 @@ class VecEnv(BaseEnv):
         """
         Apply input action on the environment. Returns the states, rewards and wether the terminal state has been reached.
         """
-        self.step(input=actions) # TODO: think about what the main loop lokks like and decide how to handle this
+        self.step(input=actions.numpy())
 
-        rewards = torch.zeros(1)
-        shaping = torch.zeros(1) # TODO: implement reward shaping
-        if self.prev_shaping is not None:
+        # TODO: implement reward shaping
+        rewards = torch.zeros(self.n_envs)
+        shaping = torch.zeros(self.n_envs)
+        if self.prev_shaping[0] is not None:
             rewards = shaping - self.prev_shaping
         self.prev_shaping = shaping
 
-        terminal = torch.zeros(1, dtype=bool) # TODO: implement "game over" checking
+        terminal = torch.zeros(self.n_envs, dtype=bool) # TODO: implement "game over" checking
 
-        # return states, rewards, terminal
+        return self.obs, rewards, terminal
 
     def step(self, input) -> None:
         """
-        Simulate environment for one timestep.
+        Simulate environments for one timestep.
         """
         # Prepare env for simulation step
         self._pre_physics_step(input)
@@ -77,12 +79,12 @@ class VecEnv(BaseEnv):
             self.mjx_batch = self.jit_step(self.mjx_model, self.mjx_batch)
 
         # Print some information for debugging
-        print(f"Time: {self.mjx_batch.time[0]} and Pos = {self.mjx_batch.qpos[0]}")
+        # print(f"Time: {self.mjx_batch.time[0]} and Pos = {self.mjx_batch.qpos[0]}")
 
         # Execute post physics steps
         self._post_physics_step()
 
-    def get_obs(self) -> np.array:
+    def get_obs(self) -> torch.tensor:
         """
         Return all states.
         """
@@ -105,7 +107,10 @@ class VecEnv(BaseEnv):
         vel_body = multiply_transpose_velocity(R, self.mjx_batch.qvel[:,:3])
 
         # Create array of observations
-        obs = jnp.concatenate((self.mjx_batch.qpos, vel_body, self.mjx_batch.qvel[:,3:]), axis=1)
+        obs_jax_ = jnp.concatenate((self.mjx_batch.qpos, vel_body, self.mjx_batch.qvel[:,3:]), axis=1)
+
+        # Convert obs to PyTorch
+        obs = jax_to_torch(obs_jax_)
 
         return obs
     
@@ -168,11 +173,12 @@ class VecEnv(BaseEnv):
 
         # Perturbations
         if self.perturbations:
-                self.mjx_data = self.mjx_data.replace(ctrl=jax.numpy.asarray(self.perturbations.apply(input)))
+                self.mjx_batch = self.mjx_batch.replace(ctrl=jax.numpy.asarray(self.perturbations.apply(input)))
         else:
                 self.mjx_batch = self.mjx_batch.replace(ctrl=jax.numpy.asarray(input))
 
-        print(f"Input: {input}")
+        # Print the control inputs for debugging
+        # print(f"Input: {input}")
 
     def _key_callback(self, keycode) -> None:
         """

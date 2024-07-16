@@ -4,25 +4,25 @@ import torch
 from smallsat_sim.utils.helpers import discount_cumsum, combined_shape
 
 
-class VPGBuffer:
+class VPGBuffer(object):
     """
     Vanilla Policy Gradient buffer to store trajectories. Inspired from https://spinningup.openai.com/en/latest/algorithms/vpg.html.
     """
-    def __init__(self, obs_dim, act_dim, size, gamma, lam) -> None:
-        self.obs_buf = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
-        self.act_buf = np.zeros(combined_shape(size, act_dim), dtype=np.float32)
-        self.tdres_buf = np.zeros(size, dtype=np.float32)
-        self.rew_buf = np.zeros(size, dtype=np.float32)
-        self.ret_buf = np.zeros(size, dtype=np.float32)
-        self.val_buf = np.zeros(size, dtype=np.float32)
-        self.logp_buf = np.zeros(size, dtype=np.float32)
+    def __init__(self, n_envs, obs_dim, act_dim, size, gamma, lam) -> None:
+        self.obs_buf = np.zeros(combined_shape(size, (n_envs, obs_dim)), dtype=np.float32)
+        self.act_buf = np.zeros(combined_shape(size, (n_envs, act_dim)), dtype=np.float32)
+        self.tdres_buf = np.zeros((size, n_envs), dtype=np.float32)
+        self.rew_buf = np.zeros((size, n_envs), dtype=np.float32)
+        self.ret_buf = np.zeros((size, n_envs), dtype=np.float32)
+        self.val_buf = np.zeros((size, n_envs), dtype=np.float32)
+        self.logp_buf = np.zeros((size, n_envs), dtype=np.float32)
         self.gamma = gamma
         self.lam = lam
         self.ptr = 0
         self.path_start_idx = 0
         self.max_size = size
 
-    def store(self, obs, act, rew, val, logp):
+    def store(self, obs: torch.tensor, act: torch.tensor, rew: torch.tensor, val: torch.tensor, logp: torch.tensor):
         """
         Append a single timestep to the buffer at each environment update in each environment.
         """
@@ -39,7 +39,7 @@ class VPGBuffer:
         # Update pointer
         self.ptr += 1
     
-    def end_traj(self, last_val=0):
+    def end_traj(self, last_val=0): # TODO: double-check this function
         """
         Return the discounted rewards-to-go and TD residuals.
         """
@@ -62,7 +62,7 @@ class VPGBuffer:
         # Update path start index
         self.path_start_idx = self.ptr
     
-    def get(self):
+    def get(self): # TODO: double-check this function
         """
         Return all the data from the buffer (with advantages normalized). Reset pointers in the buffer.
         """

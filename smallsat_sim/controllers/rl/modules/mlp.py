@@ -1,4 +1,3 @@
-import torch
 import torch.nn as nn
 
 def mlp(sizes, activation, output_activation=nn.Identity):
@@ -11,7 +10,7 @@ def mlp(sizes, activation, output_activation=nn.Identity):
         if i >= len(sizes) - 2:
             activation_function = output_activation
         else:
-            activation_function: activation
-        modules.append(sizes[i], sizes[i+1], activation_function())
+            activation_function = activation
+        modules += [nn.Linear(sizes[i], sizes[i+1]), activation_function()]
 
     return nn.Sequential(*modules)

@@ -12,7 +12,8 @@ class VPGAgent(BaseController):
     Base agent (Vanilla Policy Gradient with Generalized Advantage Estimation).
     """
     def __init__(self, env, planner, activation=nn.Tanh) -> None:
-        super().__init__(env, planner)
+        self.ctrl_cfg = env.env_cfg.control.RL
+        super().__init__(env, planner, self.ctrl_cfg)
 
         self.ctrl_cfg = env.env_cfg.control.RL
         self.env = env
@@ -28,19 +29,15 @@ class VPGAgent(BaseController):
         Return actions, value functions, and log-likelihood of chosen actions for given states.
         """
         with torch.no_grad():
-            pi = self.actor.forward(states)
+            pi, _ = self.actor.forward(states)
             actions = pi.sample()
-
-            value_funcs = self.critic.forward(states)
-
+            values = self.critic.forward(states)
             logp = self.actor._log_prob_from_dist(pi, actions)
 
-        return actions, value_funcs, logp
+        return actions, values, logp
         
-    def get_control_input(self, obs: torch.tensor) -> np.ndarray:
+    def get_control_input(self, obs: torch.tensor) -> torch.tensor:
         """
         Calculate the control input based on current observations for each environment.
         """
-        ctrl_inputs = self.act(obs)[0]
-
-        return ctrl_inputs.detach().numpy()
+        return self.act(obs)[0]
