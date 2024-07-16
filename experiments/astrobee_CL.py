@@ -3,10 +3,9 @@ from smallsat_sim.utils.helpers import get_args
 
 from smallsat_sim.controllers.pd.controller import PDController
 from smallsat_sim.controllers.nominal_mpc.controller import NominalMPCController
-from smallsat_sim.controllers.dummy_rl.controller import DummyRL
+from smallsat_sim.controllers.lqr.controller import LQRController
 
 from smallsat_sim.envs.astrobee.env import AstrobeeEnv
-from smallsat_sim.envs.astrobee_rl.env import AstrobeeEnvVectorized
 
 from smallsat_sim.planners.oracle.oracle import OraclePlanner
 
@@ -14,13 +13,13 @@ from smallsat_sim.planners.oracle.oracle import OraclePlanner
 args = get_args()
 
 # Create environment
-env = AstrobeeEnvVectorized(args=args)
+env = AstrobeeEnv(args=args)
 
 # Create planner
 planner = OraclePlanner(env)
 
 # Create controller
-ctrl = DummyRL(env, planner)
+ctrl = LQRController(env, planner)
 
 # Define start time
 start_time = time.time()

@@ -1,5 +1,6 @@
 from argparse import Namespace
 import numpy as np
+import torch
 import mujoco
 import mujoco.viewer
 from mujoco import mjx
@@ -15,46 +16,49 @@ class VecEnv(BaseEnv):
     Vectorized environment for the smallsat.
     """
     def __init__(self, args) -> None:
+        self.n_envs = 4096
         super().__init__(args)
 
-        # Number of environments running in parallel
-        self.n_envs = 4096
+        # Observation and action spaces
+        self.obs_dim = 13
+        self.act_dim = 12
 
         # Initial position and velocity
-        self.init_qpos = self.data.qpos # TODO: update to use MJX instead?
-        self.init_qvel = self.data.qvel
+        self.init_qpos = self.mjx_batch.qpos
+        self.init_qvel = self.mjx_batch.qvel
 
         # Perform a Just In Time compilation of mjx.step() so that it runs efficiently on GPU
         self.jit_step = jax.jit(jax.vmap(mjx.step, in_axes=(None, 0)))
-
+        self.jit_forward = jax.jit(jax.vmap(mjx.forward, in_axes=(None, 0)))
         self.reset()
 
     def reset(self) -> None:
         """
         Reset the agent to the initial state in all the environment instances.
         """
-        self.prev_shaping = None # TODO: adapt this to batched environments
+        self.prev_shaping = np.empty(self.n_envs, dtype=object)
+        self.prev_shaping[:] = None
 
-        mujoco.mj_resetData(self.model, self.data)
-        self.data.qpos[:] = self.init_qpos
-        self.data.qvel[:] = self.init_qvel
-        mujoco.forward(self.model, self.data)
+        # TODO: do we need to reset all of the MuJoCo data or is updating qpos and qvel enough?
+        self.mjx_batch.replace(qpos=self.init_qpos)
+        self.mjx_batch.replace(qvel=self.init_qvel)
+        self.mjx_batch = self.jit_forward(self.mjx_model, self.mjx_batch)
 
-    # def transition(self, actions: torch.tensor) -> tuple[torch.tensor, torch.tensor, torch.tensor]:
-    #     """
-    #     Apply input action on the environment. Returns the states, rewards and wether the terminal state has been reached.
-    #     """
-    #     self.step(input=ctrl_input) # TODO: think about what the main loop lokks like and decide how to handle this
+    def transition(self, actions: torch.tensor) -> tuple[torch.tensor, torch.tensor, torch.tensor]:
+        """
+        Apply input action on the environment. Returns the states, rewards and wether the terminal state has been reached.
+        """
+        self.step(input=actions) # TODO: think about what the main loop lokks like and decide how to handle this
 
-    #     rewards = torch.zeros(1)
-    #     shaping = torch.zeros(1) # TODO: implement reward shaping
-    #     if self.prev_shaping is not None:
-    #         rewards = shaping - self.prev_shaping
-    #     self.prev_shaping = shaping
+        rewards = torch.zeros(1)
+        shaping = torch.zeros(1) # TODO: implement reward shaping
+        if self.prev_shaping is not None:
+            rewards = shaping - self.prev_shaping
+        self.prev_shaping = shaping
 
-    #     terminal = torch.zeros(1, dtype=bool) # TODO: implement "game over" checking
+        terminal = torch.zeros(1, dtype=bool) # TODO: implement "game over" checking
 
-    #     return states, rewards, terminal
+        # return states, rewards, terminal
 
     def step(self, input) -> None:
         """
@@ -67,12 +71,13 @@ class VecEnv(BaseEnv):
         for substep in range(self.env_cfg.control.control_decimation):
             # Update viewer
             if substep % self.env_cfg.viewer.viewer_decimation == 0:
+                mjx.get_data_into(self.data_vec, self.model, self.mjx_batch)
                 self._update_viewer()
 
-            self.batch = self.jit_step(self.mjx_model, self.batch)
+            self.mjx_batch = self.jit_step(self.mjx_model, self.mjx_batch)
 
         # Print some information for debugging
-        print(f"Time: {self.batch.time[0]} and Pos = {self.batch.qpos[0]}")
+        print(f"Time: {self.mjx_batch.time[0]} and Pos = {self.mjx_batch.qpos[0]}")
 
         # Execute post physics steps
         self._post_physics_step()
@@ -87,7 +92,7 @@ class VecEnv(BaseEnv):
         #        omega (3)]
 
         # Retrieve current rotation matrix
-        R = self.batch.xmat[:,1,:,:]
+        R = self.mjx_batch.xmat[:,1,:,:]
 
         # Rotate matrix
         R = jnp.transpose(R, (0,2,1))
@@ -97,10 +102,10 @@ class VecEnv(BaseEnv):
             return jnp.matmul(R, vel)  # Shape (3,)
 
         # Rotate intertial velocity to body velocity
-        vel_body = multiply_transpose_velocity(R, self.batch.qvel[:,:3])
+        vel_body = multiply_transpose_velocity(R, self.mjx_batch.qvel[:,:3])
 
         # Create array of observations
-        obs = jnp.concatenate((self.batch.qpos, vel_body, self.batch.qvel[:,3:]), axis=1)
+        obs = jnp.concatenate((self.mjx_batch.qpos, vel_body, self.mjx_batch.qvel[:,3:]), axis=1)
 
         return obs
     
@@ -108,11 +113,9 @@ class VecEnv(BaseEnv):
         """
         Creates a viewer to visualize simulation
         """
-        # self.viewer = None
-
         # Create instance of MuJoCo viewer
         self.viewer = mujoco.viewer.launch_passive(
-            self.model, self.batched_mj_data[0], key_callback=self._key_callback
+            self.model, self.data_vec[0], key_callback=self._key_callback
         )
 
         # Set default camera options
@@ -128,6 +131,7 @@ class VecEnv(BaseEnv):
         """
         # Generate xml using env and model config files
         xml = xml_parser_rl.generate_mujoco_xml(self.env_cfg, self.model_cfg)
+
         # Create model and data instances
         self.model = mujoco.MjModel.from_xml_string(xml)
         self.data = mujoco.MjData(self.model)
@@ -137,9 +141,9 @@ class VecEnv(BaseEnv):
         # Batch the data
         rng = jax.random.PRNGKey(0)
         rng = jax.random.split(rng, self.n_envs)
-        self.batch = jax.vmap(lambda rng: self.mjx_data.replace(qpos=self.mjx_data.qpos))(rng)
-        self.batched_mj_data = mjx.get_data(self.model, self.batch)
-        mjx.get_data_into(self.batched_mj_data, self.model, self.batch)
+        self.mjx_batch = jax.vmap(lambda rng: self.mjx_data.replace(qpos=self.mjx_data.qpos))(rng)
+        self.data_vec = mjx.get_data(self.model, self.mjx_batch)
+        mjx.get_data_into(self.data_vec, self.model, self.mjx_batch)
 
         # Launch the viewer
         if not args.headless:
@@ -165,11 +169,8 @@ class VecEnv(BaseEnv):
         # Perturbations
         if self.perturbations:
                 self.mjx_data = self.mjx_data.replace(ctrl=jax.numpy.asarray(self.perturbations.apply(input)))
-                self.data = mjx.get_data(self.model, self.mjx_data)
         else:
-                self.batch = self.batch.replace(ctrl=jax.numpy.asarray(input))
-                # self.batched_mj_data = mjx.get_data(self.model, self.batch)
-                mjx.get_data_into(self.batched_mj_data, self.model, self.batch)
+                self.mjx_batch = self.mjx_batch.replace(ctrl=jax.numpy.asarray(input))
 
         print(f"Input: {input}")
 

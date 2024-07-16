@@ -140,13 +140,13 @@ def quat_conjugate(q) -> np.ndarray:
 
 def discount_cumsum(x, discount) -> np.ndarray:
     """
-    Compute cumulative sums of vectors.
+    Compute cumulative sums of vectors. Inspired from https://spinningup.openai.com/en/latest/algorithms/vpg.html.
     """
     return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
 
 def combined_shape(len, shape=None):
     """
-    Combine two array shapes.
+    Combine two array shapes. Inspired from https://spinningup.openai.com/en/latest/algorithms/vpg.html.
     """
     if shape is None:
         return (len,)

@@ -6,7 +6,7 @@ from smallsat_sim.controllers.rl.modules.mlp import mlp
 
 class Actor(nn.Module):
     """
-    The policy network.
+    The policy network. Inspired from https://spinningup.openai.com/en/latest/algorithms/vpg.html.
     """
     def __init__(self, obs_dim, act_dim, hidden_sizes, activation) -> None:
         super().__init__()

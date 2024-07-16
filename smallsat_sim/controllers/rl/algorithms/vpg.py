@@ -7,9 +7,9 @@ from smallsat_sim.controllers.base_controller import BaseController
 from smallsat_sim.controllers.rl.modules.base_network import Critic
 from smallsat_sim.controllers.rl.modules.base_policy import Actor
 
-class RLAgent(BaseController):
+class VPGAgent(BaseController):
     """
-    Base agent (Generalized Advantage Estimation).
+    Base agent (Vanilla Policy Gradient with Generalized Advantage Estimation).
     """
     def __init__(self, env, planner, activation=nn.Tanh) -> None:
         super().__init__(env, planner)
@@ -20,9 +20,8 @@ class RLAgent(BaseController):
         self.num_layers = 2
         self.layer_width = 64
         hidden_sizes = [self.layer_width] * self.num_layers
-        obs_dim = 13
-        self.actor = Actor(obs_dim, 12, hidden_sizes, activation)
-        self.critic = Critic(obs_dim, hidden_sizes, activation)
+        self.actor = Actor(env.obs_dim, env.act_dim, hidden_sizes, activation)
+        self.critic = Critic(env.obs_dim, hidden_sizes, activation)
 
     def act(self, states: torch.tensor) -> tuple[torch.tensor, torch.tensor, torch.tensor]:
         """

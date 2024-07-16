@@ -6,7 +6,7 @@ from smallsat_sim.utils.helpers import discount_cumsum, combined_shape
 
 class VPGBuffer:
     """
-    Vanilla Policy Gradient buffer to store trajectories.
+    Vanilla Policy Gradient buffer to store trajectories. Inspired from https://spinningup.openai.com/en/latest/algorithms/vpg.html.
     """
     def __init__(self, obs_dim, act_dim, size, gamma, lam) -> None:
         self.obs_buf = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)

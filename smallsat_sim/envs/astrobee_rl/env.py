@@ -1,5 +1,5 @@
 from smallsat_sim.envs.vec_env import VecEnv
-from smallsat_sim.envs.perturbations import StuckOffThrusters, PerturbationList
+from smallsat_sim.envs.perturbations import PerturbationList, StuckOffThrusters
 
 
 class AstrobeeEnvVectorized(VecEnv):

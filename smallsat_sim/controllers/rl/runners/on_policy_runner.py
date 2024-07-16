@@ -1,10 +1,11 @@
+import time
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.optim import Adam
 
 from smallsat_sim.envs.vec_env import VecEnv
-from smallsat_sim.controllers.rl.algorithms.agent import RLAgent
+from smallsat_sim.controllers.rl.algorithms.vpg import VPGAgent
 from smallsat_sim.controllers.rl.storage.vpg_buffer import VPGBuffer
 
 
@@ -13,41 +14,31 @@ class OnPolicyRunner(object):
     On-policy runner for training and evaluation.
     """
     def __init__(self, env: VecEnv) -> None:
+        # Initialize the environment and agent
         self.env = env
+        self.agent = VPGAgent(self.env)
 
-    def learn(self):
+    def learn(self, steps_per_epoch, epochs, max_epoch_len, gamma, lam, actor_lr, critic_lr):
         """
         Main training loop.
         """
-        # Initialize agent
-        agent = RLAgent(self.env)
-
-        # Training params
-        steps_per_epoch = 3000
-        epochs = 50
-        max_epoch_len = 300
-        gamma = 0.99
-        lam = 0.97
-        actor_lr = 3e-3
-        critic_lr = 1e-3
-
         # Set up buffer
-        buffer = VPGBuffer()
+        buffer = VPGBuffer([self.env.obs_dim], [self.env.act_dim], steps_per_epoch, gamma, lam)
 
         # Initialize ADAM optimizers for the actor and critic networks
-        actor_optimizer = Adam(agent.actor.parameters(), lr=actor_lr)
-        critic_optimizer = Adam(agent.critic.parameters(), lr=critic_lr)
+        actor_optimizer = Adam(self.agent.actor.parameters(), lr=actor_lr)
+        critic_optimizer = Adam(self.agent.critic.parameters(), lr=critic_lr)
 
         # Initialize the environment
-        states, ep_ret, ep_len = agent.env.reset(), 0, 0
+        states, ep_ret, ep_len = self.agent.env.reset(), 0, 0
 
         # Main training loop
-        for epoch in range(epochs):
+        for _ in range(epochs):
             ep_returns = []
             for t in range(steps_per_epoch):
-                a, v, logp = agent.act(states)
+                a, v, logp = self.agent.act(states)
 
-                next_states, r, terminal = agent.env.transition(a)
+                next_states, r, terminal = self.agent.env.transition(a)
                 ep_ret += r
                 ep_len += 1
 
@@ -62,9 +53,9 @@ class OnPolicyRunner(object):
                 epoch_ended = (t == steps_per_epoch - 1)
 
                 if terminal or timeout or epoch_ended:
-                    # If the trajectory didn't reach terminal state, bootrsp value target
+                    # If the trajectory didn't reach terminal state, bootstrap value target
                     if epoch_ended:
-                        _, v, _ = agent.act(states)
+                        _, v, _ = self.agent.act(states)
                     else:
                         v = 0
                     
@@ -73,7 +64,7 @@ class OnPolicyRunner(object):
                     
                     buffer.end_traj(v)
 
-                    states, ep_ret, ep_len = agent.reset(), 0, 0
+                    states, ep_ret, ep_len = self.agent.reset(), 0, 0
 
             # Get the data from the training loop
             data = buffer.get()
@@ -85,7 +76,7 @@ class OnPolicyRunner(object):
 
             # Policy gradient update
             actor_optimizer.zero_grad() # Reset gradient
-            _, logp_a = agent.actor.forward(obs, actions)
+            _, logp_a = self.agent.actor.forward(obs, actions)
             loss = -torch.sum(tdres * logp_a)
             loss.backward()
             actor_optimizer.step()
@@ -93,33 +84,42 @@ class OnPolicyRunner(object):
             # Value function updates
             for _ in range(100):
                 critic_optimizer.zero_grad() # Reset gradient
-                values = agent.critic.forward(obs)
+                values = self.agent.critic.forward(obs)
                 loss = nn.functional.mse_loss(values, ret)
                 loss.backward()
                 critic_optimizer.step()
 
-        return agent
-
-    
-    def evaluate(self) -> None:
+    def evaluate(self, episode_len, n_evals) -> None:
         """
         Evaluate the agent.
         """
-        agent = self.learn()
-
-        episode_len = 300
-        n_evals = 100
         returns = []
 
-        for i in range(n_evals):
+        for _ in range(n_evals):
             states = self.env.transition[0]
             cum_returns = 0
             terminal = False
             self.env.reset()
             for t in range(episode_len):
-                actions = agent.get_control_input(states)
+                actions = self.agent.get_control_input(states)
                 states, rewards, terminal = self.env.transition(actions)
                 cum_returns += rewards
                 if terminal:
                     break
                 returns.append(cum_returns)
+
+    def control(self) -> None:
+        """
+        Control the agent using the previously trained RL controller.
+        """
+        start_time = time.time()
+        states = self.env.transition[0]
+        terminal = False
+        self.env.reset()
+        while True:
+            real_time = time.time() - start_time
+            sim_time = self.env.data.time
+            actions = self.agent.get_control_input(states)
+            states, _, terminal = self.env.transition(actions)
+            if terminal:
+                break
