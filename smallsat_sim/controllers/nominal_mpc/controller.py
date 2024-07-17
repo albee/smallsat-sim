@@ -39,6 +39,10 @@ class NominalMPCController(BaseController):
         # function doing nothing.
         if env.viewer:
             self.viewer = env.viewer
+
+            # Setup util parameters for visualization
+            self.viz_offset = self.viewer.user_scn.ngeom
+            self.viewer.user_scn.ngeom += self.ctrl_cfg.N + 1
         else:
             self._visualize = lambda *args, **kwargs: None
 
@@ -64,22 +68,21 @@ class NominalMPCController(BaseController):
         acados_model.name = "OCPsolver"
 
         # Define artificial reference points which are opt. variables
-        x_a = ca.SX.sym('x_a', 13, 1)
-        #u_a = ca.SX.sym('u_a', 12, 1)
+        x_a = ca.SX.sym("x_a", 13, 1)
+        # u_a = ca.SX.sym('u_a', 12, 1)
 
-        x_a_dot = ca.SX.sym('x_a_dot', 13, 1)
-        #u_a_dot = ca.SX.sym('u_a_dot', 12, 1)
+        x_a_dot = ca.SX.sym("x_a_dot", 13, 1)
+        # u_a_dot = ca.SX.sym('u_a_dot', 12, 1)
 
-        acados_model.x = ca.vertcat(acados_model.x,
-                                    x_a)
-        
-        acados_model.f_expl_expr = ca.vertcat(acados_model.f_expl_expr,
-                                              ca.SX.zeros(13, 1))
-        
-        acados_model.f_impl_expr = ca.vertcat(acados_model.f_impl_expr,
-                                              x_a_dot)
-        
-        acados_model.con_h_expr_e = model.x - x_a
+        acados_model.x = ca.vertcat(acados_model.x, x_a)
+
+        acados_model.f_expl_expr = ca.vertcat(
+            acados_model.f_expl_expr, ca.SX.zeros(13, 1)
+        )
+
+        acados_model.f_impl_expr = ca.vertcat(acados_model.f_impl_expr, x_a_dot)
+
+        acados_model.con_h_expr_e = (model.x - x_a)
 
         # Assign parameters and model
         Ts = self.ctrl_cfg.Ts
@@ -106,7 +109,11 @@ class NominalMPCController(BaseController):
         R = self.ctrl_cfg.cost.R
         T = self.ctrl_cfg.cost.T
         ocp.cost.cost_type = "EXTERNAL"
-        ocp.model.cost_expr_ext_cost = (model.u.T) @ R @ (model.u) + (model.x.T-x_a.T) @ Q @ (model.x-x_a) + (x_a - p).T @ T @ (x_a - p)
+        ocp.model.cost_expr_ext_cost = (
+            (model.u.T) @ R @ (model.u)
+            + (model.x.T - x_a.T) @ Q @ (model.x - x_a)
+            + (x_a - p).T @ T @ (x_a - p)
+        )
 
         # Set OCP dimensions
         nx = acados_model.x.size()[0]  # number of states
@@ -115,20 +122,74 @@ class NominalMPCController(BaseController):
         ocp.dims.nu = nu
         ocp.dims.np = p.size()[0]  # number of parameters
         ocp.dims.N = self.ctrl_cfg.N  # prediction horizon length
-        ocp.dims.nh_e  = acados_model.con_h_expr_e.size()[0]
+        ocp.dims.nh_e = acados_model.con_h_expr_e.size()[0]
 
         # Define state constraints
         # Lower and Upper bound constraints for intermediate stages
         ocp.constraints.lbx = np.array(
-            [-100, -100, -100, -1.0, -1, -1, -1, -1, -1, -1, -0.5, -0.5, -0.5, -100, -100, -100, -1.0, -1, -1, -1, 0, 0, 0, 0, 0, 0]
+            [
+                -100,
+                -100,
+                -100,
+                -1.1,
+                -1.1,
+                -1.1,
+                -1.1,
+                -1,
+                -1,
+                -1,
+                -0.5,
+                -0.5,
+                -0.5,
+                -100,
+                -100,
+                -100,
+                -1.1,
+                -1.1,
+                -1.1,
+                -1.1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
         )
         ocp.constraints.ubx = np.array(
-            [100, 100, 100, 1.0, 1, 1, 1, 1, 1, 1, 0.5, 0.5, 0.5, 100, 100, 100, 1.0, 1, 1, 1, 0, 0, 0, 0, 0, 0]
+            [
+                100,
+                100,
+                100,
+                1.1,
+                1.1,
+                1.1,
+                1.1,
+                1,
+                1,
+                1,
+                0.5,
+                0.5,
+                0.5,
+                100,
+                100,
+                100,
+                1.1,
+                1.1,
+                1.1,
+                1.1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
         )
         ocp.constraints.idxbx = np.arange(nx)
 
-        ocp.constraints.lh_e = np.zeros((13,1))
-        ocp.constraints.uh_e = np.zeros((13,1))
+        ocp.constraints.lh_e = np.zeros((13, 1))
+        ocp.constraints.uh_e = np.zeros((13, 1))
 
         # Define input constraints
         # Fetch thurster limits from the model configuration
@@ -141,8 +202,8 @@ class NominalMPCController(BaseController):
 
         # Set intial condition
         ocp.constraints.idxbx_0 = np.arange(13)
-        ocp.constraints.lbx_0 = env.obs[0:13]
-        ocp.constraints.ubx_0 = env.obs[0:13]
+        ocp.constraints.lbx_0 = env.obs[0:13].copy()
+        ocp.constraints.ubx_0 = env.obs[0:13].copy()
         ocp.parameter_values = np.zeros(ocp.dims.np)
 
         # Configure solver options
@@ -187,16 +248,15 @@ class NominalMPCController(BaseController):
             self._initialize_solver(env)
 
         # Set the reference position
-        ref_pos = self.planner.get_reference(env.obs).reshape(3, 1)
-        ref_quat = np.array([1,0,0,0]).reshape(4,1)
-        ref_vel = np.zeros((3,1))
-        ref_omega = np.zeros((3,1))
+        ref_pos, ref_quat = self.planner.get_reference(env.obs)
+        ref_vel = np.zeros((3, 1))
+        ref_omega = np.zeros((3, 1))
         ref = np.concatenate((ref_pos, ref_quat, ref_vel, ref_omega))
 
         [self.ocp_solver.set(i, "p", ref) for i in range(self.ctrl_cfg.N + 1)]
 
         # Solve for the first control input in receding horizon fashion
-        u0 = self.ocp_solver.solve_for_x0(env.obs[0:13], print_stats_on_failure=True)
+        u0 = self.ocp_solver.solve_for_x0(env.obs[0:13], print_stats_on_failure=True, fail_on_nonzero_status=False)
         self._visualize()
 
         return u0
@@ -205,16 +265,14 @@ class NominalMPCController(BaseController):
         """
         Plot predicted trajectory of MPC in MuJoCo viewer.
         """
-        offset = self.viewer.user_scn.ngeom
+        
         for i in range(self.ctrl_cfg.N + 1):
             point = self.ocp_solver.get(i, "x")[0:3]
             mujoco.mjv_initGeom(
-                self.viewer.user_scn.geoms[i + offset],
+                self.viewer.user_scn.geoms[i + self.viz_offset],
                 type=mujoco.mjtGeom.mjGEOM_SPHERE,
                 size=[0.05, 0, 0],
                 pos=point,
                 mat=np.eye(3).flatten(),
                 rgba=np.array([0, 0, 1, 2]),
             )
-
-        self.viewer.user_scn.ngeom += self.ctrl_cfg.N + 1
