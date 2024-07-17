@@ -1,6 +1,6 @@
 import numpy as np
 import mujoco
-import itertools
+from abc import abstractmethod
 
 
 class BasePlanner(object):
@@ -17,13 +17,16 @@ class BasePlanner(object):
         else:
             self.visualize = lambda *args, **kwargs: None
 
-    def get_reference(self, obs: np.ndarray) -> np.ndarray:
+    @abstractmethod
+    def get_reference(self, obs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
-        Returns a reference point based on current observations
+        Returns a reference for the position and attitude based on current observations
         """
         pass
 
-    def visualize(self, points: list[np.ndarray], color=[1, 0, 0, 2], size=[0.05, 0, 0]):
+    def visualize(
+        self, points: list[np.ndarray], color=[1, 0, 0, 2], size=[0.05, 0, 0]
+    ):
         """
         Visualizes reference points in the MuJoCo viewer
         """
