@@ -3,7 +3,7 @@ import numpy as np
 
 
 class Body:
-    def __init__(self, name, pos=[0, 0, 0], euler=[0, 0, 0]) -> None:
+    def __init__(self, name, pos=[0, 0, 0], euler=[0, 0, 90]) -> None:
         self.name = name
         self.pos = pos
         self.euler = euler
@@ -26,7 +26,7 @@ class EnvConfig(BaseEnvConfig):
         num_bodies = 1
         bodies_list = []
         for i in range(num_bodies):
-            bodies_list.append(Body(name=f"body{i}", pos=[i, 0.0, 10.5]))
+            bodies_list.append(Body(name=f"body{i}", pos=[-3.3, -9, 0], euler=[0,0,90]))
 
     # Holds all information for the controller in use
     class control:
@@ -98,10 +98,10 @@ class EnvConfig(BaseEnvConfig):
                 Q[12, 12] = 1e-1
 
                 # Intermediate cost on input
-                R = 1e-4 * np.eye(12)
+                R = 1e-2 * np.eye(12)
 
                 # Quadratic cost on artificial reference wrt. reference point
-                T = 2 * Q
+                T = 1.5 * Q
 
                 # Terminal quadratic cost on position
                 Q_e = np.eye(3)
