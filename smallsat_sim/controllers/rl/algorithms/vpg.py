@@ -21,8 +21,8 @@ class VPGAgent(BaseController):
         self.num_layers = 2
         self.layer_width = 64
         hidden_sizes = [self.layer_width] * self.num_layers
-        self.actor = Actor(env.obs_dim, env.act_dim, hidden_sizes, activation)
-        self.critic = Critic(env.obs_dim, hidden_sizes, activation)
+        self.actor = Actor(env.obs_dim, env.act_dim, hidden_sizes, activation, self.env.device)
+        self.critic = Critic(env.obs_dim, hidden_sizes, activation, self.env.device)
 
     def act(self, states: torch.tensor) -> tuple[torch.tensor, torch.tensor, torch.tensor]:
         """

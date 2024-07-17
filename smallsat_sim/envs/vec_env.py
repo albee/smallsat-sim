@@ -17,7 +17,14 @@ class VecEnv(BaseEnv):
     Vectorized environment for the smallsat.
     """
     def __init__(self, args) -> None:
+        # Use GPU acceleration if available
+        print("GPU available: ", torch.cuda.is_available()) 
+        print("Number of GPUs: ", torch.cuda.device_count())
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # Number of environments running in parallel
         self.n_envs = 4096
+
         super().__init__(args)
 
         # Observation and action spaces
@@ -37,8 +44,7 @@ class VecEnv(BaseEnv):
         """
         Reset the agent to the initial state in all the environment instances.
         """
-        self.prev_shaping = np.empty(self.n_envs, dtype=object)
-        self.prev_shaping[:] = None
+        self.prev_shaping = None
 
         # TODO: do we need to reset all of the MuJoCo data or is updating qpos and qvel enough?
         self.mjx_batch.replace(qpos=self.init_qpos)
@@ -52,13 +58,13 @@ class VecEnv(BaseEnv):
         self.step(input=actions.numpy())
 
         # TODO: implement reward shaping
-        rewards = torch.zeros(self.n_envs)
-        shaping = torch.zeros(self.n_envs)
-        if self.prev_shaping[0] is not None:
+        rewards = torch.zeros(self.n_envs, device=self.device)
+        shaping = torch.zeros(self.n_envs, device=self.device)
+        if self.prev_shaping is not None:
             rewards = shaping - self.prev_shaping
         self.prev_shaping = shaping
 
-        terminal = torch.zeros(self.n_envs, dtype=bool) # TODO: implement "game over" checking
+        terminal = torch.zeros(self.n_envs, dtype=bool, device=self.device) # TODO: implement "game over" checking
 
         return self.obs, rewards, terminal
 
@@ -110,7 +116,7 @@ class VecEnv(BaseEnv):
         obs_jax_ = jnp.concatenate((self.mjx_batch.qpos, vel_body, self.mjx_batch.qvel[:,3:]), axis=1)
 
         # Convert obs to PyTorch
-        obs = jax_to_torch(obs_jax_)
+        obs = jax_to_torch(obs_jax_, self.device)
 
         return obs
     
@@ -142,6 +148,10 @@ class VecEnv(BaseEnv):
         self.data = mujoco.MjData(self.model)
         self.mjx_model = mjx.put_model(self.model)
         self.mjx_data = mjx.put_data(self.model, self.data)
+
+        # Check that MJX puts the JAX arrays on GPU (it should do so automatically)
+        print("Devices available to JAX: ", jax.devices())
+        print("Device used by JAX: ", self.mjx_data.qpos.devices(), "\n")
 
         # Batch the data
         rng = jax.random.PRNGKey(0)

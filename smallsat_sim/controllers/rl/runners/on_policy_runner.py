@@ -23,23 +23,23 @@ class OnPolicyRunner(object):
         Main training loop.
         """
         # Set up buffer
-        buffer = VPGBuffer(self.env.n_envs, self.env.obs_dim, self.env.act_dim, steps_per_epoch, gamma, lam)
+        buffer = VPGBuffer(self.env.n_envs, self.env.obs_dim, self.env.act_dim, steps_per_epoch, gamma, lam, self.env.device)
 
         # Initialize ADAM optimizers for the actor and critic networks
         actor_optimizer = Adam(self.agent.actor.parameters(), lr=actor_lr)
         critic_optimizer = Adam(self.agent.critic.parameters(), lr=critic_lr)
 
         # Initialize the environment
-        states, ep_ret, ep_len = self.env.get_obs(), np.zeros(self.env.n_envs), 0
+        states, ep_ret, ep_len = self.env.get_obs(), torch.zeros(self.env.n_envs, device=self.env.device), 0
 
         # Main training loop
         for _ in range(epochs):
-            ep_returns = np.zeros((self.env.n_envs, steps_per_epoch))
+            ep_returns = torch.zeros((self.env.n_envs, steps_per_epoch), device=self.env.device)
             for t in range(steps_per_epoch):
                 a, v, logp = self.agent.act(states)
 
                 next_states, r, terminal = self.agent.env.transition(a)
-                ep_ret += r.numpy()
+                ep_ret += r
                 ep_len += 1
 
                 # Log transition
@@ -57,7 +57,7 @@ class OnPolicyRunner(object):
                     if epoch_ended:
                         _, v, _ = self.agent.act(states)
                     else:
-                        v = torch.zeros(self.env.n_envs)
+                        v = torch.zeros(self.env.n_envs, device=self.env.device)
                     
                     if timeout:
                         ep_returns[:, t] = ep_ret
@@ -69,7 +69,7 @@ class OnPolicyRunner(object):
                     
                     buffer.end_traj(v)
 
-                    states, ep_ret, ep_len = self.env.get_obs(), np.zeros(self.env.n_envs), 0
+                    states, ep_ret, ep_len = self.env.get_obs(), torch.zeros(self.env.n_envs, device=self.env.device), 0
 
             # Get the data from the training loop
             data = buffer.get()
@@ -102,8 +102,8 @@ class OnPolicyRunner(object):
 
         for _ in range(n_evals):
             states = self.env.get_obs()
-            cum_returns = torch.zeros(self.env.n_envs)
-            terminal = torch.zeros(self.env.n_envs, dtype=bool)
+            cum_returns = torch.zeros(self.env.n_envs, device=self.env.device)
+            terminal = torch.zeros(self.env.n_envs, dtype=bool, device=self.env.device)
             self.env.reset()
             for _ in range(episode_len):
                 actions = self.agent.get_control_input(states)
@@ -119,7 +119,7 @@ class OnPolicyRunner(object):
         """
         start_time = time.time()
         states = self.env.get_obs()
-        terminal = torch.zeros(self.env.n_envs, dtype=bool)
+        terminal = torch.zeros(self.env.n_envs, dtype=bool, device=self.env.device)
         self.env.reset()
         while True:
             real_time = time.time() - start_time

@@ -9,10 +9,10 @@ class Actor(nn.Module):
     """
     The policy network. Inspired from https://spinningup.openai.com/en/latest/algorithms/vpg.html.
     """
-    def __init__(self, obs_dim: int, act_dim: int, hidden_sizes: int, activation) -> None:
+    def __init__(self, obs_dim: int, act_dim: int, hidden_sizes: int, activation, device) -> None:
         super().__init__()
-        log_std = -0.5 * np.ones(act_dim, dtype=np.float32)
-        self.log_std = torch.nn.Parameter(torch.as_tensor(log_std))
+        log_std = -0.5 * torch.ones(act_dim, dtype=torch.float32, device=device)
+        self.log_std = torch.nn.Parameter(log_std)
         self.mu_net = mlp([obs_dim] + list(hidden_sizes) + [act_dim], activation)
 
     def _distribution(self, obs: torch.tensor):
