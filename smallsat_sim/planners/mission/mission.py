@@ -2,6 +2,7 @@ from smallsat_sim.planners.base_planner import BasePlanner
 
 import numpy as np
 import mujoco
+import time
 
 from abc import abstractmethod
 from typing import Optional
@@ -25,10 +26,13 @@ class Waypoint:
         # Position in intertial frame
         self._position = position
 
-        # Attitude (convert to quaternion from Euler angles in degrees)
-        euler_angles = np.radians(attitude)
-        quat = R.from_euler("xyz", euler_angles).as_quat(scalar_first=True)
-        self._attitude = quat
+        # Attitude (convert to quaternion if given as Euler angles in degrees)
+        if attitude.shape[0] == 3:
+            euler_angles = np.radians(attitude)
+            quat = R.from_euler("xyz", euler_angles).as_quat(scalar_first=True)
+            self._attitude = quat
+        else:
+            self._attitude = attitude
 
         # Velocity in body frame
         self._velocity = velocity
@@ -66,14 +70,7 @@ class IntermediateWaypoint(Waypoint):
         attitude: np.ndarray,
         velocity: np.ndarray | None = None,
     ) -> None:
-        # Position in intertial frame
-        self._position = position
-
-        # Attitude (already given as quaternion)
-        self._attitude = attitude
-
-        # Velocity in body frame
-        self._velocity = velocity
+        super().__init__(position, attitude, velocity)
 
 
 class Segment:
@@ -247,9 +244,21 @@ class MissionPlanner(BasePlanner):
     """
     Planning module, which contains a hardcoded trajectory of a
     possible, representative inspection mission around lunar gateway
+    Function of the arguments:
+        - env: instance of the environment
+        - spacing: spacing between intermediate points
+        - clearance_dist: clearance distance of waypoints
+        - planner_mode: Tracking vs. Path following
+            - Waypoint Tracking: WPs are given as references w/o intermediate points
     """
 
-    def __init__(self, env, spacing=0.2, clearance_dist=0.1) -> None:
+    def __init__(
+        self,
+        env,
+        spacing=1.0,
+        clearance_dist=0.1,
+        planner_mode="Intermediate Waypoint Tracking",
+    ) -> None:
         super().__init__(env)
 
         # Initialize paramaters
@@ -263,8 +272,32 @@ class MissionPlanner(BasePlanner):
         self._create_trajectory()
 
         # Visualize entire trajectory
-        if True:
+        if False:
             self._visualize_reference()
+
+        # Set planner mode
+        if planner_mode == "Waypoint Tracking":
+            # Set the correct get reference method
+            self.get_reference = self._get_reference_wp_tracking
+
+            # Initialize current reference point
+            self.idx_reference_point = 1
+
+            # Initialize the timer clearance boolean
+            self.timer_started = False
+
+        elif planner_mode == "Intermediate Waypoint Tracking":
+            # Set the correct get reference method
+            self.get_reference = self._get_reference_intermediate_wp_tracking
+
+            # Generate reference with intermediate waypoints
+            self._generate_intermediate_reference()
+
+            # Initialize current reference point
+            self.idx_reference_point = 1
+
+            # Initialize the timer clearance boolean
+            self.timer_started = False
 
     def _load_waypoints(self) -> None:
         """
@@ -297,12 +330,12 @@ class MissionPlanner(BasePlanner):
 
         # Define attitude references (Euler angles)
         attitudes = [
-            [0, 0, 0],  # Point 1
-            [0, 0, 0],  # Point 2
-            [0, 0, 0],  # Point 3
-            [0, 0, 0],  # Point 4
-            [0, 0, 0],  # Point 5
-            [0, 0, 0],  # Point 6
+            [0, 0, 90],  # Point 1
+            [0, 0, 90],  # Point 2
+            [0, 0, 180],  # Point 3
+            [0, 0, 180],  # Point 4
+            [0, 0, 180],  # Point 5
+            [0, 0, 180],  # Point 6
             [0, 0, 0],  # Point 7
             [0, 0, 0],  # Point 8
             [0, 0, 0],  # Point 9
@@ -355,8 +388,8 @@ class MissionPlanner(BasePlanner):
         ), "The number of waypoints must be one more than the number of segment types"
 
         # Convert to numpy for ease of use
-        self.positions = self._convert_to_numpy(positions)
-        self.attitudes = self._convert_to_numpy(attitudes)
+        self.positions = [np.array(pos) for pos in positions]
+        self.attitudes = [np.array(att) for att in attitudes]
         self.segment_types = segment_types
 
         # Create Waypoint objects
@@ -369,11 +402,116 @@ class MissionPlanner(BasePlanner):
                 )
             )
 
+        # For Debug
+        if False:
+            self.visualize(
+                [waypoint.position for waypoint in self.waypoints], size=[0.2, 0, 0]
+            )
+
     def get_reference(self, obs: np.ndarray) -> np.ndarray:
         """
         Returns a reference point based on current observations
         """
-        return np.array([0, 0, 10])
+        return np.array([-3.3, -9, 0])
+
+    def _get_reference_wp_tracking(
+        self, obs: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Returns the next waypoint as reference.
+        Short hold after satellite has reached waypoint.
+        """
+        # Check if current state is close enough
+        dist = np.linalg.norm(
+            obs[0:3]
+            - self.waypoints[self.idx_reference_point % len(self.waypoints)].position
+        )
+
+        # If smallsat enters clearance dist -> start timer
+        # Once it's been inside clearance dist for certain time,
+        # switch reference to next waypoint
+        if dist < self.clearance_dist:
+            if not self.timer_started:
+                self.timer_started = True
+                self.start_time = time.time()
+            elif time.time() - self.start_time > 5:
+                self.idx_reference_point += 1
+                self.timer_started = True
+
+        return (
+            self.waypoints[self.idx_reference_point].position.reshape(3, 1),
+            self.waypoints[self.idx_reference_point].attitude.reshape(4, 1),
+        )
+
+    def _get_reference_intermediate_wp_tracking(
+        self, obs: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+
+        # Extract next tracking point
+        next_point = self._intermediate_reference[
+            self.idx_reference_point % len(self._intermediate_reference)
+        ]
+
+        # Check if current state is close enough
+        dist = np.linalg.norm(obs[0:3] - next_point.position)
+
+        # If smallsat enters clearance dist -> start timer
+        # Once it's been inside clearance dist for certain time,
+        # switch reference to next waypoint
+        if isinstance(next_point, IntermediateWaypoint):
+            if dist < self.clearance_dist:
+                self.idx_reference_point += 1
+        else:
+            if dist < self.clearance_dist:
+                if not self.timer_started:
+                    self.timer_started = True
+                    self.start_time = time.time()
+                elif time.time() - self.start_time > 5:
+                    self.idx_reference_point += 1
+                    self.timer_started = True
+
+        return (
+            self._intermediate_reference[self.idx_reference_point].position.reshape(
+                3, 1
+            ),
+            self._intermediate_reference[self.idx_reference_point].attitude.reshape(
+                4, 1
+            ),
+        )
+
+    def _generate_intermediate_reference(self) -> None:
+        """
+        Generates a trajectory with intermediate WPs
+        """
+        self._intermediate_reference = []
+        for i in range(len(self.trajectory.intervals)):
+            # Extract initial arc_length of each interval
+            if i == 0:
+                arc_length = 0
+            else:
+                arc_length = self.trajectory.intervals[i - 1]
+
+            # Calculate the number of points in the segment
+            num_points_in_segment = int(
+                self.trajectory.reference[i].length / self.spacing
+            )
+            # Calculate the actual spacing
+            spacing = self.trajectory.reference[i].length / num_points_in_segment
+
+            # Append the Waypoint at the start
+            self._intermediate_reference.append(self.waypoints[i])
+
+            # Append Intermediate Waypoints
+            self._intermediate_reference.extend(
+                self.trajectory.get_intermediate_reference(arc_length + j * spacing)
+                for j in range(1, num_points_in_segment)
+            )
+
+        if True:
+            self.visualize(
+                [waypoint.position for waypoint in self._intermediate_reference],
+                size=[0.1, 0, 0],
+            )
 
     def _visualize_reference(self) -> None:
         """
@@ -387,7 +525,9 @@ class MissionPlanner(BasePlanner):
 
         offset = self.viewer.user_scn.ngeom
         for i in range(N_points):
-            point = self.trajectory.get_intermediate_reference(i * self.spacing).position
+            point = self.trajectory.get_intermediate_reference(
+                i * self.spacing
+            ).position
             mujoco.mjv_initGeom(
                 self.viewer.user_scn.geoms[i + offset],
                 type=mujoco.mjtGeom.mjGEOM_SPHERE,
@@ -406,17 +546,3 @@ class MissionPlanner(BasePlanner):
         self.trajectory = Trajectory(
             waypoints=self.waypoints, segment_types=self.segment_types
         )
-
-    def _convert_to_numpy(self, list: list[list[float]]) -> list[np.ndarray]:
-        """
-        Converts all elements inside list to numpy arrays
-        """
-        # Initialize new list
-        converted_list = []
-
-        # Conversion of each element
-        for item in list:
-            converted_item = np.array(item)
-            converted_list.append(converted_item)
-
-        return converted_list
