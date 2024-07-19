@@ -1,6 +1,8 @@
 import numpy as np
 import mujoco
 import mujoco.viewer
+import cv2
+from datetime import datetime
 
 from smallsat_sim.envs.dynamics import SymbolicModel
 from smallsat_sim.utils import xml_parser
@@ -29,6 +31,9 @@ class BaseEnv(object):
         # Initialize observations
         self.obs = self.get_obs()
 
+        # Initialize arguments
+        self.args = args
+
     def reset(self) -> None:
         """
         Resets environment to a desired state.
@@ -47,6 +52,7 @@ class BaseEnv(object):
             # Update viewer
             if substep % self.env_cfg.viewer.viewer_decimation == 0:
                 self._update_viewer()
+                # self._update_renderer() # Moved to planner to visualize ref. as well
 
             # Step in MuJoCo engine
             mujoco.mj_step(self.model, self.data)
@@ -73,6 +79,27 @@ class BaseEnv(object):
         obs = np.concatenate((self.data.qpos, vel_body, self.data.qvel[3:]))
 
         return obs
+    
+    def get_sim_rendering(self, output_filename: str) -> None:
+        """
+        Create a save a video rendering of the experiment.
+        """
+        if not self.args.video:
+            return
+        
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        fps = 60 / 3 # Divide by number of reference points that you visualize
+        height, width, _ = self.frames[0].shape
+        
+        curr_datetime = datetime.now()
+        video_writer = cv2.VideoWriter(output_filename + "_" + curr_datetime.strftime("%Y-%m-%d_%H:%M:%S") + '.mp4', fourcc, fps, (width, height))
+
+        for frame in self.frames:
+            video_writer.write(frame)
+
+        video_writer.release()
+
+        print("Video saved as " + output_filename + "_" + curr_datetime.strftime("%Y-%m-%d_%H:%M:%S") + ".mp4\n")
 
     def _create_viewer(self) -> None:
         """
@@ -89,6 +116,23 @@ class BaseEnv(object):
         self.viewer.cam.azimuth = 10.0
         self.viewer.cam.type = 1
 
+    def _create_renderer(self) -> None:
+        """
+        Creates a renderer to visualize the experiments (to later save them to a video).
+        """
+        # Create instance of MuJoCo renderer
+        self.renderer = mujoco.Renderer(self.model, width=1920, height=1080)
+
+        # Set up the scene and the default camera options
+        self.cam = mujoco.MjvCamera()
+        self.cam.distance = 5.0
+        self.cam.trackbodyid = 2  # tracks smallsat
+        self.cam.azimuth = 10.0
+        self.cam.type = 1
+
+        # Save frames to create the video
+        self.frames = []
+        
     def _load_cfg(self, env_name: str, model_name: str) -> dict:
         """
         Loads and returns the following config files:
@@ -129,11 +173,27 @@ class BaseEnv(object):
             self.viewer = None
             self._update_viewer = lambda *args, **kwargs: None
 
+        # Launch the renderer to create a video
+        if args.video:
+            self._create_renderer()
+        else:
+            # Same logic as for the viewer
+            self.renderer = None
+            self._update_renderer = lambda *args, **kwargs: None
+
     def _update_viewer(self):
         """
         Updates the viewer
         """
         self.viewer.sync()
+
+    def _update_renderer(self):
+        """
+        Updates the renderer.
+        """
+        self.renderer.update_scene(self.data, self.cam)
+        sim_img = self.renderer.render().copy()
+        self.frames.append(sim_img)
 
     def _pre_physics_step(self, input: np.ndarray) -> None:
         """
