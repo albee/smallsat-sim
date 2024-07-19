@@ -216,5 +216,4 @@ class NominalMPCController(BaseController):
                 mat=np.eye(3).flatten(),
                 rgba=np.array([0, 0, 1, 2]),
             )
-
         self.viewer.user_scn.ngeom += self.ctrl_cfg.N + 1

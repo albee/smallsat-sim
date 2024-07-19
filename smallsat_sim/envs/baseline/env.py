@@ -15,6 +15,6 @@ class BaselineEnv(BaseEnv):
         super().__init__(args)
 
         # Initialize Disturbance
-        self.disturbance = ConstantForceDisturbance(
+        self.disturbances = ConstantForceDisturbance(
             magnitude=0.1, direction=np.array([0, 1, 0])
         )
