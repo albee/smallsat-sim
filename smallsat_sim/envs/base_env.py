@@ -7,6 +7,7 @@ from datetime import datetime
 from smallsat_sim.envs.dynamics import SymbolicModel
 from smallsat_sim.utils import xml_parser
 from smallsat_sim.utils.helpers import Rquat
+from smallsat_sim.envs.disturbances import DisturbanceList
 from smallsat_sim.envs.perturbations import PerturbationList
 
 
@@ -22,7 +23,8 @@ class BaseEnv(object):
         self.symbolic_model = SymbolicModel(self.model_cfg)
 
         # Initialize disturbance and perturbation to None as default setting
-        self.disturbance = None
+        self.disturbances = None
+        self.disturbances_keycodes = DisturbanceList([]).keycode_dict.keys()
         self.perturbations = None
         self.perturbations_keycodes = PerturbationList([]).keycode_dict.keys()
 
@@ -202,12 +204,12 @@ class BaseEnv(object):
             - ...
         """
         # External disturbances
-        if self.disturbance:
-            self.data.qfrc_applied = self.disturbance.apply()
+        if self.disturbances:
+            self.data.qfrc_applied = self.disturbances.apply()
 
         # Perturbations
         if self.perturbations:
-            self.data.ctrl = self.perturbations.apply(input)
+            self.data.ctrl = self.perturbations.apply(input, self.data.time)
         else:
             self.data.ctrl = input
 
@@ -225,5 +227,7 @@ class BaseEnv(object):
         try:
             if chr(keycode) in self.perturbations_keycodes:
                 self.perturbations.key_callback(keycode)
+            if chr(keycode) in self.disturbances_keycodes:
+                self.disturbances.key_callback(keycode)
         except:
-            print("No perturbation list registered. Keycallback unsuccessful.")
+            print("No disturbance or perturbation list registered. Keycallback unsuccessful.")

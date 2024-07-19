@@ -35,7 +35,7 @@ class BasePlanner(object):
         """
         pass
 
-    def visualize(self, points: list[np.ndarray]):
+    def visualize(self, points: list[np.ndarray], color=[1, 0, 0, 2]):
         """
         Visualizes reference points in the MuJoCo viewer
         """
@@ -53,7 +53,7 @@ class BasePlanner(object):
                 size=[0.05, 0, 0],
                 pos=np.array([x, y, z]),
                 mat=np.eye(3).flatten(),
-                rgba=np.array([1, 0, 0, 2]),
+                rgba=np.array(color),
             )
             if self.args.video and self.data.time >= BaseEnvConfig.renderer.start_recording and self.data.time <= BaseEnvConfig.renderer.end_recording:
                 self.renderer.scene.ngeom += 1
