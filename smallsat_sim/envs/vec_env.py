@@ -23,7 +23,7 @@ class VecEnv(BaseEnv):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Number of environments running in parallel
-        self.n_envs = 4096
+        self.n_envs = 1
 
         super().__init__(args)
 

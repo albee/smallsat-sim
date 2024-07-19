@@ -1,10 +1,14 @@
 import time
+import os
 
 from smallsat_sim.utils.helpers import get_args
 from smallsat_sim.controllers.rl.runners.on_policy_runner import OnPolicyRunner
 from smallsat_sim.envs.astrobee_rl.env import AstrobeeEnvVectorized
 from smallsat_sim.planners.oracle.oracle import OraclePlanner
 
+
+# os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '.50'
+# os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
 # Get arguments for script execution
 args = get_args()

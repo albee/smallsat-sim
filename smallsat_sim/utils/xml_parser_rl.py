@@ -55,42 +55,6 @@ def generate_mujoco_xml(env_config, model_config):
             <material name="Orion" texture="Orion_BaseColor" specular="0.0" shininess="0.5"/>
             <texture type="2d" name="Power_And_Propulsion_Element_BaseColor" file="gateway/Power_And_Propulsion_Element_BaseColor.png"/>
             <material name="Power_And_Propulsion_Element" texture="Power_And_Propulsion_Element_BaseColor" specular="0.0" shininess="0.5"/>
-            <mesh file="gateway/gateway_0.obj"/>
-            <mesh file="gateway/gateway_1.obj"/>
-            <mesh file="gateway/gateway_2.obj"/>
-            <mesh file="gateway/gateway_3.obj"/>
-            <mesh file="gateway/gateway_4.obj"/>
-            <mesh file="gateway/gateway_5.obj"/>
-            <mesh file="gateway/gateway_6.obj"/>
-            <mesh file="gateway/gateway_7.obj"/>
-            <mesh file="gateway/gateway_8.obj"/>
-            <mesh file="gateway/gateway_simple_0.obj"/>
-            <mesh file="gateway/gateway_simple_1.obj"/>
-            <mesh file="gateway/gateway_simple_2.obj"/>
-            <mesh file="gateway/gateway_simple_3.obj"/>
-            <mesh file="gateway/gateway_simple_4.obj"/>
-            <mesh file="gateway/gateway_simple_5.obj"/>
-            <mesh file="gateway/gateway_simple_6.obj"/>
-            <mesh file="gateway/gateway_simple_7.obj"/>
-            <mesh file="gateway/gateway_simple_8.obj"/>
-            <mesh file="gateway/gateway_simple_9.obj"/>
-            <mesh file="gateway/gateway_simple_10.obj"/>
-            <mesh file="gateway/gateway_simple_11.obj"/>
-            <mesh file="gateway/gateway_simple_12.obj"/>
-            <mesh file="gateway/gateway_simple_13.obj"/>
-            <mesh file="gateway/gateway_simple_14.obj"/>
-            <mesh file="gateway/gateway_simple_15.obj"/>
-            <mesh file="gateway/gateway_simple_16.obj"/>
-            <mesh file="gateway/gateway_simple_17.obj"/>
-            <mesh file="gateway/gateway_simple_18.obj"/>
-            <mesh file="gateway/gateway_simple_19.obj"/>
-            <mesh file="gateway/gateway_simple_20.obj"/>
-            <mesh file="gateway/gateway_simple_21.obj"/>
-            <mesh file="gateway/gateway_simple_22.obj"/>
-            <mesh file="gateway/gateway_simple_23.obj"/>
-            <mesh file="gateway/gateway_simple_24.obj"/>
-            <mesh file="gateway/gateway_simple_25.obj"/>
-            <texture type="skybox" file="gateway/stars.png"/>
     """
 
     # Check whether astrobee or cubesat is used.

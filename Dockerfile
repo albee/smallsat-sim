@@ -1,5 +1,13 @@
 # Choose a base image
-FROM nvidia/cuda:11.6.2-devel-ubuntu20.04
+# FROM nvidia/cuda:11.6.2-devel-ubuntu20.04
+# FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu20.04
+# FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+FROM nvidia/cuda:12.1.0-devel-ubuntu20.04
+
+# Set environment variables for CUDA and cuDNN
+ENV CUDA_HOME=/usr/local/cuda \
+    CUDA_PATH=/usr/local/cuda \
+    LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 
 # Choose a Python image
 FROM python:3.10-bookworm
@@ -43,6 +51,7 @@ WORKDIR /smallsat-sim
 COPY requirements.txt .
 
 # Install the specified dependencies
+RUN pip install -U "jax[cuda12]"
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Define use case (on which hardware the container should run)

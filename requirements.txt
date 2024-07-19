@@ -7,3 +7,4 @@ mujoco-mjx==3.1.5
 glfw==2.7.0 # Needed to use MuJoCo in the container
 torch==2.3.1
 opencv-python==4.10.0.82
+# jax[cuda12]==0.4.30 # Installed by Dockerfile directly
