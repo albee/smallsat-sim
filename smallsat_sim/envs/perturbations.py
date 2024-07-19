@@ -1,6 +1,20 @@
 from abc import ABC, abstractmethod
 import numpy as np
-import matplotlib.pyplot as plt
+from enum import Enum
+
+
+class PerturbationStatus(Enum):
+    """
+    Document type of active perturbation.
+    0 := Thruster fully operational
+    1 := Thruster is stuck off
+    2 := Thruster is stuck on
+    3 := Thruster is experiencing a different failure (sampled from a GP)
+    """
+    OPERATIONAL = 0
+    STUCK_OFF = 1
+    STUCK_ON = 2
+    SAMPLE_PERTURBATION = 3
 
 
 class Perturbation(ABC):
@@ -15,11 +29,7 @@ class Perturbation(ABC):
         self.nu = model_config.Thrusters.n_thrusters
 
         # Thruster mask to document the operational status of thrusters
-        # 0 := Thruster fully operational
-        # 1 := Thruster is stuck off
-        # 2 := Thruster is stuck on
-        # 3 := Thruster is experiencing a different failure (sampled from a GP)
-        self.thruster_mask = np.zeros(self.nu)
+        self.thruster_mask = np.full(self.nu, PerturbationStatus.OPERATIONAL)
 
     def select_thruster(self, index) -> int:
         """
@@ -28,7 +38,7 @@ class Perturbation(ABC):
         if index:
             return index
         else:
-            working_thrusters = np.where(self.thruster_mask == 0)[0]
+            working_thrusters = np.where(self.thruster_mask == PerturbationStatus.OPERATIONAL)[0]
             random_index = np.random.choice(working_thrusters)
             return random_index
 
@@ -53,17 +63,20 @@ class PerturbationList(object):
         # Initialize look-up dictionary for keycodes and perturbations
         self.keycode_dict = {
             " ": {
-                "type": "stuck_off",
+                "description": "stuck_off",
+                "type": 1,
                 "warning": "Could not stuck off thruster. "
                            "No StuckOffThruster Perturbation module defined.",
             },
             "=": {
-                "type": "stuck_on",
+                "description": "stuck_on",
+                "type": 2,
                 "warning": "Could not stuck on thruster. "
                            "No StuckOnThruster Perturbation module defined."
             },
             ";": {
-                "type": "sample_perturbation",
+                "description": "sample_perturbation",
+                "type": 3,
                 "warning": "Could not fail thruster. "
                            "No SamplePerturbation Perturbation module defined."
             }
@@ -96,7 +109,7 @@ class PerturbationList(object):
     def _check_registered_perturbations(self, keycode) -> None | int:
         # Iterate over perturbations to find a matching type
         for idx, perturbation in enumerate(self.perturbations):
-            if perturbation.failure_type == self.keycode_dict[chr(keycode)]["type"]:
+            if perturbation.failure_type.value == self.keycode_dict[chr(keycode)]["type"]:
                 return idx
 
         # Print warning if no matching perturbation is found and return None
@@ -121,10 +134,10 @@ class StuckOffThrusters(Perturbation):
     def __init__(self, model_config) -> None:
         super().__init__(model_config)
 
-        self.failure_type = 'stuck_off'
+        self.failure_type = PerturbationStatus.STUCK_OFF
 
     def apply(self, input: np.ndarray, current_sim_time=None) -> np.ndarray:
-        input[self.thruster_mask == 1] = 0.0
+        input[self.thruster_mask == PerturbationStatus.STUCK_OFF] = 0.0
 
         return input
 
@@ -133,7 +146,7 @@ class StuckOffThrusters(Perturbation):
         Method to shut off a random thruster or a specific one if provided.
         """
         thruster_index = self.select_thruster(index)
-        self.thruster_mask[thruster_index] = 1
+        self.thruster_mask[thruster_index] = PerturbationStatus.STUCK_OFF
         print(f"Thruster {thruster_index} is stuck off.")
 
     def key_callback(self, keycode=None) -> None:
@@ -150,11 +163,11 @@ class StuckOnThrusters(Perturbation):
 
         self.model_config = model_config
 
-        self.failure_type = 'stuck_on'
+        self.failure_type = PerturbationStatus.STUCK_ON
 
     def apply(self, input: np.ndarray, current_sim_time=None) -> np.ndarray:
         # Find where to apply the perturbation
-        stuck_on_thrusters_indices = np.where(self.thruster_mask == 2)[0]
+        stuck_on_thrusters_indices = np.where(self.thruster_mask == PerturbationStatus.STUCK_ON)[0]
 
         # Apply the perturbation
         for idx in stuck_on_thrusters_indices:
@@ -167,7 +180,7 @@ class StuckOnThrusters(Perturbation):
         Method to unable a random thruster or a specific one if provided, to shut off.
         """
         thruster_index = self.select_thruster(index)
-        self.thruster_mask[thruster_index] = 2
+        self.thruster_mask[thruster_index] = PerturbationStatus.STUCK_ON
         print(f"Thruster {thruster_index} is stuck on.")
     
     def key_callback(self, keycode=None) -> None:
@@ -184,7 +197,7 @@ class SamplePerturbation(Perturbation):
 
         self.model_config = model_config
 
-        self.failure_type = 'sample_perturbation'
+        self.failure_type = PerturbationStatus.SAMPLE_PERTURBATION
 
         # Control frequency
         self.control_frequency = 50 # in Hz
@@ -203,7 +216,7 @@ class SamplePerturbation(Perturbation):
 
     def apply(self, input: np.ndarray, current_sim_time) -> np.ndarray:
         # Find where to apply the perturbation
-        failing_thrusters_indices = np.where(self.thruster_mask == 3)[0]
+        failing_thrusters_indices = np.where(self.thruster_mask == PerturbationStatus.SAMPLE_PERTURBATION)[0]
 
         for idx in failing_thrusters_indices:
             # Update the thruster input
@@ -220,7 +233,7 @@ class SamplePerturbation(Perturbation):
         Method to fail a random thruster or a specific one if provided.
         """
         thruster_index = self.select_thruster(index)
-        self.thruster_mask[thruster_index] = 3
+        self.thruster_mask[thruster_index] = PerturbationStatus.SAMPLE_PERTURBATION
         print(f"Thruster {thruster_index} is failing.")
 
     def key_callback(self, keycode=None) -> None:
