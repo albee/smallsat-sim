@@ -169,6 +169,22 @@ class VecEnv(BaseEnv):
             self.viewer = None
             self._update_viewer = lambda *args, **kwargs: None
 
+        # Launch the renderer to create a video
+        if args.video:
+            self._create_renderer()
+        else:
+            # Same logic as for the viewer
+            self.renderer = None
+            self._update_renderer = lambda *args, **kwargs: None
+
+    def _update_renderer(self):
+        """
+        Updates the renderer.
+        """
+        self.renderer.update_scene(self.data, self.cam) # TODO: select the right data
+        sim_img = self.renderer.render().copy()
+        self.frames.append(sim_img)
+
     def _pre_physics_step(self, input: np.ndarray) -> None:
         """
         Prepares the environment for the simulation step in MuJoCo.
@@ -178,8 +194,8 @@ class VecEnv(BaseEnv):
             - ...
         """
         # External disturbances
-        if self.disturbance:
-            self.data.qfrc_applied = self.disturbance.apply()
+        if self.disturbances:
+            self.data.qfrc_applied = self.disturbances.apply()
 
         # Perturbations
         if self.perturbations:

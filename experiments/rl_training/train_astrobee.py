@@ -10,6 +10,11 @@ from smallsat_sim.planners.oracle.oracle import OraclePlanner
 # os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '.50'
 # os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
+os.environ['MUJOCO_GL'] = 'egl'
+xla_flags = os.environ.get('XLA_FLAGS', '')
+xla_flags += ' --xla_gpu_triton_gemm_any=True'
+os.environ['XLA_FLAGS'] = xla_flags
+
 # Get arguments for script execution
 args = get_args()
 
