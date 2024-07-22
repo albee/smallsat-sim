@@ -1,7 +1,5 @@
 # Choose a base image
-# FROM nvidia/cuda:11.6.2-devel-ubuntu20.04
 # FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu20.04
-# FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
 FROM nvidia/cuda:12.1.0-devel-ubuntu20.04
 
 # Set environment variables for CUDA and cuDNN
@@ -17,7 +15,10 @@ RUN apt-get update && \
     apt-get install -y \
     git \ 
     cmake \
-    build-essential
+    build-essential \
+    ffmpeg \
+    libsm6 \
+    libxext6
 
 # Set the working directory
 WORKDIR /acados
@@ -51,8 +52,8 @@ WORKDIR /smallsat-sim
 COPY requirements.txt .
 
 # Install the specified dependencies
-RUN pip install -U "jax[cuda12]"
 RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install -U "jax[cuda12]"
 
 # Define use case (on which hardware the container should run)
 ENV USE_CASE=default
