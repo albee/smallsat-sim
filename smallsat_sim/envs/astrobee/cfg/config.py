@@ -106,6 +106,35 @@ class EnvConfig(BaseEnvConfig):
                 # Terminal quadratic cost on position
                 Q_e = np.eye(3)
 
+        # Nominal MPC controller parameters
+        class NominalMPCC:
+            # Decimate the controller frequency such that it doesn't
+            # run equally fast to the simulation discretization
+            control_decimation = 25
+            Ts = BaseEnvConfig.sim.dt * control_decimation
+
+            # Define MPC's horizon
+            N = 80
+
+            class cost:
+                # Intermediate cost on input
+                R = 1e-2 * np.eye(12)
+
+                # Cost on lag error
+                q_l = 1e-2
+
+                # Contouring cost
+                Q_c = 1e-2 * np.eye(3)
+
+                # Cost on angular velocity
+                Q_omega = 1e-2 * np.eye(3)
+
+                # Cost on d_theta
+                r_d_theta = 1e-4
+
+                # Reward for progress
+                q = 1e-3
+
 
     class planner:
         resolution = 1  # Resolution of the grid

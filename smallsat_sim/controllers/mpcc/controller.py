@@ -23,7 +23,7 @@ class NominalMPCCController(BaseController):
 
     def __init__(self, env, planner) -> None:
         # Fetch correct controller config
-        self.ctrl_cfg = env.env_cfg.control.NominalMPC
+        self.ctrl_cfg = env.env_cfg.control.NominalMPCC
 
         # Initialize base class
         super().__init__(env, planner, self.ctrl_cfg)
@@ -83,10 +83,9 @@ class NominalMPCCController(BaseController):
 
         # Assign parameters and model
         Ts = self.ctrl_cfg.Ts
-
-        p_start = SX.sym("p_start", (3,1))
-        t = SX.sym("t", (3,1))
-        theta_start = SX.sym("theta_start")
+        p_start = SX.sym("p_start", (3,1)) # Start point of line segment<
+        t = SX.sym("t", (3,1)) # Direction of line segment
+        theta_start = SX.sym("theta_start") # Arclength start of line segment
 
         p = ca.vertcat(
             p_start,
@@ -97,13 +96,12 @@ class NominalMPCCController(BaseController):
         ocp.model = acados_model
 
         # Define and assign cost functions
-        Q = self.ctrl_cfg.cost.Q
         R = self.ctrl_cfg.cost.R
-        q_l = 1e-2
-        Q_c = 1e-2 * np.eye(3)
-        Q_omega = 1e-3 * np.eye(3)
-        r_theta = 1e-4
-        q = 1e-3
+        q_l = self.ctrl_cfg.cost.q_l
+        Q_c = self.ctrl_cfg.cost.Q_c
+        Q_omega = self.ctrl_cfg.cost.Q_omega
+        r_d_theta = self.ctrl_cfg.cost.r_d_theta
+        q = self.ctrl_cfg.cost.q
 
         tx, ty, tz = t[0], t[1], t[2]
         g = p_start + (theta-theta_start) * t
@@ -131,7 +129,7 @@ class NominalMPCCController(BaseController):
 
         ocp.cost.cost_type = "EXTERNAL"
         ocp.model.cost_expr_ext_cost = (
-            q_l * e_l*e_l + e_c.T@Q_c@e_c + omega.T@Q_omega@omega + (model.u.T) @ R @ (model.u) + r_theta * d_theta**2 - q * theta
+            q_l * e_l*e_l + e_c.T@Q_c@e_c + omega.T@Q_omega@omega + (model.u.T) @ R @ (model.u) + r_d_theta * d_theta**2 - q * theta
         )
 
         # Set OCP dimensions
@@ -157,9 +155,9 @@ class NominalMPCCController(BaseController):
                 -1.1,
                 -1.1,
                 -1.1,
-                -1,
-                -1,
-                -1,
+                -0.5,
+                -0.5,
+                -0.5,
                 -0.5,
                 -0.5,
                 -0.5,
@@ -175,9 +173,9 @@ class NominalMPCCController(BaseController):
                 1.1,
                 1.1,
                 1.1,
-                1,
-                1,
-                1,
+                0.5,
+                0.5,
+                0.5,
                 0.5,
                 0.5,
                 0.5,
