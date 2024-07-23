@@ -1,0 +1,276 @@
+from smallsat_sim.controllers.base_controller import BaseController
+from smallsat_sim.envs.base_env import BaseEnv
+
+from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
+
+import numpy as np
+import os
+import casadi as ca
+import mujoco
+
+from casadi import SX
+
+
+class NominalMPCCController(BaseController):
+    """
+    This class implements a nominal MPC controller based on acados.
+    More specifically. this is a positional tracking controller,
+    taking waypoints from some external planner module.
+
+    See acados documentation for details:
+    https://docs.acados.org/
+    """
+
+    def __init__(self, env, planner) -> None:
+        # Fetch correct controller config
+        self.ctrl_cfg = env.env_cfg.control.NominalMPC
+
+        # Initialize base class
+        super().__init__(env, planner, self.ctrl_cfg)
+
+        # Generate solver
+        self._generate_solver(env)
+
+        # Initialize solver
+        self._initialize_solver(env)
+
+        # Check if there is a viewer. In case there is not,
+        # dynamically allocate the visualize method to a lambda
+        # function doing nothing.
+        if env.viewer:
+            self.viewer = env.viewer
+
+            # Setup util parameters for visualization
+            self.viz_offset = self.viewer.user_scn.ngeom
+            self.viewer.user_scn.ngeom += self.ctrl_cfg.N + 1
+        else:
+            self._visualize = lambda *args, **kwargs: None
+
+    def _generate_solver(self, env) -> None:
+        """
+        This method generates the necessary solver C code
+        """
+        # Initialize OCP instance
+        ocp = AcadosOcp()
+
+        # Fetch symbolic model
+        model = env.symbolic_model
+
+        # Setup acados model (interface between acados and CasADi)
+        acados_model = AcadosModel()
+        acados_model.f_impl_expr = model.f_impl_expr
+        acados_model.f_expl_expr = model.f_expl_expr
+        acados_model.x = model.x
+        acados_model.xdot = model.xdot
+        acados_model.u = model.u
+        acados_model.z = model.z
+        acados_model.p = model.p
+        acados_model.name = "OCPsolver"
+
+        # Define thetaa and dtheta
+        theta = ca.SX.sym("theta", 1, 1)
+        d_theta = ca.SX.sym('d_theta', 1, 1)
+
+        acados_model.x = ca.vertcat(acados_model.x, theta)
+        acados_model.u = ca.vertcat(acados_model.u, d_theta)
+        acados_model.xdot = ca.vertcat(acados_model.xdot, d_theta)
+
+        acados_model.f_expl_expr = ca.vertcat(
+            acados_model.f_expl_expr, d_theta
+        )
+
+        acados_model.f_impl_expr = ca.vertcat(acados_model.f_impl_expr, 0)
+
+        # Assign parameters and model
+        Ts = self.ctrl_cfg.Ts
+
+        p_start = SX.sym("p_start", (3,1))
+        t = SX.sym("t", (3,1))
+        theta_start = SX.sym("theta_start")
+
+        p = ca.vertcat(
+            p_start,
+            t,
+            theta_start,
+        )
+        acados_model.p = p
+        ocp.model = acados_model
+
+        # Define and assign cost functions
+        Q = self.ctrl_cfg.cost.Q
+        R = self.ctrl_cfg.cost.R
+        q_l = 1e-2
+        Q_c = 1e-2 * np.eye(3)
+        Q_omega = 1e-3 * np.eye(3)
+        r_theta = 1e-4
+        q = 1e-3
+
+        tx, ty, tz = t[0], t[1], t[2]
+        g = p_start + (theta-theta_start) * t
+
+        r = model.x[0:3]
+        omega = model.x[7:10]
+
+        e = r-g
+        e_l = t.T@e
+
+        P_n = ca.SX(3, 3)
+        P_n[0, 0] = 1 - tx**2
+        P_n[0, 1] = -tx * ty
+        P_n[0, 2] = -tx * tz
+        P_n[1, 0] = -tx * ty
+        P_n[1, 1] = 1 - ty**2
+        P_n[1, 2] = -ty * tz
+        P_n[2, 0] = -tx * tz
+        P_n[2, 1] = -ty * tz
+        P_n[2, 2] = 1 - tz**2
+
+        e_c = P_n@e
+
+        e_quat = 0
+
+        ocp.cost.cost_type = "EXTERNAL"
+        ocp.model.cost_expr_ext_cost = (
+            q_l * e_l*e_l + e_c.T@Q_c@e_c + omega.T@Q_omega@omega + (model.u.T) @ R @ (model.u) + r_theta * d_theta**2 - q * theta
+        )
+
+        # Set OCP dimensions
+        nx = acados_model.x.size()[0]  # number of states
+        nu = acados_model.u.size()[0]  # number of inputs
+        ocp.dims.nx = nx
+        ocp.dims.nu = nu
+        ocp.dims.np = p.size()[0]  # number of parameters
+        ocp.dims.N = self.ctrl_cfg.N  # prediction horizon length
+        if acados_model.con_h_expr_e:
+            ocp.dims.nh_e = acados_model.con_h_expr_e.size()[0]
+        else:
+            ocp.dims.nh_e = 0
+
+        # Define state constraints
+        # Lower and Upper bound constraints for intermediate stages
+        ocp.constraints.lbx = np.array(
+            [
+                -100,
+                -100,
+                -100,
+                -1.1,
+                -1.1,
+                -1.1,
+                -1.1,
+                -1,
+                -1,
+                -1,
+                -0.5,
+                -0.5,
+                -0.5,
+                0
+            ]
+        )
+        ocp.constraints.ubx = np.array(
+            [
+                100,
+                100,
+                100,
+                1.1,
+                1.1,
+                1.1,
+                1.1,
+                1,
+                1,
+                1,
+                0.5,
+                0.5,
+                0.5,
+                1000
+            ]
+        )
+        ocp.constraints.idxbx = np.arange(nx)
+
+        # Define input constraints
+        # Fetch thurster limits from the model configuration
+        thruster_forces = [
+            thruster.forcerange for thruster in env.model_cfg.Thrusters.thruster_list
+        ]
+        ocp.constraints.lbu = np.array([forces[0] for forces in thruster_forces])
+        ocp.constraints.ubu = np.array([forces[1] for forces in thruster_forces])
+        ocp.constraints.idxbu = np.arange(nu-1)
+
+        # Set intial condition
+        ocp.constraints.idxbx_0 = np.arange(13)
+        ocp.constraints.lbx_0 = env.obs[0:13].copy()
+        ocp.constraints.ubx_0 = env.obs[0:13].copy()
+        ocp.parameter_values = np.zeros(ocp.dims.np)
+
+        # Configure solver options
+        ocp.solver_options.Tsim = Ts
+        ocp.solver_options.tf = Ts * self.ctrl_cfg.N
+        ocp.solver_options.qp_solver = "PARTIAL_CONDENSING_HPIPM"
+        ocp.solver_options.nlp_solver_type = "SQP_RTI"
+        ocp.solver_options.hessian_approx = "GAUSS_NEWTON"
+        ocp.solver_options.integrator_type = "ERK"
+        ocp.solver_options.print_level = 0
+
+        # Set code generation directory
+        save_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "c_generated_code"
+        )
+        ocp.code_export_directory = save_dir
+
+        # Create solver with agent specific code files
+        filename = os.path.join(save_dir, "acados_pacejka_mpcc_solver_config.json")
+
+        self.ocp_solver = AcadosOcpSolver(ocp, json_file=filename)
+
+        print("Solver generated successfully.")
+
+    def _initialize_solver(self, env: BaseEnv) -> np.ndarray:
+        """
+        Initializes the solver. Also known as "warm start".
+        """
+        
+        xinit = np.zeros((14,1))
+        xinit[0:13,0] = env.obs[0:13]
+        x_guess = xinit.copy()
+
+        [self.ocp_solver.set(i, "x", x_guess) for i in range(self.ctrl_cfg.N + 1)]
+        [self.ocp_solver.set(i, "u", np.zeros((13, 1))) for i in range(self.ctrl_cfg.N)]
+
+    def get_control_input(self, env: BaseEnv) -> np.ndarray:
+        """
+        Calculate the control input based on current observation
+        """
+        # Check solver status and re-initialize if needed
+        if self.ocp_solver.status != 0:
+            print(f"Solution optimal, solver status: {self.ocp_solver.status}")
+            self._initialize_solver(env)
+
+        # Retrieve parameters
+        p_start = np.array([-3.3, -9, 0])
+        t = np.array([0, -1, 0])
+        theta_1 = np.array([0])
+
+        ref = np.concatenate((p_start, t, theta_1))
+
+        [self.ocp_solver.set(i, "p", ref) for i in range(self.ctrl_cfg.N + 1)]
+
+        # Solve for the first control input in receding horizon fashion
+        u0 = self.ocp_solver.solve_for_x0(env.obs[0:13], print_stats_on_failure=True, fail_on_nonzero_status=False)
+        self._visualize()
+
+        return u0[0:12]
+
+    def _visualize(self) -> None:
+        """
+        Plot predicted trajectory of MPC in MuJoCo viewer.
+        """
+        
+        for i in range(self.ctrl_cfg.N + 1):
+            point = self.ocp_solver.get(i, "x")[0:3]
+            mujoco.mjv_initGeom(
+                self.viewer.user_scn.geoms[i + self.viz_offset],
+                type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                size=[0.05, 0, 0],
+                pos=point,
+                mat=np.eye(3).flatten(),
+                rgba=np.array([0, 0, 1, 2]),
+            )
