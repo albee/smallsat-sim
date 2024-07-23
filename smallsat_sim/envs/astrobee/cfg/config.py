@@ -26,7 +26,7 @@ class EnvConfig(BaseEnvConfig):
         num_bodies = 1
         bodies_list = []
         for i in range(num_bodies):
-            bodies_list.append(Body(name=f"body{i}", pos=[-3.3, -9, 0], euler=[0,0,90]))
+            bodies_list.append(Body(name=f"body{i}", pos=[-3.3, -9, 1], euler=[0,0,90]))
 
     # Holds all information for the controller in use
     class control:
@@ -127,13 +127,16 @@ class EnvConfig(BaseEnvConfig):
                 Q_c = 1e-2 * np.eye(3)
 
                 # Cost on angular velocity
-                Q_omega = 1e-2 * np.eye(3)
+                Q_omega = 5e-3 * np.eye(3)
 
                 # Cost on d_theta
                 r_d_theta = 1e-4
 
                 # Reward for progress
-                q = 1e-3
+                q_theta = 1e-3
+
+                # Penalty on attitude error
+                Q_q = 2e-1 * np.eye(3)
 
 
     class planner:

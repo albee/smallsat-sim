@@ -69,29 +69,24 @@ class NominalMPCCController(BaseController):
 
         # Define thetaa and dtheta
         theta = ca.SX.sym("theta", 1, 1)
-        d_theta = ca.SX.sym('d_theta', 1, 1)
+        d_theta = ca.SX.sym("d_theta", 1, 1)
 
         acados_model.x = ca.vertcat(acados_model.x, theta)
         acados_model.u = ca.vertcat(acados_model.u, d_theta)
         acados_model.xdot = ca.vertcat(acados_model.xdot, d_theta)
 
-        acados_model.f_expl_expr = ca.vertcat(
-            acados_model.f_expl_expr, d_theta
-        )
+        acados_model.f_expl_expr = ca.vertcat(acados_model.f_expl_expr, d_theta)
 
         acados_model.f_impl_expr = ca.vertcat(acados_model.f_impl_expr, 0)
 
         # Assign parameters and model
         Ts = self.ctrl_cfg.Ts
-        p_start = SX.sym("p_start", (3,1)) # Start point of line segment<
-        t = SX.sym("t", (3,1)) # Direction of line segment
-        theta_start = SX.sym("theta_start") # Arclength start of line segment
+        p_start = SX.sym("p_start", (3, 1))  # Start point of line segment<
+        t = SX.sym("t", (3, 1))  # Direction of line segment
+        theta_start = SX.sym("theta_start")  # Arclength start of line segment
+        q_des = SX.sym("q_des", (4, 1))  # Desired attitude
 
-        p = ca.vertcat(
-            p_start,
-            t,
-            theta_start,
-        )
+        p = ca.vertcat(p_start, t, theta_start, q_des)
         acados_model.p = p
         ocp.model = acados_model
 
@@ -101,17 +96,23 @@ class NominalMPCCController(BaseController):
         Q_c = self.ctrl_cfg.cost.Q_c
         Q_omega = self.ctrl_cfg.cost.Q_omega
         r_d_theta = self.ctrl_cfg.cost.r_d_theta
-        q = self.ctrl_cfg.cost.q
+        q_theta = self.ctrl_cfg.cost.q_theta
+        Q_q = self.ctrl_cfg.cost.Q_q
 
+        # Calculate line representation
         tx, ty, tz = t[0], t[1], t[2]
-        g = p_start + (theta-theta_start) * t
+        g = p_start + (theta - theta_start) * t
 
+        # Extract states for ease of use
         r = model.x[0:3]
+        q = model.x[3:7]
         omega = model.x[7:10]
 
-        e = r-g
-        e_l = t.T@e
+        # Calculate errors
+        e = r - g
+        e_l = t.T @ e
 
+        # Normal projection matrix
         P_n = ca.SX(3, 3)
         P_n[0, 0] = 1 - tx**2
         P_n[0, 1] = -tx * ty
@@ -123,13 +124,45 @@ class NominalMPCCController(BaseController):
         P_n[2, 1] = -ty * tz
         P_n[2, 2] = 1 - tz**2
 
-        e_c = P_n@e
+        # Contouring error
+        e_c = P_n @ e
 
-        e_quat = 0
+        # Quaternion error
+        q_conj = np.array([q[0], -q[1], -q[2], -q[3]])
+        e_q = np.array(
+            [
+                q_des[0] * q_conj[0]
+                - q_des[1] * q_conj[1]
+                - q_des[2] * q_conj[2]
+                - q_des[3] * q_conj[3],
+                q_des[0] * q_conj[1]
+                + q_des[1] * q_conj[0]
+                + q_des[2] * q_conj[3]
+                - q_des[3] * q_conj[2],
+                q_des[0] * q_conj[2]
+                - q_des[1] * q_conj[3]
+                + q_des[2] * q_conj[0]
+                + q_des[3] * q_conj[1],
+                q_des[0] * q_conj[3]
+                + q_des[1] * q_conj[2]
+                - q_des[2] * q_conj[1]
+                + q_des[3] * q_conj[0],
+            ]
+        )
 
+        # We only want to minimize eps part of error quaternion
+        e_q = e_q[1:4]
+
+        # Setup cost
         ocp.cost.cost_type = "EXTERNAL"
         ocp.model.cost_expr_ext_cost = (
-            q_l * e_l*e_l + e_c.T@Q_c@e_c + omega.T@Q_omega@omega + (model.u.T) @ R @ (model.u) + r_d_theta * d_theta**2 - q * theta
+            q_l * e_l * e_l
+            + e_c.T @ Q_c @ e_c
+            + e_q.T @ Q_q @ e_q
+            + omega.T @ Q_omega @ omega
+            + (model.u.T) @ R @ (model.u)
+            + r_d_theta * d_theta**2
+            - q_theta * theta
         )
 
         # Set OCP dimensions
@@ -161,26 +194,11 @@ class NominalMPCCController(BaseController):
                 -0.5,
                 -0.5,
                 -0.5,
-                0
+                0,
             ]
         )
         ocp.constraints.ubx = np.array(
-            [
-                100,
-                100,
-                100,
-                1.1,
-                1.1,
-                1.1,
-                1.1,
-                0.5,
-                0.5,
-                0.5,
-                0.5,
-                0.5,
-                0.5,
-                1000
-            ]
+            [100, 100, 100, 1.1, 1.1, 1.1, 1.1, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1000]
         )
         ocp.constraints.idxbx = np.arange(nx)
 
@@ -191,7 +209,7 @@ class NominalMPCCController(BaseController):
         ]
         ocp.constraints.lbu = np.array([forces[0] for forces in thruster_forces])
         ocp.constraints.ubu = np.array([forces[1] for forces in thruster_forces])
-        ocp.constraints.idxbu = np.arange(nu-1)
+        ocp.constraints.idxbu = np.arange(nu - 1)
 
         # Set intial condition
         ocp.constraints.idxbx_0 = np.arange(13)
@@ -225,9 +243,10 @@ class NominalMPCCController(BaseController):
         """
         Initializes the solver. Also known as "warm start".
         """
-        
-        xinit = np.zeros((14,1))
-        xinit[0:13,0] = env.obs[0:13]
+
+        xinit = np.zeros((14, 1))
+        xinit[0:13, 0] = env.obs[0:13]
+        self.quat = env.obs[3:7].copy()
         x_guess = xinit.copy()
 
         [self.ocp_solver.set(i, "x", x_guess) for i in range(self.ctrl_cfg.N + 1)]
@@ -246,13 +265,16 @@ class NominalMPCCController(BaseController):
         p_start = np.array([-3.3, -9, 0])
         t = np.array([0, -1, 0])
         theta_1 = np.array([0])
+        q_des = self.quat
 
-        ref = np.concatenate((p_start, t, theta_1))
+        ref = np.concatenate((p_start, t, theta_1, q_des))
 
         [self.ocp_solver.set(i, "p", ref) for i in range(self.ctrl_cfg.N + 1)]
 
         # Solve for the first control input in receding horizon fashion
-        u0 = self.ocp_solver.solve_for_x0(env.obs[0:13], print_stats_on_failure=True, fail_on_nonzero_status=False)
+        u0 = self.ocp_solver.solve_for_x0(
+            env.obs[0:13], print_stats_on_failure=True, fail_on_nonzero_status=False
+        )
         self._visualize()
 
         return u0[0:12]
@@ -261,7 +283,7 @@ class NominalMPCCController(BaseController):
         """
         Plot predicted trajectory of MPC in MuJoCo viewer.
         """
-        
+
         for i in range(self.ctrl_cfg.N + 1):
             point = self.ocp_solver.get(i, "x")[0:3]
             mujoco.mjv_initGeom(
@@ -272,3 +294,15 @@ class NominalMPCCController(BaseController):
                 mat=np.eye(3).flatten(),
                 rgba=np.array([0, 0, 1, 2]),
             )
+
+    def Rquat(self, q):
+        """R = Rquat(q) computes the rotation matrix R of dimension 3 x 3
+        for attitude from a quaternion q.
+        """
+        eta = q[0]
+        eps = q[1:4]
+
+        S = ca.skew(eps)
+        R = np.eye(3) + 2 * eta * S + 2 * S @ S
+
+        return R
