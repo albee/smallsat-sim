@@ -70,12 +70,12 @@ class OnPolicyRunner(object):
                         v = jnp.zeros(self.env.n_envs)
                     
                     if timeout:
-                        ep_returns[:, t] = ep_ret
+                        ep_returns.at[:, t].set(ep_ret)
 
                     if terminal.any():
                         true_indices = jnp.nonzero(terminal).squeeze()
                         for idx in true_indices:
-                            ep_returns[idx, t] = ep_ret[idx]
+                            ep_returns.at[idx, t].set(ep_ret[idx])
                     
                     buffer.end_traj(v)
 
@@ -90,20 +90,15 @@ class OnPolicyRunner(object):
             returns = data['ret']
 
             # Policy gradient update
-            # actor_optimizer.zero_grad() # Reset gradient # TODO
             loss, grads = nnx.value_and_grad(actor_loss_fn(tdres))(self.agent.actor)
             print(f'{loss = }')
             actor_optimizer.update(grads)
-            # actor_optimizer.step() # TODO
 
             # Value function updates
             for _ in range(100):
-                # critic_optimizer.zero_grad() # Reset gradient # TODO
                 loss, grads = nnx.value_and_grad(critic_loss_fn(returns))(self.agent.critic)
                 print(f'{loss = }')
                 critic_optimizer.update(grads)
-                # loss.backward() # TODO
-                # critic_optimizer.step()
 
     def evaluate(self, episode_len, n_evals) -> None:
         """
