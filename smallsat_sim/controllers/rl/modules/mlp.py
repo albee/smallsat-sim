@@ -1,6 +1,15 @@
-import torch.nn as nn
+import jax
+import jax.numpy as jnp
+from flax import nnx
 
-def mlp(sizes, activation, output_activation=nn.Identity):
+
+def identity(input: jnp.ndarray) -> jnp.ndarray:
+    """
+    Identity layer (placeholder).
+    """
+    return input
+
+def mlp(sizes, activation, output_activation=identity):
     """
     Basic multilayer perceptron architecture.
     """
@@ -11,6 +20,6 @@ def mlp(sizes, activation, output_activation=nn.Identity):
             activation_function = output_activation
         else:
             activation_function = activation
-        modules += [nn.Linear(sizes[i], sizes[i+1]), activation_function()]
+        modules += [nnx.Linear(sizes[i], sizes[i+1], rngs=nnx.Rngs(params=0)), activation_function]
 
-    return nn.Sequential(*modules)
+    return nnx.Sequential(*modules)

@@ -1,4 +1,4 @@
-import torch
+import jax.numpy as jnp
 
 from smallsat_sim.utils.helpers import discount_cumsum, combined_shape
 
@@ -7,22 +7,21 @@ class VPGBuffer(object):
     """
     Vanilla Policy Gradient buffer to store trajectories. Inspired from https://spinningup.openai.com/en/latest/algorithms/vpg.html.
     """
-    def __init__(self, n_envs, obs_dim, act_dim, size, gamma, lam, device) -> None:
-        self.obs_buf = torch.zeros(combined_shape(size, (n_envs, obs_dim)), dtype=torch.float32, device=device)
-        self.act_buf = torch.zeros(combined_shape(size, (n_envs, act_dim)), dtype=torch.float32, device=device)
-        self.tdres_buf = torch.zeros((size, n_envs), dtype=torch.float32, device=device)
-        self.rew_buf = torch.zeros((size, n_envs), dtype=torch.float32, device=device)
-        self.ret_buf = torch.zeros((size, n_envs), dtype=torch.float32, device=device)
-        self.val_buf = torch.zeros((size, n_envs), dtype=torch.float32, device=device)
-        self.logp_buf = torch.zeros((size, n_envs), dtype=torch.float32, device=device)
+    def __init__(self, n_envs, obs_dim, act_dim, size, gamma, lam) -> None:
+        self.obs_buf = jnp.zeros(combined_shape(size, (n_envs, obs_dim)))
+        self.act_buf = jnp.zeros(combined_shape(size, (n_envs, act_dim)))
+        self.tdres_buf = jnp.zeros((size, n_envs))
+        self.rew_buf = jnp.zeros((size, n_envs))
+        self.ret_buf = jnp.zeros((size, n_envs))
+        self.val_buf = jnp.zeros((size, n_envs))
+        self.logp_buf = jnp.zeros((size, n_envs))
         self.gamma = gamma
         self.lam = lam
         self.ptr = 0
         self.path_start_idx = 0
         self.max_size = size
-        self.device = device
 
-    def store(self, obs: torch.tensor, act: torch.tensor, rew: torch.tensor, val: torch.tensor, logp: torch.tensor):
+    def store(self, obs: jnp.ndarray, act: jnp.ndarray, rew: jnp.ndarray, val: jnp.ndarray, logp: jnp.ndarray):
         """
         Append a single timestep to the buffer at each environment update in each environment.
         """
@@ -30,11 +29,11 @@ class VPGBuffer(object):
         assert self.ptr < self.max_size
 
         # Store new data in the respective buffers
-        self.obs_buf[self.ptr] = obs
-        self.act_buf[self.ptr] = act
-        self.rew_buf[self.ptr] = rew
-        self.val_buf[self.ptr] = val
-        self.logp_buf[self.ptr] = logp
+        self.obs_buf.at[self.ptr].set(obs)
+        self.act_buf.at[self.ptr].set(act)
+        self.rew_buf.at[self.ptr].set(rew)
+        self.val_buf.at[self.ptr].set(val)
+        self.logp_buf.at[self.ptr].set(logp)
 
         # Update pointer
         self.ptr += 1
@@ -46,18 +45,18 @@ class VPGBuffer(object):
         # Get the indices where the TD residuals and discounted reward-to-go are stored
         path_slice = slice(self.path_start_idx, self.ptr)
 
-        rews = torch.cat(self.rew_buf[path_slice], last_val)
-        vals = torch.cat(self.val_buf[path_slice], last_val)
+        rews = jnp.concatenate(self.rew_buf[path_slice], last_val)
+        vals = jnp.concatenatet(self.val_buf[path_slice], last_val)
         run_len = self.ptr - self.path_start_idx
 
-        self.ret_buf[self.ptr:self.path_start_idx] = (torch.cumsum(self.rew_buf[self.ptr:self.path_start_idx][::-1])[::-1])
+        self.ret_buf.at[self.ptr:self.path_start_idx].set(jnp.cumsum(self.rew_buf[self.ptr:self.path_start_idx][::-1])[::-1])
 
         # TD residual calculation
-        deltas = rews[:-1] - vals[:-1] + self.gamma * torch.cat(vals[1:-1], vals[-1])
-        self.tdres_buf[path_slice] = torch.tensor([discount_cumsum(deltas[t:run_len], self.gamma * self.lam)[0] for t in range(run_len)])
+        deltas = rews[:-1] - vals[:-1] + self.gamma * jnp.concatenate(vals[1:-1], vals[-1])
+        self.tdres_buf.at[path_slice].set(jnp.ndarray([discount_cumsum(deltas[t:run_len], self.gamma * self.lam)[0] for t in range(run_len)]))
 
         # Discounted rewards-to-go calculation
-        self.ret_buf[path_slice] = torch.tensor([discount_cumsum(rews[t:run_len], self.gamma)[0] for t in range(run_len)])
+        self.ret_buf.at[path_slice].set(jnp.ndarray([discount_cumsum(rews[t:run_len], self.gamma)[0] for t in range(run_len)]))
 
         # Update path start index
         self.path_start_idx = self.ptr
@@ -71,11 +70,11 @@ class VPGBuffer(object):
         self.ptr, self.path_start_idx = 0, 0
 
         # Normalize the TD residuals
-        tdres_mean = torch.mean(self.tdres_buf)
-        tdres_std = torch.std(self.tdres_buf)
+        tdres_mean = jnp.mean(self.tdres_buf)
+        tdres_std = jnp.std(self.tdres_buf)
         self.tdres_buf = (self.tdres_buf - tdres_mean) / tdres_std
 
         # Save the data in a dict
         data = dict(obs=self.obs_buf, act=self.act_buf, ret=self.ret_buf, tdres=self.tdres_buf, logp=self.logp_buf)
 
-        return {k: torch.as_tensor(v, dtype=torch.float32, device=self.device) for k, v in data.items()}
+        return {k: v for k, v in data.items()}

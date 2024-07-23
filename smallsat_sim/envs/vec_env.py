@@ -1,15 +1,12 @@
 from argparse import Namespace
-import numpy as np
-import torch
+import jax
+import jax.numpy as jnp
 import mujoco
 import mujoco.viewer
 from mujoco import mjx
-import jax
-import jax.numpy as jnp
 
 from smallsat_sim.envs.base_env import BaseEnv
 from smallsat_sim.utils import xml_parser_rl
-from smallsat_sim.utils.helpers import jax_to_torch
 
 
 class VecEnv(BaseEnv):
@@ -17,11 +14,6 @@ class VecEnv(BaseEnv):
     Vectorized environment for the smallsat.
     """
     def __init__(self, args) -> None:
-        # Use GPU acceleration if available
-        print("GPU available: ", torch.cuda.is_available()) 
-        print("Number of GPUs: ", torch.cuda.device_count())
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
         # Number of environments running in parallel
         self.n_envs = 1
 
@@ -51,20 +43,20 @@ class VecEnv(BaseEnv):
         self.mjx_batch.replace(qvel=self.init_qvel)
         self.mjx_batch = self.jit_forward(self.mjx_model, self.mjx_batch)
 
-    def transition(self, actions: torch.tensor) -> tuple[torch.tensor, torch.tensor, torch.tensor]:
+    def transition(self, actions: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """
         Apply input action on the environment. Returns the states, rewards and wether the terminal state has been reached.
         """
-        self.step(input=actions.numpy())
+        self.step(input=actions)
 
         # TODO: implement reward shaping
-        rewards = torch.zeros(self.n_envs, device=self.device)
-        shaping = torch.zeros(self.n_envs, device=self.device)
+        rewards = jnp.zeros(self.n_envs)
+        shaping = jnp.zeros(self.n_envs)
         if self.prev_shaping is not None:
             rewards = shaping - self.prev_shaping
         self.prev_shaping = shaping
 
-        terminal = torch.zeros(self.n_envs, dtype=bool, device=self.device) # TODO: implement "game over" checking
+        terminal = jnp.zeros(self.n_envs, dtype=bool) # TODO: implement "game over" checking
 
         return self.obs, rewards, terminal
 
@@ -90,7 +82,7 @@ class VecEnv(BaseEnv):
         # Execute post physics steps
         self._post_physics_step()
 
-    def get_obs(self) -> torch.tensor:
+    def get_obs(self) -> jnp.ndarray:
         """
         Return all states.
         """
@@ -113,10 +105,7 @@ class VecEnv(BaseEnv):
         vel_body = multiply_transpose_velocity(R, self.mjx_batch.qvel[:,:3])
 
         # Create array of observations
-        obs_jax_ = jnp.concatenate((self.mjx_batch.qpos, vel_body, self.mjx_batch.qvel[:,3:]), axis=1)
-
-        # Convert obs to PyTorch
-        obs = jax_to_torch(obs_jax_, self.device)
+        obs = jnp.concatenate((self.mjx_batch.qpos, vel_body, self.mjx_batch.qvel[:,3:]), axis=1)
 
         return obs
     
@@ -185,7 +174,7 @@ class VecEnv(BaseEnv):
         sim_img = self.renderer.render().copy()
         self.frames.append(sim_img)
 
-    def _pre_physics_step(self, input: np.ndarray) -> None:
+    def _pre_physics_step(self, input: jnp.ndarray) -> None:
         """
         Prepares the environment for the simulation step in MuJoCo.
         This includes:

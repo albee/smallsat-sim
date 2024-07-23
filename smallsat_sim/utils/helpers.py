@@ -5,11 +5,8 @@
 # Parsing
 import argparse
 import numpy as np
-import torch
-import jax
-import jax.numpy as jnp
-import jax.dlpack
 import scipy.signal
+
 
 def get_args() -> argparse.Namespace:
     """
@@ -157,11 +154,3 @@ def combined_shape(len, shape=None):
         return (len,)
     
     return (len, shape) if np.isscalar(shape) else (len, *shape)
-
-def jax_to_torch(jax_tensor, device) -> torch.tensor:
-    """
-    Convert JAX tensor to PyTorch tensor without necessarily copying it back to the CPU.
-    """
-    dlpack_tensor = jax.dlpack.to_dlpack(jax_tensor)
-    torch_tensor = torch.utils.dlpack.from_dlpack(dlpack_tensor)
-    return torch_tensor.to(device) # Should just return self since alrealdy on GPU

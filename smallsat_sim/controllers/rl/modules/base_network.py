@@ -1,19 +1,19 @@
-import torch
-import torch.nn as nn
+import jax.numpy as jnp
+from flax import nnx
 
 from smallsat_sim.controllers.rl.modules.mlp import mlp
 
 
-class Critic(nn.Module):
+class Critic(nnx.Module):
     """
     The network used by the value function.
     """
-    def __init__(self, obs_dim: int, hidden_sizes: int, activation, device) -> None:
+    def __init__(self, obs_dim: int, hidden_sizes: int, activation) -> None:
         super().__init__()
         self.v_net = mlp([obs_dim] + list(hidden_sizes) + [1], activation)
 
-    def forward(self, obs: torch.tensor):
+    def forward(self, obs: jnp.ndarray):
         """
         Return the value estimates for given observations.
         """
-        return torch.squeeze(self.v_net(obs), -1)
+        return jnp.squeeze(self.v_net(obs), -1)
