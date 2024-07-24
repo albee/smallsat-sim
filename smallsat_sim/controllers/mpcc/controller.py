@@ -188,9 +188,9 @@ class NominalMPCCController(BaseController):
                 -1.1,
                 -1.1,
                 -1.1,
-                -0.5,
-                -0.5,
-                -0.5,
+                -0.4,
+                -0.4,
+                -0.4,
                 -0.5,
                 -0.5,
                 -0.5,
@@ -198,7 +198,7 @@ class NominalMPCCController(BaseController):
             ]
         )
         ocp.constraints.ubx = np.array(
-            [100, 100, 100, 1.1, 1.1, 1.1, 1.1, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1000]
+            [100, 100, 100, 1.1, 1.1, 1.1, 1.1, 0.4, 0.4, 0.4, 0.5, 0.5, 0.5, 1000]
         )
         ocp.constraints.idxbx = np.arange(nx)
 
@@ -244,13 +244,16 @@ class NominalMPCCController(BaseController):
         Initializes the solver. Also known as "warm start".
         """
 
+        # Initial condition and Warm start
         xinit = np.zeros((14, 1))
-        xinit[0:13, 0] = env.obs[0:13]
-        self.quat = env.obs[3:7].copy()
+        xinit[0:13, 0] = env.obs[0:13].copy()
         x_guess = xinit.copy()
 
         [self.ocp_solver.set(i, "x", x_guess) for i in range(self.ctrl_cfg.N + 1)]
         [self.ocp_solver.set(i, "u", np.zeros((13, 1))) for i in range(self.ctrl_cfg.N)]
+
+        # Array to store previous theta
+        self.theta_prev = [0 for i in range(self.ctrl_cfg.N + 1)]
 
     def get_control_input(self, env: BaseEnv) -> np.ndarray:
         """
@@ -261,21 +264,35 @@ class NominalMPCCController(BaseController):
             print(f"Solution optimal, solver status: {self.ocp_solver.status}")
             self._initialize_solver(env)
 
-        # Retrieve parameters
-        p_start = np.array([-3.3, -9, 0])
-        t = np.array([0, -1, 0])
-        theta_1 = np.array([0])
-        q_des = self.quat
+        theta_shifted = self.theta_prev.copy()
+        theta_shifted.append(theta_shifted[-1])
+        theta_shifted.pop(0)
 
-        ref = np.concatenate((p_start, t, theta_1, q_des))
+        # Set parameters
+        for i in range(self.ctrl_cfg.N + 1):
 
-        [self.ocp_solver.set(i, "p", ref) for i in range(self.ctrl_cfg.N + 1)]
+            theta_curr = theta_shifted[i]
+
+            p_start = self.planner.trajectory._get_start_point_segment(theta_curr)
+            t = self.planner.trajectory._get_tangent_segment(theta_curr)
+            theta_1 = self.planner.trajectory._get_start_arc_length_segment(theta_curr)
+            q_des = self.planner.trajectory.get_intermediate_reference(
+                theta_curr
+            ).attitude
+
+            ref = np.concatenate((p_start, t, theta_1, q_des))
+
+            self.ocp_solver.set(i, "p", ref)
 
         # Solve for the first control input in receding horizon fashion
         u0 = self.ocp_solver.solve_for_x0(
             env.obs[0:13], print_stats_on_failure=True, fail_on_nonzero_status=False
         )
         self._visualize()
+
+        # Save theta for next iteration
+        for i in range(self.ctrl_cfg.N + 1):
+            self.theta_prev[i] = self.ocp_solver.get(i, "x")[-1]
 
         return u0[0:12]
 
