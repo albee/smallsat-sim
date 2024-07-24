@@ -106,6 +106,13 @@ class Segment:
         """
         pass
 
+    @abstractmethod
+    def tangent(self, arc_length: float) -> np.ndarray:
+        """
+        Method to calculate the tangent at a certain arc_length.
+        """
+        pass
+
 
 class Line(Segment):
     """
@@ -152,6 +159,11 @@ class Line(Segment):
 
         return intermediate_waypoint
 
+    def tangent(self, arc_length: float) -> np.ndarray:
+        direction = self.end_point.position - self.start_point.position
+
+        return direction / np.linalg.norm(direction)
+
 
 class Trajectory:
     """
@@ -172,7 +184,7 @@ class Trajectory:
         """
         Creates the reference by creating a list of segments
         """
-        self.reference = []
+        self.reference: list[Segment] = []
         for i in range(len(waypoints) - 1):
             # Create segment
             segment = self._create_segment(
@@ -220,11 +232,7 @@ class Trajectory:
         arc_length = arc_length % self.length
 
         # Identify correct segment to sample from
-        segment_index = 0
-        for i, end_arc_length in enumerate(self.intervals):
-            if arc_length <= end_arc_length:
-                segment_index = i
-                break
+        segment_index = self._get_segment_index(arc_length)
 
         # Extract start arc_length
         start_arc_length = 0
@@ -238,6 +246,45 @@ class Trajectory:
         )
 
         return intermediate_waypoint
+
+    def _get_segment_index(self, arc_length: float) -> int:
+        """
+        Returns the corresponding segment index wrt. the arc length
+        """
+        segment_index = 0
+        for i, end_arc_length in enumerate(self.intervals):
+            if arc_length <= end_arc_length:
+                segment_index = i
+                break
+
+        return segment_index
+
+    def _get_start_point_segment(self, arc_length: float) -> np.ndarray:
+        """
+        Returns the starting point of a segment wrt. the arc length
+        """
+        segment_index = self._get_segment_index(arc_length)
+
+        return self.reference[segment_index].start_point.position
+
+    def _get_start_arc_length_segment(self, arc_length: float) -> np.ndarray:
+        """
+        Returns the starting point of a segment wrt. the arc length
+        """
+        segment_index = self._get_segment_index(arc_length)
+
+        if segment_index == 0:
+            return np.array([0.0])
+        else:
+            return np.array([self.intervals[segment_index - 1]])
+        
+    def _get_tangent_segment(self, arc_length: float) -> np.ndarray:
+        """
+        Returns the starting point of a segment wrt. the arc length
+        """
+        segment_index = self._get_segment_index(arc_length)
+
+        return self.reference[segment_index].tangent(arc_length)
 
 
 class MissionPlanner(BasePlanner):
