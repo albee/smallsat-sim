@@ -68,7 +68,7 @@ class IntermediateWaypoint(Waypoint):
         self,
         position: np.ndarray,
         attitude: np.ndarray,
-        velocity: np.ndarray | None = None,
+        velocity: Optional[np.ndarray] = None,
     ) -> None:
         super().__init__(position, attitude, velocity)
 
@@ -144,6 +144,7 @@ class Line(Segment):
         # Interpolate attitude
         if interpolation_mode == "Linear":
             # Check if frac_length is out of bound due to numerical errors
+            # Otherwise throw an exception
             eps = 1e-3
             if frac_length > 1.0:
                 if frac_length < 1.0 + eps:
@@ -269,23 +270,20 @@ class Trajectory:
         Retrieves the correct reference wrt. to the given arc length
         """
         # Modulo with total length (to ensure continuity)
-        arc_length = arc_length % self.length
+        arc_length %= self.length
 
         # Identify correct segment to sample from
         segment_index = self._get_segment_index(arc_length)
 
         # Extract start arc_length
-        start_arc_length = 0
-        if segment_index != 0:
-            start_arc_length = self.intervals[segment_index - 1]
+        start_arc_length = self.intervals[segment_index - 1] if segment_index > 0 else 0
 
         # Retrieve the correct reference from the segment
         segment_arc_length = arc_length - start_arc_length
-        intermediate_waypoint = self.reference[segment_index].interpolate(
+
+        return self.reference[segment_index].interpolate(
             segment_arc_length, interpolation_mode="Linear"
         )
-
-        return intermediate_waypoint
 
     def _get_segment_index(self, arc_length: float) -> int:
         """
@@ -337,6 +335,8 @@ class MissionPlanner(BasePlanner):
         - clearance_dist: clearance distance of waypoints
         - planner_mode: Tracking vs. Path following
             - Waypoint Tracking: WPs are given as references w/o intermediate points
+            - Intermediate Waypoint Tracking: WPs are given as reference w/ interme-
+                                              mediate points
     """
 
     def __init__(
@@ -357,10 +357,6 @@ class MissionPlanner(BasePlanner):
 
         # Create the trajectory
         self._create_trajectory()
-
-        # Visualize entire trajectory
-        if False:
-            self._visualize_reference()
 
         # Set planner mode
         if planner_mode == "Waypoint Tracking":
@@ -479,26 +475,14 @@ class MissionPlanner(BasePlanner):
             len(positions) == len(attitudes) == len(segment_types) + 1
         ), "The number of waypoints must be one more than the number of segment types"
 
-        # Convert to numpy for ease of use
-        self.positions = [np.array(pos) for pos in positions]
-        self.attitudes = [np.array(att) for att in attitudes]
+        # Save segment types to self
         self.segment_types = segment_types
 
         # Create Waypoint objects
-        self.waypoints = []
-        for i in range(len(positions)):
-            self.waypoints.append(
-                Waypoint(
-                    position=self.positions[i],
-                    attitude=self.attitudes[i],
-                )
-            )
-
-        # For Debug
-        if False:
-            self.visualize(
-                [waypoint.position for waypoint in self.waypoints], size=[0.2, 0, 0]
-            )
+        self.waypoints = [
+            Waypoint(np.array(pos), np.array(att))
+            for pos, att in zip(positions, attitudes)
+        ]
 
     def get_reference(self, obs: np.ndarray) -> np.ndarray:
         """
@@ -576,19 +560,15 @@ class MissionPlanner(BasePlanner):
         Generates a trajectory with intermediate WPs
         """
         self._intermediate_reference = []
-        for i in range(len(self.trajectory.intervals)):
+        for i, segment in enumerate(self.trajectory.reference):
             # Extract initial arc_length of each interval
-            if i == 0:
-                arc_length = 0
-            else:
-                arc_length = self.trajectory.intervals[i - 1]
+            arc_length = self.trajectory.intervals[i - 1] if i > 0 else 0
 
             # Calculate the number of points in the segment
-            num_points_in_segment = int(
-                self.trajectory.reference[i].length / self.spacing
-            )
+            num_points_in_segment = int(segment.length / self.spacing)
+
             # Calculate the actual spacing
-            spacing = self.trajectory.reference[i].length / num_points_in_segment
+            spacing = segment.length / num_points_in_segment
 
             # Append the Waypoint at the start
             self._intermediate_reference.append(self.waypoints[i])
@@ -604,32 +584,6 @@ class MissionPlanner(BasePlanner):
                 [waypoint.position for waypoint in self._intermediate_reference],
                 size=[0.1, 0, 0],
             )
-
-    def _visualize_reference(self) -> None:
-        """
-        Visualize the reference as continuous trajectory
-        """
-        # Retrieve total length of trajectory
-        tot_len = self.trajectory.length
-
-        # Desired spacing
-        N_points = int(tot_len / self.spacing)
-
-        offset = self.viewer.user_scn.ngeom
-        for i in range(N_points):
-            point = self.trajectory.get_intermediate_reference(
-                i * self.spacing
-            ).position
-            mujoco.mjv_initGeom(
-                self.viewer.user_scn.geoms[i + offset],
-                type=mujoco.mjtGeom.mjGEOM_SPHERE,
-                size=[0.1, 0, 0],
-                pos=point,
-                mat=np.eye(3).flatten(),
-                rgba=np.array([1, 0, 0, 2]),
-            )
-
-        self.viewer.user_scn.ngeom += N_points
 
     def _visualize_collision_constraints(self) -> None:
         """
