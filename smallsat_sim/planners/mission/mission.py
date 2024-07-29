@@ -386,31 +386,7 @@ class MissionPlanner(BasePlanner):
             # Initialize the timer clearance boolean
             self.timer_started = False
 
-        # Visualize collision boxes
-        offset = self.viewer.user_scn.ngeom - 1
-
-        mujoco.mjv_initGeom(
-            self.viewer.user_scn.geoms[offset],
-            type=mujoco.mjtGeom.mjGEOM_CAPSULE,
-            size=np.zeros(3),
-            pos=np.zeros(3),
-            mat=np.zeros(9),
-            rgba=np.array([0, 0, 1, 0.1]),
-        )
-
-        mujoco.mjv_makeConnector(
-            self.viewer.user_scn.geoms[offset],
-            mujoco.mjtGeom.mjGEOM_CAPSULE,
-            1,
-            -3.3,
-            -9,
-            0,
-            -3.3,
-            -18,
-            0,
-        )
-
-        self.viewer.user_scn.ngeom += 1
+        self._visualize_collision_constraints()
 
     def _load_waypoints(self) -> None:
         """
@@ -654,6 +630,44 @@ class MissionPlanner(BasePlanner):
             )
 
         self.viewer.user_scn.ngeom += N_points
+
+    def _visualize_collision_constraints(self) -> None:
+        """
+        Visualizes the collision constraints around the mission trajectory
+        """
+
+        collision_radius = 1.0
+
+        for i, segment in enumerate(self.trajectory.reference):
+            # Increment ngeom
+            self.viewer.user_scn.ngeom += 1
+
+            # Extract points
+            start_point = segment.start_point.position
+            end_point = segment.end_point.position
+
+            # Initialize geometry
+            mujoco.mjv_initGeom(
+                self.viewer.user_scn.geoms[self.viewer.user_scn.ngeom - 1],
+                type=mujoco.mjtGeom.mjGEOM_CAPSULE,
+                size=np.zeros(3),
+                pos=np.zeros(3),
+                mat=np.zeros(9),
+                rgba=np.array([0.69, 0.4, 1, 0.1]),
+            )
+
+            # Make the connector geometry
+            mujoco.mjv_makeConnector(
+                self.viewer.user_scn.geoms[self.viewer.user_scn.ngeom - 1],
+                mujoco.mjtGeom.mjGEOM_CAPSULE,
+                collision_radius,
+                start_point[0],
+                start_point[1],
+                start_point[2],
+                end_point[0],
+                end_point[1],
+                end_point[2],
+            )
 
     def _create_trajectory(self) -> None:
         """
