@@ -41,7 +41,7 @@ class NominalMPCCController(BaseController):
             self.viewer = env.viewer
 
             # Setup util parameters for visualization
-            self.viz_offset = self.viewer.user_scn.ngeom
+            self.viz_offset = self.viewer.user_scn.ngeom - 1
             self.viewer.user_scn.ngeom += self.ctrl_cfg.N + 1
         else:
             self._visualize = lambda *args, **kwargs: None
@@ -165,6 +165,11 @@ class NominalMPCCController(BaseController):
             - q_theta * theta
         )
 
+        # Nonlinear constraint
+        acados_model.con_h_expr = e.T @ e
+        ocp.constraints.lh = np.array([0.0])
+        ocp.constraints.uh = np.array([1.0 * 1.0])
+
         # Set OCP dimensions
         nx = acados_model.x.size()[0]  # number of states
         nu = acados_model.u.size()[0]  # number of inputs
@@ -172,7 +177,12 @@ class NominalMPCCController(BaseController):
         ocp.dims.nu = nu
         ocp.dims.np = p.size()[0]  # number of parameters
         ocp.dims.N = self.ctrl_cfg.N  # prediction horizon length
-        if acados_model.con_h_expr_e:
+        if acados_model.con_h_expr is not None:
+            ocp.dims.nh = acados_model.con_h_expr.size()[0]
+        else:
+            ocp.dims.nh = 0
+
+        if acados_model.con_h_expr_e is not None:
             ocp.dims.nh_e = acados_model.con_h_expr_e.size()[0]
         else:
             ocp.dims.nh_e = 0
@@ -212,7 +222,7 @@ class NominalMPCCController(BaseController):
         ocp.constraints.idxbu = np.arange(nu - 1)
 
         # Set intial condition
-        ocp.constraints.idxbx_0 = np.arange(13)
+        ocp.constraints.idxbx_0 = np.arange(nx - 1)
         ocp.constraints.lbx_0 = env.obs[0:13].copy()
         ocp.constraints.ubx_0 = env.obs[0:13].copy()
         ocp.parameter_values = np.zeros(ocp.dims.np)
@@ -244,16 +254,20 @@ class NominalMPCCController(BaseController):
         Initializes the solver. Also known as "warm start".
         """
 
+        # Retrieve closest point on track (relevant for theta)
+        _, theta_init = self.planner.closest_point_on_trajectory(env.obs[0:3])
+
+        # Array to store previous theta
+        self.theta_prev = [theta_init for i in range(self.ctrl_cfg.N + 1)]
+
+        # Warm start solver
         # Initial condition and Warm start
-        xinit = np.zeros((14, 1))
-        xinit[0:13, 0] = env.obs[0:13].copy()
-        x_guess = xinit.copy()
+        x_guess = np.zeros((14, 1))
+        x_guess[0:13, 0] = env.obs[0:13].copy()
+        x_guess[-1, 0] = theta_init
 
         [self.ocp_solver.set(i, "x", x_guess) for i in range(self.ctrl_cfg.N + 1)]
         [self.ocp_solver.set(i, "u", np.zeros((13, 1))) for i in range(self.ctrl_cfg.N)]
-
-        # Array to store previous theta
-        self.theta_prev = [0 for i in range(self.ctrl_cfg.N + 1)]
 
     def get_control_input(self, env: BaseEnv) -> np.ndarray:
         """
@@ -264,6 +278,29 @@ class NominalMPCCController(BaseController):
             print(f"Solution optimal, solver status: {self.ocp_solver.status}")
             self._initialize_solver(env)
 
+        # Set parameters
+        self._set_params()
+
+        # Solve for the first control input in receding horizon fashion
+        u0 = self.ocp_solver.solve_for_x0(
+            env.obs[0:13], print_stats_on_failure=True, fail_on_nonzero_status=False
+        )
+        self._visualize()
+
+        if False:
+            solve_time = self.ocp_solver.get_stats("time_tot")
+            print(f"Solve time: {solve_time}")
+
+        # Save theta for next iteration
+        for i in range(self.ctrl_cfg.N + 1):
+            self.theta_prev[i] = self.ocp_solver.get(i, "x")[-1]
+
+        return u0[0:12]
+
+    def _set_params(self) -> None:
+        """
+        Sets the parameters of the solver at runtime
+        """
         theta_shifted = self.theta_prev.copy()
         theta_shifted.append(theta_shifted[-1])
         theta_shifted.pop(0)
@@ -284,18 +321,6 @@ class NominalMPCCController(BaseController):
 
             self.ocp_solver.set(i, "p", ref)
 
-        # Solve for the first control input in receding horizon fashion
-        u0 = self.ocp_solver.solve_for_x0(
-            env.obs[0:13], print_stats_on_failure=True, fail_on_nonzero_status=False
-        )
-        self._visualize()
-
-        # Save theta for next iteration
-        for i in range(self.ctrl_cfg.N + 1):
-            self.theta_prev[i] = self.ocp_solver.get(i, "x")[-1]
-
-        return u0[0:12]
-
     def _visualize(self) -> None:
         """
         Plot predicted trajectory of MPC in MuJoCo viewer.
@@ -311,15 +336,3 @@ class NominalMPCCController(BaseController):
                 mat=np.eye(3).flatten(),
                 rgba=np.array([0, 0, 1, 2]),
             )
-
-    def Rquat(self, q):
-        """R = Rquat(q) computes the rotation matrix R of dimension 3 x 3
-        for attitude from a quaternion q.
-        """
-        eta = q[0]
-        eps = q[1:4]
-
-        S = ca.skew(eps)
-        R = np.eye(3) + 2 * eta * S + 2 * S @ S
-
-        return R
