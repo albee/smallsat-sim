@@ -41,7 +41,7 @@ class NominalMPCCController(BaseController):
             self.viewer = env.viewer
 
             # Setup util parameters for visualization
-            self.viz_offset = self.viewer.user_scn.ngeom - 1
+            self.viz_offset = self.viewer.user_scn.ngeom
             self.viewer.user_scn.ngeom += self.ctrl_cfg.N + 1
         else:
             self._visualize = lambda *args, **kwargs: None
