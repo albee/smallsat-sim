@@ -67,7 +67,7 @@ class NominalMPCCController(BaseController):
         acados_model.p = model.p
         acados_model.name = "OCPsolver"
 
-        # Define thetaa and dtheta
+        # Define theta and dtheta
         theta = ca.SX.sym("theta", 1, 1)
         d_theta = ca.SX.sym("d_theta", 1, 1)
 
@@ -301,6 +301,7 @@ class NominalMPCCController(BaseController):
         """
         Sets the parameters of the solver at runtime
         """
+        # Shift the previous solution for theta by one for reinitialization
         theta_shifted = self.theta_prev.copy()
         theta_shifted.append(theta_shifted[-1])
         theta_shifted.pop(0)

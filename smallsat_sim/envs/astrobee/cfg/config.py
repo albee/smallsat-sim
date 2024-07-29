@@ -27,7 +27,7 @@ class EnvConfig(BaseEnvConfig):
         bodies_list = []
         for i in range(num_bodies):
             bodies_list.append(
-                Body(name=f"body{i}", pos=[-3.3, -9, 0], euler=[0, 0, 90])
+                Body(name=f"body{i}", pos=[-3.3, -9, 0.8], euler=[0, 0, 0])
             )
 
     # Holds all information for the controller in use
