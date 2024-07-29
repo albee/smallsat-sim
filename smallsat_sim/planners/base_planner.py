@@ -31,18 +31,17 @@ class BasePlanner(object):
         Visualizes reference points in the MuJoCo viewer
         """
         self.viewer.user_scn.ngeom = 0
-        i = 0
+
         for point in points:
+            self.viewer.user_scn.ngeom += 1
             x = point[0]
             y = point[1]
             z = point[2]
             mujoco.mjv_initGeom(
-                self.viewer.user_scn.geoms[i],
+                self.viewer.user_scn.geoms[self.viewer.user_scn.ngeom - 1],
                 type=mujoco.mjtGeom.mjGEOM_SPHERE,
                 size=size,
                 pos=np.array([x, y, z]),
                 mat=np.eye(3).flatten(),
                 rgba=np.array(color),
             )
-            i += 1
-        self.viewer.user_scn.ngeom = i
