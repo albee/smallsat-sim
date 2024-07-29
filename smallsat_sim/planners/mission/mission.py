@@ -107,9 +107,16 @@ class Segment:
         pass
 
     @abstractmethod
-    def tangent(self, arc_length: float) -> np.ndarray:
+    def tangent(self, arc_length: Optional[float] = None) -> np.ndarray:
         """
-        Method to calculate the tangent at a certain arc_length.
+        Method to calculate the tangent at a certain arc_length
+        """
+        pass
+
+    @abstractmethod
+    def closest_point(self, point: np.ndarray) -> tuple[np.ndarray, float]:
+        """
+        Finds the closest point on the line segment to the given point
         """
         pass
 
@@ -136,6 +143,23 @@ class Line(Segment):
 
         # Interpolate attitude
         if interpolation_mode == "Linear":
+            # Check if frac_length is out of bound due to numerical errors
+            eps = 1e-3
+            if frac_length > 1.0:
+                if frac_length < 1.0 + eps:
+                    frac_length = 1.0
+                else:
+                    print(
+                        f"Normalized arclength is out of bounds [0,1] with value {frac_length}"
+                    )
+            elif frac_length < 0.0:
+                if frac_length > -eps:
+                    frac_length = 0.0
+                else:
+                    print(
+                        f"Normalized arclength is out of bounds [0,1] with value {frac_length}"
+                    )
+
             # Create slerp object
             slerp = Slerp(
                 times=[0, 1],
@@ -159,10 +183,26 @@ class Line(Segment):
 
         return intermediate_waypoint
 
-    def tangent(self, arc_length: float) -> np.ndarray:
+    def tangent(self, arc_length: Optional[float] = None) -> np.ndarray:
         direction = self.end_point.position - self.start_point.position
 
         return direction / np.linalg.norm(direction)
+
+    def closest_point(self, point: np.ndarray) -> tuple[np.ndarray, float]:
+        start_to_point = point - self.start_point.position
+
+        tangent = self.tangent()
+
+        projection_length = np.dot(start_to_point, tangent)
+        if projection_length <= 0:
+            return (self.start_point.position, 0.0)
+        elif projection_length >= self.length:
+            return (self.end_point.position, self.length)
+        else:
+            return (
+                self.start_point.position + tangent * projection_length,
+                projection_length,
+            )
 
 
 class Trajectory:
@@ -242,7 +282,7 @@ class Trajectory:
         # Retrieve the correct reference from the segment
         segment_arc_length = arc_length - start_arc_length
         intermediate_waypoint = self.reference[segment_index].interpolate(
-            segment_arc_length
+            segment_arc_length, interpolation_mode="Linear"
         )
 
         return intermediate_waypoint
@@ -277,7 +317,7 @@ class Trajectory:
             return np.array([0.0])
         else:
             return np.array([self.intervals[segment_index - 1]])
-        
+
     def _get_tangent_segment(self, arc_length: float) -> np.ndarray:
         """
         Returns the starting point of a segment wrt. the arc length
@@ -346,6 +386,32 @@ class MissionPlanner(BasePlanner):
             # Initialize the timer clearance boolean
             self.timer_started = False
 
+        # Visualize collision boxes
+        offset = self.viewer.user_scn.ngeom - 1
+
+        mujoco.mjv_initGeom(
+            self.viewer.user_scn.geoms[offset],
+            type=mujoco.mjtGeom.mjGEOM_CAPSULE,
+            size=np.zeros(3),
+            pos=np.zeros(3),
+            mat=np.zeros(9),
+            rgba=np.array([0, 0, 1, 0.1]),
+        )
+
+        mujoco.mjv_makeConnector(
+            self.viewer.user_scn.geoms[offset],
+            mujoco.mjtGeom.mjGEOM_CAPSULE,
+            1,
+            -3.3,
+            -9,
+            0,
+            -3.3,
+            -18,
+            0,
+        )
+
+        self.viewer.user_scn.ngeom += 1
+
     def _load_waypoints(self) -> None:
         """
         Loads the sparse waypoints that shall be reached
@@ -353,51 +419,53 @@ class MissionPlanner(BasePlanner):
         # Define positional references
         positions = [
             [-3.3, -9, 0],  # Point 1
-            [-3.3, -25, 0],  # Point 2
-            [16, 0, 23],  # Point 3
-            [16, 0, 0],  # Point 4
-            [16, 0, -23],  # Point 5
-            [16, 0, -26],  # Point 6
-            [7, 0, -26],  # Point 7
-            [7, 0, -4.5],  # Point 8
-            [3, 0, -4.5],  # Point 9
-            [3, 0, -8],  # Point 10
-            [3.6, 16, -8],  # Point 11
-            [3.6, 16, 0],  # Point 12
-            [-2.5, 16, 0],  # Point 13
-            [-2.5, 5, 0],  # Point 14
-            [-7.5, 5, 0],  # Point 15
-            [-18, 10, 0],  # Point 16
-            [-18, 0, 0],  # Point 17
-            [-18, 0, -5],  # Point 18
-            [-8, 0, -5],  # Point 19
-            [-3.3, 0, -3.5],  # Point 20
-            [-3.3, -9, -3.5],  # Point 21
+            [-3.3, -18, 0],  # Point 2
+            [-1, -20, 5],  # Point 3
+            [16, 0, 23],  # Point 4
+            [16, 0, 0],  # Point 5
+            [16, 0, -23],  # Point 6
+            [16, 0, -26],  # Point 7
+            [7, 0, -26],  # Point 8
+            [7, 0, -4.5],  # Point 9
+            [3, 0, -4.5],  # Point 10
+            [3, 0, -8],  # Point 11
+            [3.6, 16, -8],  # Point 12
+            [3.6, 16, 0],  # Point 13
+            [-2.5, 16, 0],  # Point 14
+            [-2.5, 5, 0],  # Point 15
+            [-7.5, 5, 0],  # Point 16
+            [-18, 10, 0],  # Point 17
+            [-18, 0, 0],  # Point 18
+            [-18, 0, -5],  # Point 19
+            [-8, 0, -5],  # Point 20
+            [-3.3, 0, -3.5],  # Point 21
+            [-3.3, -9, -3.5],  # Point 22
         ]
 
         # Define attitude references (Euler angles)
         attitudes = [
             [0, 0, 90],  # Point 1
             [0, 0, 90],  # Point 2
-            [0, 0, 180],  # Point 3
+            [0, 0, 90],  # Point 3
             [0, 0, 180],  # Point 4
             [0, 0, 180],  # Point 5
             [0, 0, 180],  # Point 6
-            [0, 0, 0],  # Point 7
-            [0, 0, 0],  # Point 8
+            [0, 0, 180],  # Point 7
+            [0, -90, 0],  # Point 8
             [0, 0, 0],  # Point 9
-            [0, 0, 0],  # Point 10
-            [0, 0, 0],  # Point 11
-            [0, 0, 0],  # Point 12
-            [0, 0, 0],  # Point 13
-            [0, 0, 0],  # Point 14
-            [0, 0, 0],  # Point 15
-            [0, 0, 0],  # Point 16
-            [0, 0, 0],  # Point 17
-            [0, 0, 0],  # Point 18
-            [0, 0, 0],  # Point 19
-            [0, 0, 0],  # Point 20
-            [0, 0, 0],  # Point 21
+            [0, -90, 0],  # Point 10
+            [0, -180, 0],  # Point 11
+            [0, -90, 0],  # Point 12
+            [90, 0, -90],  # Point 13
+            [0, 0, -90],  # Point 14
+            [0, 0, -90],  # Point 15
+            [0, 0, -90],  # Point 16
+            [0, 0, -45],  # Point 17
+            [0, 0, -45],  # Point 18
+            [0, -45, 0],  # Point 19
+            [0, -90, 0],  # Point 20
+            [0, -90, 0],  # Point 21
+            [0, -45, 90],  # Point 22
         ]
 
         # Define connection type between waypoints
@@ -422,7 +490,8 @@ class MissionPlanner(BasePlanner):
             "Line",  # Point 18 to Point 19
             "Line",  # Point 19 to Point 20
             "Line",  # Point 20 to Point 21
-            "Line",  # Point 21 to Point 1
+            "Line",  # Point 21 to Point 22
+            "Line",  # Point 22 to Point 1
         ]
 
         # Add first point as last point to ensure continuity
@@ -459,7 +528,7 @@ class MissionPlanner(BasePlanner):
         """
         Returns a reference point based on current observations
         """
-        return np.array([-3.3, -9, 0])
+        pass
 
     def _get_reference_wp_tracking(
         self, obs: np.ndarray
@@ -593,3 +662,31 @@ class MissionPlanner(BasePlanner):
         self.trajectory = Trajectory(
             waypoints=self.waypoints, segment_types=self.segment_types
         )
+
+    def closest_point_on_trajectory(
+        self, point: np.ndarray
+    ) -> tuple[np.ndarray, float]:
+        """
+        Finds the closest point on the trajectory to the given point.
+        """
+        closest_point = None
+        closest_segment_idx = None
+        min_distance = float("inf")
+
+        for i, segment in enumerate(self.trajectory.reference):
+            segment_closest_point, segment_arc_length = segment.closest_point(point)
+            distance = np.linalg.norm(point - segment_closest_point)
+            if distance < min_distance:
+                min_distance = distance
+
+                closest_segment_idx = i
+                closest_point = segment_closest_point
+                closest_absolute_arc_length = segment_arc_length
+
+        # Return coordinates of closest point and arclength
+        if closest_segment_idx == 0:
+            closest_arc_length = closest_absolute_arc_length
+        else:
+            closest_arc_length = self.trajectory.intervals[closest_segment_idx - 1]
+
+        return (closest_point, closest_arc_length)
