@@ -3,6 +3,7 @@ import mujoco
 from abc import abstractmethod
 
 from smallsat_sim.envs.base_env_config import BaseEnvConfig
+from smallsat_sim.envs.base_env import BaseEnv
 
 
 class BasePlanner(object):
@@ -10,7 +11,10 @@ class BasePlanner(object):
     Base class of planner objects.
     """
 
-    def __init__(self, env) -> None:
+    def __init__(self, env: BaseEnv) -> None:
+        # Save some important parameters from the environment
+        self.env_cfg = env.env_cfg
+
         # Check if there is a viewer. In case there is not,
         # dynamically allocate the visualize method to a lambda
         # function doing nothing.
@@ -19,15 +23,16 @@ class BasePlanner(object):
         else:
             self.visualize = lambda *args, **kwargs: None
 
-        # Use parser args
-        self.args = env.args
-
-        # Get the renderer to visulaize the reference
-        self.renderer = env.renderer
-        if self.args.video:
+        # Check if there is a renderer. In case there is not,
+        # dynamically allocate the visualize_renderer method
+        # to a lambda function doing nothing.
+        if env.renderer:
+            self.renderer = env.renderer
             self.frames = env.frames
             self.data = env.data
             self.cam = env.cam
+        else:
+            self._visualize_renderer = lambda *args, **kwargs: None
 
     @abstractmethod
     def get_reference(self, obs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -44,9 +49,7 @@ class BasePlanner(object):
         """
         self.viewer.user_scn.ngeom = 0
 
-        i = 0
-        if self.args.video and self.data.time >= BaseEnvConfig.renderer.start_recording and BaseEnvConfig.renderer.end_recording:
-            self.renderer.update_scene(self.data, self.cam)
+        # Iterate over all points which need to be visualized
         for point in points:
             self.viewer.user_scn.ngeom += 1
             x = point[0]
@@ -61,18 +64,35 @@ class BasePlanner(object):
                 rgba=np.array(color),
             )
 
-            if self.args.video and self.data.time >= BaseEnvConfig.renderer.start_recording and self.data.time <= BaseEnvConfig.renderer.end_recording:
+        # Update renderer if needed
+        self._visualize_renderer(points=points, color=color, size=size)
+
+    def _visualize_renderer(
+        self, points: list[np.ndarray], color=[1, 0, 0, 2], size=[0.05, 0, 0]
+    ) -> None:
+
+        if (
+            self.data.time >= self.env_cfg.renderer.start_recording
+            and self.data.time <= self.env_cfg.renderer.end_recording
+        ):
+            # Update the renderer scene
+            self.renderer.update_scene(self.data, self.cam)
+
+            # Iterate over all points which need to be visualized in renderer
+            for point in points:
                 self.renderer.scene.ngeom += 1
+                x = point[0]
+                y = point[1]
+                z = point[2]
                 mujoco.mjv_initGeom(
-                    self.renderer.scene.geoms[self.renderer.scene.ngeom-1],
+                    self.renderer.scene.geoms[self.renderer.scene.ngeom - 1],
                     type=mujoco.mjtGeom.mjGEOM_SPHERE,
-                    size=[0.05, 0, 0],
+                    size=size,
                     pos=np.array([x, y, z]),
                     mat=np.eye(3).flatten(),
-                    rgba=np.array([1, 0, 0, 2]),
+                    rgba=np.array(color),
                 )
-            i += 1
-        if self.args.video and self.data.time >= BaseEnvConfig.renderer.start_recording and BaseEnvConfig.renderer.end_recording:
+
+            # Extract image from renderer and append it for post-processing
             sim_img = self.renderer.render().copy()
             self.frames.append(sim_img)
-        self.viewer.user_scn.ngeom = i
