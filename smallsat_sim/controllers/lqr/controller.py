@@ -33,9 +33,8 @@ class LQRController(BaseController):
         self.B_sym = ca.jacobian(self.f, self.u)
 
         # Set reference values for parts of the states
-        self.quat_ref = np.array([1.0, 0.0, 0.0, 0.0]).reshape(4,)
-        self.v_ref = np.zeros((3, 1)).reshape(3,)
-        self.omega_ref = np.zeros((3, 1)).reshape(3,)
+        self.v_ref = np.zeros((3, 1))
+        self.omega_ref = np.zeros((3, 1))
 
         # Get the cost function matrices
         self.Q = self.ctrl_cfg.cost.Q + 1e-5 * np.eye(self.nx, self.nx) # Perturb for numerical stability
@@ -100,8 +99,8 @@ class LQRController(BaseController):
         self.K = self.get_lqr_gain(x)
         
         # Get the reference position
-        r_ref = self.planner.get_reference(env.obs).reshape(3,)
-        x_ref = np.concatenate((r_ref, self.quat_ref, self.v_ref, self.omega_ref))
+        r_ref, quat_ref = self.planner.get_reference(env.obs)
+        x_ref = np.concatenate((r_ref, quat_ref, self.v_ref, self.omega_ref)).squeeze(-1)
 
         # Compute optimal control signal
         u_opt = - self.K @ (x - x_ref)
