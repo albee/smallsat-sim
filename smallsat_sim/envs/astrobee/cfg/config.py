@@ -144,42 +144,33 @@ class EnvConfig(BaseEnvConfig):
         class GPMPC:
             # Decimate the controller frequency such that it doesn't
             # run equally fast to the simulation discretization
-            control_decimation = 50
+            control_decimation = 40
             Ts = BaseEnvConfig.sim.dt * control_decimation
 
             # Define MPC's horizon
             N = 80
 
             class cost:
-                # Intermediate quadratic cost on state wrt. artificial reference
-                Q = np.zeros((13, 13))
-
-                # Penalize position
-                Q[0, 0] = 1e-1
-                Q[1, 1] = 1e-1
-                Q[2, 2] = 1e-1
-
-                # Penalize attitude
-                Q[3, 3] = 1e-1
-                Q[4, 4] = 1e-1
-                Q[5, 5] = 1e-1
-                Q[6, 6] = 1e-1
-
-                # Penalize linear velocity
-                Q[7, 7] = 1e-1
-                Q[8, 8] = 1e-1
-                Q[9, 9] = 1e-1
-
-                # Penalize angular velocity
-                Q[10, 10] = 1e-1
-                Q[11, 11] = 1e-1
-                Q[12, 12] = 1e-1
-
                 # Intermediate cost on input
-                R = 1e-4 * np.eye(12)
+                R = 1e-2 * np.eye(12)
 
-                # Quadratic cost on artificial reference wrt. reference point
-                T = 2 * Q
+                # Cost on lag error
+                q_l = 1e-2
+
+                # Contouring cost
+                Q_c = 1e-2 * np.eye(3)
+
+                # Cost on angular velocity
+                Q_omega = 5e-3 * np.eye(3)
+
+                # Cost on d_theta
+                r_d_theta = 1e-4
+
+                # Reward for progress
+                q_theta = 1e-3
+
+                # Penalty on attitude error
+                Q_q = 2e-1 * np.eye(3)
 
 
     class planner:

@@ -28,7 +28,7 @@ from casadi import SX
 
 # Zero Order GPMPC
 import zero_order_gpmpc
-from zero_order_gpmpc import (
+from zero_order_gpmpc.controllers import (
     ZeroOrderGPMPC,
 )
 from zero_order_gpmpc.controllers.zoro_acados_utils import (
@@ -137,13 +137,13 @@ class GPMPC(BaseController):
         self.last_solution = {
             "states": np.tile(
                 np.zeros(
-                    26,
+                    14,
                 ),
                 (self.N + 1, 1),
             ),
             "inputs": np.tile(
                 np.zeros(
-                    12,
+                    13,
                 ),
                 (self.N, 1),
             ),
@@ -160,6 +160,10 @@ class GPMPC(BaseController):
         # function doing nothing.
         if env.viewer:
             self.viewer = env.viewer
+
+            # Setup util parameters for visualization
+            self.viz_offset = self.viewer.user_scn.ngeom
+            self.viewer.user_scn.ngeom += self.ctrl_cfg.N + 1
         else:
             self._visualize = lambda *args, **kwargs: None
 
@@ -175,14 +179,14 @@ class GPMPC(BaseController):
 
         # Initialize subspace matrix B_d
         # Shape: (nx, 6)
-        self.B_d = torch.cat((torch.zeros(7, 6), torch.eye(6), torch.zeros(13, 6))).to(
+        self.B_d = torch.cat((torch.zeros(7, 6), torch.eye(6), torch.zeros(1, 6))).to(
             torch.float64
         )
         self.B_d_inv = torch.linalg.pinv(self.B_d).to(torch.float64)
 
         # Initialize buffers to keep track of past state and input
-        self.x_past = np.zeros(13)
-        self.u_past = np.zeros(12)
+        self.x_past = np.zeros(14)
+        self.u_past = np.zeros(13)
 
         # Initialize some hyperparameters for GP
         # TODO: Move to configuration file
@@ -217,51 +221,108 @@ class GPMPC(BaseController):
         acados_model.p = model.p
         acados_model.name = "OCPsolver"
 
-        # Define artificial reference points which are opt. variables
-        x_a = ca.SX.sym("x_a", 13, 1)
+        # Define theta and dtheta
+        theta = ca.SX.sym("theta", 1, 1)
+        d_theta = ca.SX.sym("d_theta", 1, 1)
 
-        x_a_dot = ca.SX.sym("x_a_dot", 13, 1)
+        acados_model.x = ca.vertcat(acados_model.x, theta)
+        acados_model.u = ca.vertcat(acados_model.u, d_theta)
+        acados_model.xdot = ca.vertcat(acados_model.xdot, d_theta)
 
-        acados_model.x = ca.vertcat(acados_model.x, x_a)
+        acados_model.f_expl_expr = ca.vertcat(acados_model.f_expl_expr, d_theta)
 
-        acados_model.f_expl_expr = ca.vertcat(
-            acados_model.f_expl_expr, ca.SX.zeros(13, 1)
-        )
-
-        acados_model.f_impl_expr = ca.vertcat(acados_model.f_impl_expr, x_a_dot)
-
-        acados_model.con_h_expr_e = model.x - x_a
+        acados_model.f_impl_expr = ca.vertcat(acados_model.f_impl_expr, 0)
 
         # Assign parameters and model
         Ts = self.ctrl_cfg.Ts
-        p = ca.vertcat(
-            SX.sym("x_r"),
-            SX.sym("y_r"),
-            SX.sym("z_r"),
-            SX.sym("eta_r"),
-            SX.sym("eps1_r"),
-            SX.sym("eps2_r"),
-            SX.sym("eps3_r"),
-            SX.sym("vx_r"),
-            SX.sym("vy_r"),
-            SX.sym("vz_r"),
-            SX.sym("omega_x_r"),
-            SX.sym("omega_y_r"),
-            SX.sym("omega_z_r"),
-        )
+        p_start = SX.sym("p_start", (3, 1))  # Start point of line segment<
+        t = SX.sym("t", (3, 1))  # Direction of line segment
+        theta_start = SX.sym("theta_start")  # Arclength start of line segment
+        q_des = SX.sym("q_des", (4, 1))  # Desired attitude
+
+        p = ca.vertcat(p_start, t, theta_start, q_des)
         acados_model.p = p
         ocp.model = acados_model
 
         # Define and assign cost functions
-        Q = self.ctrl_cfg.cost.Q
         R = self.ctrl_cfg.cost.R
-        T = self.ctrl_cfg.cost.T
+        q_l = self.ctrl_cfg.cost.q_l
+        Q_c = self.ctrl_cfg.cost.Q_c
+        Q_omega = self.ctrl_cfg.cost.Q_omega
+        r_d_theta = self.ctrl_cfg.cost.r_d_theta
+        q_theta = self.ctrl_cfg.cost.q_theta
+        Q_q = self.ctrl_cfg.cost.Q_q
+
+        # Calculate line representation
+        tx, ty, tz = t[0], t[1], t[2]
+        g = p_start + (theta - theta_start) * t
+
+        # Extract states for ease of use
+        r = model.x[0:3]
+        q = model.x[3:7]
+        omega = model.x[7:10]
+
+        # Calculate errors
+        e = r - g
+        e_l = t.T @ e
+
+        # Normal projection matrix
+        P_n = ca.SX(3, 3)
+        P_n[0, 0] = 1 - tx**2
+        P_n[0, 1] = -tx * ty
+        P_n[0, 2] = -tx * tz
+        P_n[1, 0] = -tx * ty
+        P_n[1, 1] = 1 - ty**2
+        P_n[1, 2] = -ty * tz
+        P_n[2, 0] = -tx * tz
+        P_n[2, 1] = -ty * tz
+        P_n[2, 2] = 1 - tz**2
+
+        # Contouring error
+        e_c = P_n @ e
+
+        # Quaternion error
+        q_conj = np.array([q[0], -q[1], -q[2], -q[3]])
+        e_q = np.array(
+            [
+                q_des[0] * q_conj[0]
+                - q_des[1] * q_conj[1]
+                - q_des[2] * q_conj[2]
+                - q_des[3] * q_conj[3],
+                q_des[0] * q_conj[1]
+                + q_des[1] * q_conj[0]
+                + q_des[2] * q_conj[3]
+                - q_des[3] * q_conj[2],
+                q_des[0] * q_conj[2]
+                - q_des[1] * q_conj[3]
+                + q_des[2] * q_conj[0]
+                + q_des[3] * q_conj[1],
+                q_des[0] * q_conj[3]
+                + q_des[1] * q_conj[2]
+                - q_des[2] * q_conj[1]
+                + q_des[3] * q_conj[0],
+            ]
+        )
+
+        # We only want to minimize eps part of error quaternion
+        e_q = e_q[1:4]
+
+        # Setup cost
         ocp.cost.cost_type = "EXTERNAL"
         ocp.model.cost_expr_ext_cost = (
-            (model.u.T) @ R @ (model.u)
-            + (model.x.T - x_a.T) @ Q @ (model.x - x_a)
-            + (x_a - p).T @ T @ (x_a - p)
+            q_l * e_l * e_l
+            + e_c.T @ Q_c @ e_c
+            + e_q.T @ Q_q @ e_q
+            + omega.T @ Q_omega @ omega
+            + (model.u.T) @ R @ (model.u)
+            + r_d_theta * d_theta**2
+            - q_theta * theta
         )
+
+        # Nonlinear constraint
+        acados_model.con_h_expr = e.T @ e
+        ocp.constraints.lh = np.array([0.0])
+        ocp.constraints.uh = np.array([1.0 * 1.0])
 
         # Set OCP dimensions
         nx = acados_model.x.size()[0]  # number of states
@@ -270,7 +331,15 @@ class GPMPC(BaseController):
         ocp.dims.nu = nu
         ocp.dims.np = p.size()[0]  # number of parameters
         ocp.dims.N = self.ctrl_cfg.N  # prediction horizon length
-        ocp.dims.nh_e = acados_model.con_h_expr_e.size()[0]
+        if acados_model.con_h_expr is not None:
+            ocp.dims.nh = acados_model.con_h_expr.size()[0]
+        else:
+            ocp.dims.nh = 0
+
+        if acados_model.con_h_expr_e is not None:
+            ocp.dims.nh_e = acados_model.con_h_expr_e.size()[0]
+        else:
+            ocp.dims.nh_e = 0
 
         # Define state constraints
         # Lower and Upper bound constraints for intermediate stages
@@ -279,65 +348,23 @@ class GPMPC(BaseController):
                 -100,
                 -100,
                 -100,
-                -1.0,
-                -1,
-                -1,
-                -1,
-                -1,
-                -1,
-                -1,
+                -1.1,
+                -1.1,
+                -1.1,
+                -1.1,
+                -0.4,
+                -0.4,
+                -0.4,
                 -0.5,
                 -0.5,
                 -0.5,
-                -100,
-                -100,
-                -100,
-                -1.0,
-                -1,
-                -1,
-                -1,
-                0,
-                0,
-                0,
-                0,
-                0,
                 0,
             ]
         )
         ocp.constraints.ubx = np.array(
-            [
-                100,
-                100,
-                100,
-                1.0,
-                1,
-                1,
-                1,
-                1,
-                1,
-                1,
-                0.5,
-                0.5,
-                0.5,
-                100,
-                100,
-                100,
-                1.0,
-                1,
-                1,
-                1,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-            ]
+            [100, 100, 100, 1.1, 1.1, 1.1, 1.1, 0.4, 0.4, 0.4, 0.5, 0.5, 0.5, 1000]
         )
         ocp.constraints.idxbx = np.arange(nx)
-
-        ocp.constraints.lh_e = np.zeros((13, 1))
-        ocp.constraints.uh_e = np.zeros((13, 1))
 
         # Define input constraints
         # Fetch thurster limits from the model configuration
@@ -346,12 +373,12 @@ class GPMPC(BaseController):
         ]
         ocp.constraints.lbu = np.array([forces[0] for forces in thruster_forces])
         ocp.constraints.ubu = np.array([forces[1] for forces in thruster_forces])
-        ocp.constraints.idxbu = np.arange(nu)
+        ocp.constraints.idxbu = np.arange(nu - 1)
 
         # Set intial condition
-        ocp.constraints.idxbx_0 = np.arange(13)
-        ocp.constraints.lbx_0 = env.obs[0:13]
-        ocp.constraints.ubx_0 = env.obs[0:13]
+        ocp.constraints.idxbx_0 = np.arange(nx - 1)
+        ocp.constraints.lbx_0 = env.obs[0:13].copy()
+        ocp.constraints.ubx_0 = env.obs[0:13].copy()
         ocp.parameter_values = np.zeros(ocp.dims.np)
 
         # Configure solver options
@@ -478,18 +505,13 @@ class GPMPC(BaseController):
             print(f"Solution optimal, solver status: {self.gp_mpc.ocp_solver.status}")
             self._initialize_solver(env)
 
-        # Get the reference position
-        ref_pos, ref_quat = self.planner.get_reference(env.obs)
-        ref_vel = np.zeros((3, 1))
-        ref_omega = np.zeros((3, 1))
-        ref = np.concatenate((ref_pos, ref_quat, ref_vel, ref_omega))
-        # print(f"ref: {ref}")
+        # Set parameters
+        self._set_params()
 
-        # Set the reference and warm start in solver
+        # Warm start  solver
         for i in range(self.ctrl_cfg.N):
             i_next = i
             i_next = min(i_next + 1, self.N - 1)
-            self.gp_mpc.p_hat_nonlin[i, :] = ref.flatten()
             self.gp_mpc.ocp_solver.set(i, "x", self.last_solution["states"][i_next])
             self.gp_mpc.ocp_solver.set(i, "u", self.last_solution["inputs"][i_next])
 
@@ -523,7 +545,32 @@ class GPMPC(BaseController):
         # Save current observation and input
         self.x_past, self.u_past = obs, u0
 
-        return u0
+        return u0[0:12]
+
+    def _set_params(self) -> None:
+        """
+        Sets the parameters of the solver at runtime
+        """
+        # Shift the previous solution for theta by one for reinitialization
+        theta_shifted = self.theta_prev.copy()
+        theta_shifted.append(theta_shifted[-1])
+        theta_shifted.pop(0)
+
+        # Set parameters
+        for i in range(self.ctrl_cfg.N):
+
+            theta_curr = theta_shifted[i]
+
+            p_start = self.planner.trajectory._get_start_point_segment(theta_curr)
+            t = self.planner.trajectory._get_tangent_segment(theta_curr)
+            theta_1 = self.planner.trajectory._get_start_arc_length_segment(theta_curr)
+            q_des = self.planner.trajectory.get_intermediate_reference(
+                theta_curr
+            ).attitude
+
+            ref = np.concatenate((p_start, t, theta_1, q_des))
+
+            self.gp_mpc.p_hat_nonlin[i, :] = ref.flatten()
 
     def _obs_to_features(self, obs) -> torch.Tensor:
         """
@@ -647,18 +694,6 @@ class GPMPC(BaseController):
             1,
             1,
             0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
             1,
             1,
             1,
@@ -671,6 +706,7 @@ class GPMPC(BaseController):
             1,
             1,
             1,
+            0,
         ]
         input_selection = zero_order_gpmpc.models.gpytorch_models.FeatureSelector(
             input_feature_selection
@@ -683,40 +719,46 @@ class GPMPC(BaseController):
         """
         Initializes the solver. Also known as "warm start".
         """
-        xinit = env.obs[0:13]
-        x_guess = np.concatenate((xinit, xinit))
+        # Retrieve closest point on track (relevant for theta)
+        _, theta_init = self.planner.closest_point_on_trajectory(env.obs[0:3])
+
+        # Array to store previous theta
+        self.theta_prev = [theta_init for i in range(self.ctrl_cfg.N + 1)]
+
+        # Warm start solver
+        # Initial condition and Warm start
+        x_guess = np.zeros(14,)
+        x_guess[0:13] = env.obs[0:13].copy()
+        x_guess[-1] = theta_init
 
         [
             self.gp_mpc.ocp_solver.set(i, "x", x_guess)
             for i in range(self.ctrl_cfg.N + 1)
         ]
         [
-            self.gp_mpc.ocp_solver.set(i, "u", np.zeros((12, 1)))
+            self.gp_mpc.ocp_solver.set(i, "u", np.zeros((13, 1)))
             for i in range(self.ctrl_cfg.N)
         ]
 
         for i in range(self.N):
             self.last_solution["states"][i] = x_guess
-            self.last_solution["inputs"][i] = np.zeros((12))
+            self.last_solution["inputs"][i] = np.zeros((13))
         self.last_solution["states"][self.N] = x_guess
 
     def _visualize(self) -> None:
         """
         Plot predicted trajectory of MPC in MuJoCo viewer.
         """
-        offset = self.viewer.user_scn.ngeom
         for i in range(self.ctrl_cfg.N + 1):
-            point = self.X_res[i, :3]
+            point = self.gp_mpc.ocp_solver.get(i, "x")[0:3]
             mujoco.mjv_initGeom(
-                self.viewer.user_scn.geoms[i + offset],
+                self.viewer.user_scn.geoms[i + self.viz_offset],
                 type=mujoco.mjtGeom.mjGEOM_SPHERE,
                 size=[0.05, 0, 0],
                 pos=point,
                 mat=np.eye(3).flatten(),
                 rgba=np.array([0, 0, 1, 2]),
             )
-
-        self.viewer.user_scn.ngeom += self.ctrl_cfg.N + 1
 
     def _record_stats(self, obs, timestamp) -> None:
         """

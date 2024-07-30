@@ -21,7 +21,7 @@ ctrl = GPMPC(env, planner)
 start_time = time.time()
 
 # Simulation loop
-while True:
+while env.data.time <= env.env_cfg.sim.max_sim_time:
 
     real_time = time.time() - start_time
 
@@ -33,3 +33,6 @@ while True:
 
         # Advance simulation
         env.step(input=ctrl_input)
+
+# Create simulation video if desired
+env.get_sim_rendering(env.env_name)
