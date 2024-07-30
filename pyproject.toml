@@ -5,16 +5,20 @@ build-backend = "poetry.core.masonry.api"
 [tool.poetry]
 name = "smallsat_sim"
 version = "1.0.0"
-description = "A small satellite simulation package"
-authors = ["Your Name <your.email@example.com>"]
+description = "SmallSatSim"
+authors = [ "Alexander Hansson <ahansson@ethz.ch>",
+            "Markus H. Iversflaten <markus.h.iversflaten@ntnu.no>",
+            "David Schwartz <dschwartz@ethz.ch>",
+            "David Sternberg <david.c.sternberg@jpl.nasa.gov>",
+            "Keenan Albee <keenan.albee@jpl.nasa.gov>"]
 
 [tool.poetry.dependencies] # If you update the dependencies, you may also need to change requirements.txt accordingly
 python = "^3.10"  # Specify your Python version requirement here
 casadi = "3.6.4"
 numpy = "1.26"
 pyyaml = "6.0.1"
-mujoco = "3.1.5"
-mujoco-mjx = "3.1.5"
+mujoco = "3.2.0"
+mujoco-mjx = "3.2.0"
 glfw = "2.7.0"
 torch = "2.2.2"
 opencv-python = "4.10.0.82"
