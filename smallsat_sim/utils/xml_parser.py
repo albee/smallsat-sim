@@ -20,9 +20,12 @@ def generate_mujoco_xml(env_config, model_config):
     # Loads all assets such as .obj files and corresponding meshes/texture
     xml_content = f"""<?xml version="1.0" encoding="utf-8"?>
     <mujoco model="{env_config.model}">
-        <compiler convexhull="{env_config.compiler['convexhull']}" texturedir="smallsat_sim/model" meshdir="smallsat_sim/model"/>
+        <compiler convexhull="{env_config.compiler['convexhull']}" texturedir="smallsat_sim/model" meshdir="smallsat_sim/model" eulerseq="XYZ"/>
         <visual>
             <headlight ambient="{env_config.visual['headlight']['ambient']}" specular="{env_config.visual['headlight']['specular']}" diffuse="{env_config.visual['headlight']['diffuse']}"/>
+        </visual>
+        <visual>
+            <global offwidth="1920" offheight="1080"/>
         </visual>
         <option gravity="0 0 0"/>
         <default>

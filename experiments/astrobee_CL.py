@@ -1,10 +1,11 @@
 import time
 from smallsat_sim.utils.helpers import get_args
 from smallsat_sim.controllers.pd.controller import PDController
-from smallsat_sim.controllers.nominal_mpc.controller import NominalMPCController
+from smallsat_sim.controllers.mpcc.controller import NominalMPCCController
 from smallsat_sim.controllers.lqr.controller import LQRController
 from smallsat_sim.envs.astrobee.env import AstrobeeEnv
 from smallsat_sim.planners.oracle.oracle import OraclePlanner
+from smallsat_sim.planners.mission.mission import MissionPlanner
 
 # Get arguments for script execution
 args = get_args()
@@ -13,16 +14,16 @@ args = get_args()
 env = AstrobeeEnv(args=args)
 
 # Create planner
-planner = OraclePlanner(env)
+planner = MissionPlanner(env)
 
 # Create controller
-ctrl = NominalMPCController(env, planner)
+ctrl = NominalMPCCController(env, planner)
 
 # Define start time
 start_time = time.time()
 
 # Simulation loop
-while True:
+while env.data.time <= env.env_cfg.sim.max_sim_time:
 
     real_time = time.time() - start_time
 
@@ -34,3 +35,6 @@ while True:
 
         # Advance simulation
         env.step(input=ctrl_input)
+
+# Create simulation video if desired
+env.get_sim_rendering(env.env_name)

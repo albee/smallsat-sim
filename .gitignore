@@ -16,6 +16,8 @@ __pycache__/
 # generated acados code
 c_generated_code/
 
+# video files
+*.mp4
 # utils for lamda-quad
 .lambda-quad/
 

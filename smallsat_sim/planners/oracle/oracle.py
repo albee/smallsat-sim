@@ -16,7 +16,10 @@ class OraclePlanner(BasePlanner):
         # generate a circular reference trajectory around the gateway
         self._generate_reference()
 
-    def get_reference(self, obs: np.ndarray) -> np.ndarray:
+        # visualize the circle
+        self.visualize(self.reference_points)
+
+    def get_reference(self, obs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
         Dedicated method which is called externally
         """
@@ -32,24 +35,12 @@ class OraclePlanner(BasePlanner):
         if dist < self.clearance_dist:
             self.idx_reference_point += 1
 
-        # Visualizes the next 3 points
-        self.visualize(
-            [
-                self.reference_points[
-                    self.idx_reference_point % len(self.reference_points)
-                ],
-                self.reference_points[
-                    (self.idx_reference_point + 1) % len(self.reference_points)
-                ],
-                self.reference_points[
-                    (self.idx_reference_point + 2) % len(self.reference_points)
-                ],
-            ]
+        return (
+            self.reference_points[
+                self.idx_reference_point % len(self.reference_points)
+            ].reshape(3, 1),
+            np.array([1, 0, 0, 0]).reshape(4, 1),
         )
-
-        return self.reference_points[
-            self.idx_reference_point % len(self.reference_points)
-        ]
 
     def _generate_reference(self):
         """
