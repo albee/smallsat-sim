@@ -3,6 +3,7 @@ from smallsat_sim.utils.helpers import get_args
 from smallsat_sim.controllers.gp_mpc.controller import GPMPC
 from smallsat_sim.envs.astrobee.env import AstrobeeEnv
 from smallsat_sim.planners.oracle.oracle import OraclePlanner
+from smallsat_sim.planners.mission.mission import MissionPlanner
 
 # Get arguments for script execution
 args = get_args()
@@ -11,7 +12,7 @@ args = get_args()
 env = AstrobeeEnv(args=args)
 
 # Create planner
-planner = OraclePlanner(env)
+planner = MissionPlanner(env)
 
 # Create controller
 ctrl = GPMPC(env, planner)

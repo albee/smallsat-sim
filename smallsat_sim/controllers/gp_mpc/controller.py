@@ -477,8 +477,7 @@ class GPMPC(BaseController):
             self._initialize_solver(env)
 
         # Get the reference position
-        ref_pos = self.planner.get_reference(env.obs).reshape(3, 1)
-        ref_quat = np.array([1, 0, 0, 0]).reshape(4, 1)
+        ref_pos, ref_quat = self.planner.get_reference(env.obs)
         ref_vel = np.zeros((3, 1))
         ref_omega = np.zeros((3, 1))
         ref = np.concatenate((ref_pos, ref_quat, ref_vel, ref_omega))
