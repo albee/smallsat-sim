@@ -5,6 +5,7 @@ from smallsat_sim.controllers.nominal_mpc.controller import NominalMPCController
 from smallsat_sim.controllers.lqr.controller import LQRController
 from smallsat_sim.envs.astrobee.env import AstrobeeEnv
 from smallsat_sim.planners.oracle.oracle import OraclePlanner
+from smallsat_sim.planners.mission.mission import MissionPlanner
 
 # Get arguments for script execution
 args = get_args()
@@ -13,10 +14,10 @@ args = get_args()
 env = AstrobeeEnv(args=args)
 
 # Create planner
-planner = OraclePlanner(env)
+planner = MissionPlanner(env)
 
 # Create controller
-ctrl = LQRController(env, planner)
+ctrl = PDController(env, planner)
 
 # Define start time
 start_time = time.time()
