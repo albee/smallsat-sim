@@ -27,33 +27,35 @@ from acados_template import (
 from casadi import SX
 
 # Zero Order GPMPC
-import smallsat_sim.controllers.gp_mpc.external.zero_order_gpmpc as zero_order_gpmpc
-from smallsat_sim.controllers.gp_mpc.external.zero_order_gpmpc.controllers import (
+import zero_order_gpmpc
+from zero_order_gpmpc import (
     ZeroOrderGPMPC,
 )
-from smallsat_sim.controllers.gp_mpc.external.zero_order_gpmpc.controllers.zoro_acados_utils import (
+from zero_order_gpmpc.controllers.zoro_acados_utils import (
     setup_sim_from_ocp,
 )
 
 # gpytorch utilities
-from smallsat_sim.controllers.gp_mpc.external.gpytorch_utils.gp_hyperparam_training import (
+from smallsat_sim.external.zero_order_gp_mpc_package.external.gpytorch_utils.gp_hyperparam_training import (
     generate_train_inputs_acados,
     generate_train_outputs_at_inputs,
     train_gp_model,
 )
-from smallsat_sim.controllers.gp_mpc.external.gpytorch_utils.gp_utils import (
+
+
+from smallsat_sim.external.zero_order_gp_mpc_package.external.gpytorch_utils.gp_utils import (
     gp_data_from_model_and_path,
     gp_derivative_data_from_model_and_path,
     plot_gp_data,
     generate_grid_points,
 )
 
-from smallsat_sim.controllers.gp_mpc.external.zero_order_gpmpc.models.gpytorch_models.gpytorch_residual_model import (
+from zero_order_gpmpc.models.gpytorch_models.gpytorch_residual_model import (
     GPyTorchResidualModel,
 )
 
 # GPyTorch models
-from smallsat_sim.controllers.gp_mpc.external.zero_order_gpmpc.models.gpytorch_models.gpytorch_gp import (
+from zero_order_gpmpc.models.gpytorch_models.gpytorch_gp import (
     BatchIndependentMultitaskGPModel,
 )
 
