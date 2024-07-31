@@ -460,33 +460,60 @@ class GPMPC(BaseController):
         Creates a zoro description for the GP interface
         """
         # Uncertainty description
-        sigma_theta = (0.0001 / 360.0) * 2 * np.pi
-        sigma_omega = (0.0001 / 360.0) * 2 * np.pi
-        w_theta = 0.005
-        w_omega = 0.005
-        Sigma_x0 = np.array([[sigma_theta**2, 0], [0, sigma_omega**2]])
-        Sigma_W = np.array([[w_theta**2, 0], [0, w_omega**2]])
+        Sigma_x0 = np.diag(
+            [
+                1.0e-6,
+                1.0e-6,
+                1.0e-6,
+                1.0e-6,
+                1.0e-6,
+                1.0e-6,
+                1.0e-6,
+                1.0e-6,
+                1.0e-6,
+                1.0e-6,
+                1.0e-6,
+                1.0e-6,
+                1.0e-6,
+                1.0e-6,
+            ]
+        )
 
-        Sigma_x0 = np.zeros((self.ocp_init.dims.nx, self.ocp_init.dims.nx))
-        Sigma_W = np.zeros((self.ocp_init.dims.nx, self.ocp_init.dims.nx))
+        Sigma_W = np.diag(
+            [
+                0.0001,
+                0.0001,
+                0.0001,
+                0.0001,
+                0.0001,
+                0.0001,
+                0.0001,
+                0.0001,
+                0.0001,
+                0.0001,
+                0.0001,
+                0.0001,
+                0.0001,
+                0.0001,
+            ]
+        )
 
         # create zoro_description
         zoro_description = ZoroDescription()
-        zoro_description.backoff_scaling_gamma = 0  # set this to 0 for now
-        zoro_description.P0_mat = Sigma_x0  # TODO: Check
+        zoro_description.backoff_scaling_gamma = 0  # constraint tighenting (by how many sigma)
+        zoro_description.P0_mat = Sigma_x0 # uncertainty on initial state
         zoro_description.fdbk_K_mat = np.zeros(
             (self.ocp_init.dims.nu, self.ocp_init.dims.nx)
         )
         # zoro_description.unc_jac_G_mat = B
         """G in (nx, nw) describes how noise affects dynamics. I.e. x+ = ... + G@w"""
-        zoro_description.W_mat = Sigma_W  # TODO: Check
+        zoro_description.W_mat = Sigma_W # covariance of noise entering the system
         """W in (nw, nw) describes the covariance of the noise on the system"""
         zoro_description.input_P0_diag = True
         zoro_description.input_P0 = False
         zoro_description.input_W_diag = True
         zoro_description.input_W_add_diag = True
         zoro_description.output_P_matrices = True
-        zoro_description.idx_lh_t = []
         self.ocp_init.zoro_description = zoro_description
 
     def get_control_input(self, env) -> np.ndarray:
@@ -541,6 +568,10 @@ class GPMPC(BaseController):
 
         # Save current observation and input
         self.x_past, self.u_past = obs, u0
+
+        # Save theta for next iteration
+        for i in range(self.ctrl_cfg.N + 1):
+            self.theta_prev[i] = self.gp_mpc.ocp_solver.get(i, "x")[-1]
 
         return u0[0:12]
 

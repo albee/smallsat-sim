@@ -144,11 +144,11 @@ class EnvConfig(BaseEnvConfig):
         class GPMPC:
             # Decimate the controller frequency such that it doesn't
             # run equally fast to the simulation discretization
-            control_decimation = 40
+            control_decimation = 50
             Ts = BaseEnvConfig.sim.dt * control_decimation
 
             # Define MPC's horizon
-            N = 80
+            N = 75
 
             class cost:
                 # Intermediate cost on input
