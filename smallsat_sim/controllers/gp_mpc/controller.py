@@ -54,6 +54,10 @@ from zero_order_gpmpc.models.gpytorch_models.gpytorch_residual_model import (
     GPyTorchResidualModel,
 )
 
+from zero_order_gpmpc.models.gpytorch_models.gpytorch_residual_learning_model import (
+    GPyTorchResidualLearningModel,
+)
+
 # GPyTorch models
 from zero_order_gpmpc.models.gpytorch_models.gpytorch_gp import (
     BatchIndependentMultitaskGPModel,
@@ -220,9 +224,12 @@ class GPMPC(BaseController):
         self._train_gp()
 
         # Initialize the Residual Model
-        self.residual_model = GPyTorchResidualModel(
+        self.residual_model = GPyTorchResidualLearningModel(
             gp_model=self.gp_model,
-            feature_selector=input_selection,
+            gp_feature_selector=input_selection,
+            data_processing_strategy=zero_order_gpmpc.models.gpytorch_models.OnlineLearningStrategy(
+                max_num_points=self.M
+            ),
         )
 
         # File naming stuff
@@ -444,9 +451,8 @@ class GPMPC(BaseController):
         ocp.solver_options.print_level = 0
 
         # Set code generation directory
-        self.save_dir = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "c_generated_code"
-        )
+        self.work_dir = os.path.dirname(os.path.abspath(__file__))
+        self.save_dir = os.path.join(self.work_dir, "c_generated_code")
         ocp.code_export_directory = self.save_dir
 
         # Save ocp for further use
@@ -500,14 +506,16 @@ class GPMPC(BaseController):
 
         # create zoro_description
         zoro_description = ZoroDescription()
-        zoro_description.backoff_scaling_gamma = 0  # constraint tighenting (by how many sigma)
-        zoro_description.P0_mat = Sigma_x0 # uncertainty on initial state
+        zoro_description.backoff_scaling_gamma = (
+            0  # constraint tighenting (by how many sigma)
+        )
+        zoro_description.P0_mat = Sigma_x0  # uncertainty on initial state
         zoro_description.fdbk_K_mat = np.zeros(
             (self.ocp_init.dims.nu, self.ocp_init.dims.nx)
         )
         # zoro_description.unc_jac_G_mat = B
         """G in (nx, nw) describes how noise affects dynamics. I.e. x+ = ... + G@w"""
-        zoro_description.W_mat = Sigma_W # covariance of noise entering the system
+        zoro_description.W_mat = Sigma_W  # covariance of noise entering the system
         """W in (nw, nw) describes the covariance of the noise on the system"""
         zoro_description.input_P0_diag = True
         zoro_description.input_P0 = False
