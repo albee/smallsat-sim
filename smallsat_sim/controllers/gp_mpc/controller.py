@@ -74,23 +74,6 @@ class SolveTimeTracker:
         print(f"Mean solve time: {mean_solve_time}")
 
 
-class GP(gpytorch.models.ExactGP):
-    def __init__(self, train_x, train_y, likelihood):
-        super(GP, self).__init__(train_x, train_y, likelihood)
-        self.mean_module = gpytorch.means.ConstantMean(batch_shape=torch.Size([6]))
-        self.covar_module = gpytorch.kernels.ScaleKernel(
-            gpytorch.kernels.RBFKernel(batch_shape=torch.Size([6])),
-            batch_shape=torch.Size([6]),
-        )
-
-    def forward(self, x):
-        mean_x = self.mean_module(x)
-        covar_x = self.covar_module(x)
-        return gpytorch.distributions.MultitaskMultivariateNormal.from_batch_mvn(
-            gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
-        )
-
-
 class GPMPC(BaseController):
     """
     This class implements a GP MPC controller based on GPyTorch and acados.
@@ -118,32 +101,26 @@ class GPMPC(BaseController):
             "mujoco_log_20240707_145725.h5"
         )
 
-        # Setup Gaussian Process
-        self._setup_gp()
-
-        # Train the GP offline
-        self._train_gp()
-
         # Generate solver
         self._generate_nominal_ocp(env)
 
         # Create Zoro description
         self._create_zoro_description(env)
 
-        # Generate the GP-MPC
-        self._generate_gpmpc(env)
+        # Setup Gaussian Process
+        self._setup_gp()
 
         # Miscellaneous
         self.last_solution = {
             "states": np.tile(
                 np.zeros(
-                    14,
+                    self.nx,
                 ),
                 (self.N + 1, 1),
             ),
             "inputs": np.tile(
                 np.zeros(
-                    13,
+                    self.nu,
                 ),
                 (self.N, 1),
             ),
@@ -167,9 +144,9 @@ class GPMPC(BaseController):
         else:
             self._visualize = lambda *args, **kwargs: None
 
-    def _setup_gp(self):
+    def _setup_gp(self) -> None:
         """
-        Initializes all needed quantaties for the Gaussian Process
+        Initializes all needed quantities for the Gaussian Process
         """
         # Initialize empty feature tensor (z)
         self.z = torch.from_numpy(self.logged_data["z"].squeeze(1))
@@ -185,8 +162,8 @@ class GPMPC(BaseController):
         self.B_d_inv = torch.linalg.pinv(self.B_d).to(torch.float64)
 
         # Initialize buffers to keep track of past state and input
-        self.x_past = np.zeros(14)
-        self.u_past = np.zeros(13)
+        self.x_past = np.zeros(self.nx)
+        self.u_past = np.zeros(self.nu)
 
         # Initialize some hyperparameters for GP
         # TODO: Move to configuration file
@@ -194,10 +171,84 @@ class GPMPC(BaseController):
         self.gp_update_counter = 0  # Keep track how many times dict has been updated
         self.gp_initialized = False  # Keep track if GP is already initialized
 
+        # Setup residual model with trained GP
+        input_feature_selection = [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+        ]
+        input_selection = zero_order_gpmpc.models.gpytorch_models.FeatureSelector(
+            input_feature_selection
+        )
+
         # Initialize GP itself
         self.likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=6)
         self.gp_model = BatchIndependentMultitaskGPModel(
-            train_x=self.z, train_y=self.y, likelihood=self.likelihood
+            train_x=self.z,
+            train_y=self.y,
+            likelihood=self.likelihood,
+            residual_dimension=6,
+            input_dimension=sum(input_feature_selection),
+            use_ard=True,
+        )
+
+        # Train the GP offline
+        self._train_gp()
+
+        # Initialize the Residual Model
+        self.residual_model = GPyTorchResidualModel(
+            gp_model=self.gp_model,
+            feature_selector=input_selection,
+        )
+
+        # File naming stuff
+        json_ocp = "zoro_ocp_solver_config.json"
+        json_sim = "zoro_sim_solver_config.json"
+        filename_ocp = os.path.join(self.save_dir, json_ocp)
+        filename_sim = os.path.join(self.save_dir, json_sim)
+
+        self.ocp_init.code_export_directory = os.path.join(
+            self.save_dir, "c_generated_code_ocp"
+        )
+
+        self.nominal_sim.code_export_directory = os.path.join(
+            self.save_dir, "c_generated_code_sim"
+        )
+
+        # Generate ZeroOrderGPMPC
+        self.gp_mpc = ZeroOrderGPMPC(
+            self.ocp_init,
+            self.nominal_sim,
+            gp_model=self.residual_model,
+            path_json_ocp=filename_ocp,
+            path_json_sim=filename_sim,
+            build_c_code=True,
+            use_cython=False,  # TODO: Check why not supported
+            B=self.B_d.numpy(),
         )
 
     def _generate_nominal_ocp(self, env) -> None:
@@ -328,7 +379,9 @@ class GPMPC(BaseController):
         nx = acados_model.x.size()[0]  # number of states
         nu = acados_model.u.size()[0]  # number of inputs
         ocp.dims.nx = nx
+        self.nx = nx
         ocp.dims.nu = nu
+        self.nu = nu
         ocp.dims.np = p.size()[0]  # number of parameters
         ocp.dims.N = self.ctrl_cfg.N  # prediction horizon length
         if acados_model.con_h_expr is not None:
@@ -396,37 +449,11 @@ class GPMPC(BaseController):
         )
         ocp.code_export_directory = self.save_dir
 
-        # Create solver with agent specific code files
-        filename = os.path.join(self.save_dir, "acados_pacejka_mpcc_solver_config.json")
-
+        # Save ocp for further use
         self.ocp_init = ocp
 
         # Create integrator for nominal model
-        print(
-            "---------------------------------------------------------------------------------"
-        )
-        print("Start Nominal Sim generation.")
         self.nominal_sim = setup_sim_from_ocp(self.ocp_init)
-        print("End Nominal Sim generation.")
-        print(
-            "---------------------------------------------------------------------------------"
-        )
-
-        print(
-            "---------------------------------------------------------------------------------"
-        )
-        print("Start Nominal Sim Solver generation.")
-        self.acados_integrator = AcadosSimSolver(
-            self.nominal_sim,
-            json_file=self.save_dir
-            + "/acados_sim_"
-            + self.nominal_sim.model.name
-            + ".json",
-        )
-        print("End Nominal Sim Solver generation.")
-        print(
-            "---------------------------------------------------------------------------------"
-        )
 
     def _create_zoro_description(self, env: BaseEnv) -> None:
         """
@@ -462,40 +489,12 @@ class GPMPC(BaseController):
         zoro_description.idx_lh_t = []
         self.ocp_init.zoro_description = zoro_description
 
-    def _generate_gpmpc(self, env: BaseEnv) -> None:
-        """
-        Generates the residual model GP-MPC
-        """
-        # residual_model = GPyTorchResidualModel(self.gp)
-
-        print(
-            "---------------------------------------------------------------------------------"
-        )
-        print("Start Zero Order GPMPC generation.")
-        self.gp_mpc = ZeroOrderGPMPC(
-            self.ocp_init,
-            self.nominal_sim,
-            gp_model=self.residual_model,
-            path_json_ocp=self.save_dir + "/residual_mpc_ocp_solver_config.json",
-            path_json_sim=self.save_dir + "/residual_mpc_sim_solver_config.json",
-            build_c_code=True,
-            use_cython=False,
-            B=self.B_d.numpy(),
-        )
-        print("End Zero Order GPMPC generation.")
-        print(
-            "---------------------------------------------------------------------------------"
-        )
-
     def get_control_input(self, env) -> np.ndarray:
         """
         Calculate the control input based on current observation
         """
         obs = env.get_obs()
         timestamp = env.data.time
-
-        # Check if GP needs to be updated
-        # self._update_gp(obs, timestamp)
 
         # Record error statistics
         self._record_stats(obs, timestamp)
@@ -531,8 +530,6 @@ class GPMPC(BaseController):
         u0 = U_res[0, :]
         solve_time = self.gp_mpc.solve_stats["timings"]["total"]
         print(f"Total CPU time: {solve_time}")
-        # u0 = self.gp_mpc.ocp_solver.solve_for_x0(env.obs[0:13], print_stats_on_failure=True)
-        # print(f"input: {u0}")
 
         # Save current solution
         for i in range(self.N):
@@ -572,7 +569,7 @@ class GPMPC(BaseController):
 
             self.gp_mpc.p_hat_nonlin[i, :] = ref.flatten()
 
-    def _obs_to_features(self, obs) -> torch.Tensor:
+    def _obs_to_features(self, obs: np.ndarray) -> torch.Tensor:
         """
         Converts the environment observations to features used
         for Gaussian Process Regression
@@ -586,7 +583,7 @@ class GPMPC(BaseController):
             .to(torch.float64)
         )
 
-    def _calc_outputs(self, obs) -> torch.Tensor:
+    def _calc_outputs(self, obs: np.ndarray) -> torch.Tensor:
         """
         Calculates the output data y which is necessary for training
         the GP appropriately.
@@ -600,7 +597,7 @@ class GPMPC(BaseController):
 
         return (self.B_d_inv @ model_error).T
 
-    def _update_gp(self, obs, timestamp) -> None:
+    def _update_gp(self, obs: np.ndarray, timestamp: float) -> None:
         """
         Main method which checks if the GP needs to be updated
         with a new point.
@@ -678,44 +675,7 @@ class GPMPC(BaseController):
         self.gp_model.eval()
         self.likelihood.eval()
 
-        # Setup residual model with trained GP
-        input_feature_selection = [
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
-            0,
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
-            0,
-        ]
-        input_selection = zero_order_gpmpc.models.gpytorch_models.FeatureSelector(
-            input_feature_selection
-        )
-        self.residual_model = GPyTorchResidualModel(
-            gp_model=self.gp_model, feature_selector=input_selection
-        )
-
-    def _initialize_solver(self, env: BaseEnv) -> np.ndarray:
+    def _initialize_solver(self, env: BaseEnv) -> None:
         """
         Initializes the solver. Also known as "warm start".
         """
@@ -727,7 +687,9 @@ class GPMPC(BaseController):
 
         # Warm start solver
         # Initial condition and Warm start
-        x_guess = np.zeros(14,)
+        x_guess = np.zeros(
+            self.nx,
+        )
         x_guess[0:13] = env.obs[0:13].copy()
         x_guess[-1] = theta_init
 
@@ -736,13 +698,13 @@ class GPMPC(BaseController):
             for i in range(self.ctrl_cfg.N + 1)
         ]
         [
-            self.gp_mpc.ocp_solver.set(i, "u", np.zeros((13, 1)))
+            self.gp_mpc.ocp_solver.set(i, "u", np.zeros((self.nu, 1)))
             for i in range(self.ctrl_cfg.N)
         ]
 
         for i in range(self.N):
             self.last_solution["states"][i] = x_guess
-            self.last_solution["inputs"][i] = np.zeros((13))
+            self.last_solution["inputs"][i] = np.zeros((self.nu))
         self.last_solution["states"][self.N] = x_guess
 
     def _visualize(self) -> None:
@@ -760,7 +722,7 @@ class GPMPC(BaseController):
                 rgba=np.array([0, 0, 1, 2]),
             )
 
-    def _record_stats(self, obs, timestamp) -> None:
+    def _record_stats(self, obs: np.ndarray, timestamp: float) -> None:
         """
         Record error statistics of the GP
         Can be used for plotting and printing
