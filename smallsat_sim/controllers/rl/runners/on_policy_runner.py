@@ -12,39 +12,54 @@ class OnPolicyRunner(object):
     """
     On-policy runner for training and evaluation.
     """
+
     def __init__(self, env: VecEnv, planner) -> None:
         # Initialize the environment and agent
         self.env = env
         self.agent = VPGAgent(self.env, planner)
 
-    def learn(self, steps_per_epoch, epochs, max_epoch_len, gamma, lam, actor_lr, critic_lr):
+    def learn(
+        self, steps_per_epoch, epochs, max_epoch_len, gamma, lam, actor_lr, critic_lr
+    ):
         """
         Main training loop.
         """
+
         # Define the actor and critic loss
         @nnx.jit
         def actor_loss_fn(tdres: jnp.ndarray):
             _, logp_a = self.agent.actor.forward(obs, actions)
             return -jnp.sum(tdres * logp_a)
-        
+
         @nnx.jit
         def critic_loss_fn(returns: jnp.ndarray):
             values = self.agent.critic.forward(obs)
-            return jnp.mean((values - returns) ** 2) # MSE loss
+            return jnp.mean((values - returns) ** 2)  # MSE loss
 
         # Set up buffer
-        buffer = VPGBuffer(self.env.n_envs, self.env.obs_dim, self.env.act_dim, steps_per_epoch, gamma, lam)
+        buffer = VPGBuffer(
+            self.env.num_envs,
+            self.env.obs_dim,
+            self.env.act_dim,
+            steps_per_epoch,
+            gamma,
+            lam,
+        )
 
         # Initialize ADAM optimizers for the actor and critic networks
-        actor_optimizer = nnx.Optimizer(self.agent.actor, optax.adam(learning_rate=actor_lr))
-        critic_optimizer = nnx.Optimizer(self.agent.critic, optax.adam(learning_rate=critic_lr))
+        actor_optimizer = nnx.Optimizer(
+            self.agent.actor, optax.adam(learning_rate=actor_lr)
+        )
+        critic_optimizer = nnx.Optimizer(
+            self.agent.critic, optax.adam(learning_rate=critic_lr)
+        )
 
         # Initialize the environment
-        states, ep_ret, ep_len = self.env.get_obs(), jnp.zeros(self.env.n_envs), 0
+        states, ep_ret, ep_len = self.env.get_obs(), jnp.zeros(self.env.num_envs), 0
 
         # Main training loop
         for _ in range(epochs):
-            ep_returns = jnp.zeros((self.env.n_envs, steps_per_epoch))
+            ep_returns = jnp.zeros((self.env.num_envs, steps_per_epoch))
             for t in range(steps_per_epoch):
                 a, v, logp = self.agent.act(states)
 
@@ -59,45 +74,51 @@ class OnPolicyRunner(object):
                 states = next_states
 
                 # Check if a timeout is appropriate
-                timeout = (ep_len == max_epoch_len)
-                epoch_ended = (t == steps_per_epoch - 1)
+                timeout = ep_len == max_epoch_len
+                epoch_ended = t == steps_per_epoch - 1
 
                 if terminal.any() or timeout or epoch_ended:
                     # If the trajectory didn't reach terminal state, bootstrap value target
                     if epoch_ended:
                         _, v, _ = self.agent.act(states)
                     else:
-                        v = jnp.zeros(self.env.n_envs)
-                    
+                        v = jnp.zeros(self.env.num_envs)
+
                     if timeout:
-                        ep_returns.at[:, t].set(ep_ret)
+                        ep_returns = ep_returns.at[:, t].set(ep_ret)
 
                     if terminal.any():
                         true_indices = jnp.nonzero(terminal).squeeze()
                         for idx in true_indices:
-                            ep_returns.at[idx, t].set(ep_ret[idx])
-                    
+                            ep_returns = ep_returns.at[idx, t].set(ep_ret[idx])
+
                     buffer.end_traj(v)
 
-                    states, ep_ret, ep_len = self.env.get_obs(), jnp.zeros(self.env.n_envs), 0
+                    states, ep_ret, ep_len = (
+                        self.env.get_obs(),
+                        jnp.zeros(self.env.num_envs),
+                        0,
+                    )
 
             # Get the data from the training loop
             data = buffer.get()
 
-            obs = data['obs']
-            actions = data['act']
-            tdres = data['tdres']
-            returns = data['ret']
+            obs = data["obs"]
+            actions = data["act"]
+            tdres = data["tdres"]
+            returns = data["ret"]
 
             # Policy gradient update
             loss, grads = nnx.value_and_grad(actor_loss_fn(tdres))(self.agent.actor)
-            print(f'{loss = }')
+            print(f"{loss = }")
             actor_optimizer.update(grads)
 
             # Value function updates
             for _ in range(100):
-                loss, grads = nnx.value_and_grad(critic_loss_fn(returns))(self.agent.critic)
-                print(f'{loss = }')
+                loss, grads = nnx.value_and_grad(critic_loss_fn(returns))(
+                    self.agent.critic
+                )
+                print(f"{loss = }")
                 critic_optimizer.update(grads)
 
     def evaluate(self, episode_len, n_evals) -> None:
@@ -108,14 +129,14 @@ class OnPolicyRunner(object):
 
         for _ in range(n_evals):
             states = self.env.get_obs()
-            cum_returns = jnp.zeros(self.env.n_envs)
-            terminal = jnp.zeros(self.env.n_envs, dtype=bool)
+            cum_returns = jnp.zeros(self.env.num_envs)
+            terminal = jnp.zeros(self.env.num_envs, dtype=bool)
             self.env.reset()
             for _ in range(episode_len):
                 actions = self.agent.get_control_input(states)
                 states, rewards, terminal = self.env.transition(actions)
                 cum_returns += rewards
-                if terminal.all(): # TODO: abort environments that failed
+                if terminal.all():  # TODO: abort environments that failed
                     break
                 returns.append(cum_returns)
 
@@ -125,7 +146,7 @@ class OnPolicyRunner(object):
         """
         start_time = time.time()
         states = self.env.get_obs()
-        terminal = jnp.zeros(self.env.n_envs, dtype=bool)
+        terminal = jnp.zeros(self.env.num_envs, dtype=bool)
         self.env.reset()
         while True:
             real_time = time.time() - start_time

@@ -21,3 +21,6 @@ runner = OnPolicyRunner(env)
 
 # Simulation loop
 runner.control()
+
+# Create simulation video if desired
+env.get_sim_rendering(env.env_name)

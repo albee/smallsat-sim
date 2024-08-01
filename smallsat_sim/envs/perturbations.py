@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
-import numpy as np
 from enum import Enum
+import numpy as np
+import jax
+import jax.numpy as jnp
 
 
 class PerturbationStatus(Enum):
@@ -11,6 +13,7 @@ class PerturbationStatus(Enum):
     2 := Thruster is stuck on
     3 := Thruster is experiencing a different failure (sampled from a GP)
     """
+
     OPERATIONAL = 0
     STUCK_OFF = 1
     STUCK_ON = 2
@@ -24,26 +27,64 @@ class Perturbation(ABC):
     dynamics such as a mismatch between desired thrust versus
     actual thrust.
     """
-    def __init__(self, model_config) -> None:
+
+    def __init__(self, env_config, model_config) -> None:
         # Extract the number of thrusters
         self.nu = model_config.Thrusters.n_thrusters
 
-        # Thruster mask to document the operational status of thrusters
-        self.thruster_mask = np.full(self.nu, PerturbationStatus.OPERATIONAL)
+        # Find out how many environments there are
+        if hasattr(env_config.control, "RL"):
+            self.num_envs = env_config.control.RL.num_envs
+        else:
+            self.num_envs = 1
 
-    def select_thruster(self, index) -> int:
+        # Thruster env_mask to document the operational status of thrusters
+        self.thruster_mask = jnp.full(
+            (self.num_envs, self.nu), PerturbationStatus.OPERATIONAL.value
+        )
+
+        # Vectorized thruster selection
+        self.select_thrusters = jax.vmap(self.select_thruster)
+
+    def select_thruster(
+        self,
+        index: int,
+        thruster_mask_row: jnp.ndarray,
+        perturbation_status: int,
+    ) -> jnp.ndarray:
         """
-        Return index if one is provided, randomly select one of the working thrusters otherwise.
+        Return updated row of the thruster mask. Use index if one is provided, randomly select one of the working thrusters (in each env) otherwise.
         """
         if index:
-            return index
+            return thruster_mask_row.at[index].set(perturbation_status)
         else:
-            working_thrusters = np.where(self.thruster_mask == PerturbationStatus.OPERATIONAL)[0]
-            random_index = np.random.choice(working_thrusters)
-            return random_index
+            working_thrusters = jnp.where(
+                self.thruster_mask[0, :] == PerturbationStatus.OPERATIONAL.value
+            )[0]
+            key = jax.random.PRNGKey(np.random.randint(0, 99))  # No reproducability
+            random_index = jax.random.choice(key, working_thrusters)
+            return thruster_mask_row.at[random_index].set(perturbation_status)
+
+    def get_perturbed_envs(
+        self, perturbed_envs: None | jnp.ndarray, frac_envs: float
+    ) -> jnp.ndarray:
+        """
+        Return array with envs where a failure occurs.
+        """
+        if perturbed_envs is not None:
+            return perturbed_envs
+        else:
+            fraction_perturbed_envs = frac_envs
+            key = jax.random.PRNGKey(np.random.randint(0, 99))  # No reproducability
+            return jax.random.randint(
+                key,
+                shape=(int(fraction_perturbed_envs * self.num_envs),),
+                minval=0,
+                maxval=self.num_envs,
+            )
 
     @abstractmethod
-    def apply(self, input: np.ndarray, current_sim_time=None) -> np.ndarray:
+    def apply(self, input: jnp.ndarray, current_sim_time=None) -> jnp.ndarray:
         pass
 
     @abstractmethod
@@ -55,44 +96,47 @@ class PerturbationList(object):
     """
     Applies multiple perturbations.
     """
+
     def __init__(self, perturbations: list[Perturbation]) -> None:
         super().__init__()
         # Save perturbations in array
         self.perturbations = perturbations
-        
+
         # Initialize look-up dictionary for keycodes and perturbations
         self.keycode_dict = {
             " ": {
                 "description": "stuck_off",
                 "type": 1,
                 "warning": "Could not stuck off thruster. "
-                           "No StuckOffThruster Perturbation module defined.",
+                "No StuckOffThruster Perturbation module defined.",
             },
             "=": {
                 "description": "stuck_on",
                 "type": 2,
                 "warning": "Could not stuck on thruster. "
-                           "No StuckOnThruster Perturbation module defined."
+                "No StuckOnThruster Perturbation module defined.",
             },
             ";": {
                 "description": "sample_perturbation",
                 "type": 3,
                 "warning": "Could not fail thruster. "
-                           "No SamplePerturbation Perturbation module defined."
-            }
+                "No SamplePerturbation Perturbation module defined.",
+            },
         }
 
-    def apply(self, input: np.ndarray, current_sim_time=None) -> np.ndarray:
+    def apply(self, input: jnp.ndarray, current_sim_time=None) -> jnp.ndarray:
         for perturbation in self.perturbations:
             input = perturbation.apply(input, current_sim_time)
 
         return input
-    
+
     def reset_thruster(self, index) -> None:
         """
         Reset thruster.
         """
-        self.perturbations[0].thruster_mask[index] = 0 # It doesn't matter which perturbation is used for the reset
+        self.perturbations[0].thruster_mask = (
+            self.perturbations[0].thruster_mask.at[:, index].set(0)
+        )  # It doesn't matter which perturbation is used for the reset
         print(f"Thruster {index} is fully functional.")
 
     def key_callback(self, keycode):
@@ -109,14 +153,23 @@ class PerturbationList(object):
     def _check_registered_perturbations(self, keycode) -> None | int:
         # Iterate over perturbations to find a matching type
         for idx, perturbation in enumerate(self.perturbations):
-            if perturbation.failure_type.value == self.keycode_dict[chr(keycode)]["type"]:
+            if (
+                perturbation.failure_type.value
+                == self.keycode_dict[chr(keycode)]["type"]
+            ):
                 return idx
 
         # Print warning if no matching perturbation is found and return None
-        print(self.keycode_dict.get(chr(keycode), {}).get("warning", "No perturbation found for keycode."))
+        print(
+            self.keycode_dict.get(chr(keycode), {}).get(
+                "warning", "No perturbation found for keycode."
+            )
+        )
         return None
-    
-    def _get_perturbation_index_from_string(self, desired_perturbation: str) -> None | int:
+
+    def _get_perturbation_index_from_string(
+        self, desired_perturbation: str
+    ) -> None | int:
         # Iterate over perturbations to find a matching type
         for idx, perturbation in enumerate(self.perturbations):
             if perturbation.failure_type == desired_perturbation:
@@ -131,23 +184,44 @@ class StuckOffThrusters(Perturbation):
     """
     This perturbation completly shuts off/fails thrusters.
     """
-    def __init__(self, model_config) -> None:
-        super().__init__(model_config)
+
+    def __init__(self, env_config, model_config, perturbed_envs=None) -> None:
+        super().__init__(env_config, model_config)
 
         self.failure_type = PerturbationStatus.STUCK_OFF
 
-    def apply(self, input: np.ndarray, current_sim_time=None) -> np.ndarray:
-        input[self.thruster_mask == PerturbationStatus.STUCK_OFF] = 0.0
+        self.is_active = False
+
+        self.perturbed_envs = perturbed_envs
+
+    def apply(self, input: jnp.ndarray, current_sim_time) -> jnp.ndarray:
+        input = input.reshape(
+            self.num_envs, self.nu
+        )  # Reshape to account for multiple envs
+        if self.is_active and current_sim_time >= self.start_time:
+            input = input.at[
+                self.thruster_mask == PerturbationStatus.STUCK_OFF.value
+            ].set(0.0)
 
         return input
 
-    def stuck_off_thruster(self, index=None) -> None:
+    def stuck_off_thruster(self, index=None, start_time=0.0) -> None:
         """
         Method to shut off a random thruster or a specific one if provided.
         """
-        thruster_index = self.select_thruster(index)
-        self.thruster_mask[thruster_index] = PerturbationStatus.STUCK_OFF
-        print(f"Thruster {thruster_index} is stuck off.")
+        self.start_time = start_time
+        self.is_active = True
+        self.perturbed_envs = self.get_perturbed_envs(None, 0.2)
+        self.thruster_mask = self.thruster_mask.at[self.perturbed_envs, :].set(
+            self.select_thrusters(
+                index,
+                self.thruster_mask[self.perturbed_envs, :],
+                jnp.full(
+                    self.perturbed_envs.shape[0], PerturbationStatus.STUCK_OFF.value
+                ),
+            )
+        )
+        print(f"Thruster(s) stuck off.")
 
     def key_callback(self, keycode=None) -> None:
         # Call correct method for key callbacks
@@ -158,87 +232,155 @@ class StuckOnThrusters(Perturbation):
     """
     Thrusters unable to be turned off.
     """
-    def __init__(self, model_config) -> None:
-        super().__init__(model_config)
+
+    def __init__(self, env_config, model_config, perturbed_envs=None) -> None:
+        super().__init__(env_config, model_config)
 
         self.model_config = model_config
 
         self.failure_type = PerturbationStatus.STUCK_ON
 
-    def apply(self, input: np.ndarray, current_sim_time=None) -> np.ndarray:
-        # Find where to apply the perturbation
-        stuck_on_thrusters_indices = np.where(self.thruster_mask == PerturbationStatus.STUCK_ON)[0]
+        self.is_active = False
 
-        # Apply the perturbation
-        for idx in stuck_on_thrusters_indices:
-            input[idx] = self.model_config.Thrusters.thruster_list[idx].forcerange[1] # Max. thruster force
+        self.perturbed_envs = perturbed_envs
+
+        # Vectorized input replacement
+        self.replace_thrust_inputs = jax.vmap(self.replace_with_upper_thrust_bound)
+
+    def apply(self, input: jnp.ndarray, current_sim_time) -> jnp.ndarray:
+        input = input.reshape(
+            self.num_envs, self.nu
+        )  # Reshape to account for multiple envs
+        if self.is_active and current_sim_time >= self.start_time:
+            self.replace_thrust_inputs(input)
 
         return input
-    
-    def stuck_on_thruster(self, index=None) -> None:
+
+    def stuck_on_thruster(self, index=None, start_time=0.0) -> None:
         """
         Method to unable a random thruster or a specific one if provided, to shut off.
         """
-        thruster_index = self.select_thruster(index)
-        self.thruster_mask[thruster_index] = PerturbationStatus.STUCK_ON
-        print(f"Thruster {thruster_index} is stuck on.")
-    
+        self.start_time = start_time
+        self.is_active = True
+        self.perturbed_envs = self.get_perturbed_envs(None, 0.2)
+        self.thruster_mask = self.thruster_mask.at[self.perturbed_envs, :].set(
+            self.select_thrusters(
+                index,
+                self.thruster_mask[self.perturbed_envs, :],
+                jnp.full(
+                    self.perturbed_envs.shape[0], PerturbationStatus.STUCK_ON.value
+                ),
+            )
+        )
+        print(f"Thruster(s) stuck on.")
+
     def key_callback(self, keycode=None) -> None:
         # Call correct method for key callbacks
         self.stuck_on_thruster(index=None)
+
+    def replace_with_upper_thrust_bound(self, input_row: jnp.ndarray) -> jnp.ndarray:
+        """
+        Return input row with updated thrust values.
+        """
+        # Apply the perturbation
+        updated_input_row = input_row
+        for i in range(len(input_row)):
+            if input_row[i].val[0] == PerturbationStatus.STUCK_ON.value:
+                updated_input_row = input_row.at[i].set(
+                    self.model_config.Thrusters.thruster_list[i].forcerange[1]
+                )  # Max. thruster force
+        return updated_input_row
 
 
 class SamplePerturbation(Perturbation):
     """
     This is a prototype of a non-parametric, time-varying perturbation.
     """
-    def __init__(self, model_config, max_duration) -> None:
-        super().__init__(model_config)
+
+    def __init__(
+        self, env_config, model_config, max_duration, perturbed_envs=None
+    ) -> None:
+        super().__init__(env_config, model_config)
 
         self.model_config = model_config
 
         self.failure_type = PerturbationStatus.SAMPLE_PERTURBATION
 
+        self.is_active = False
+
+        self.perturbed_envs = perturbed_envs
+
         # Control frequency
-        self.control_frequency = 50 # in Hz
+        self.control_frequency = 50  # in Hz
 
         # Upper bound on the duration of the perturbation
         self.max_duration = max_duration
 
         # Thruster mask to document when a perturbation has started
-        self.ongoing_perturbation_mask = np.zeros(self.nu)
+        self.ongoing_perturbation_mask = jnp.zeros(self.nu)
 
         # Number of samples in an input trajectory
         self.num_samples = 500
 
         # Matrix to save input trajectories sampled from the GP
-        self.input_trajectories = np.zeros((self.nu, self.num_samples))
+        self.input_trajectories = jnp.zeros((self.nu, self.num_samples))
 
-    def apply(self, input: np.ndarray, current_sim_time) -> np.ndarray:
-        # Find where to apply the perturbation
-        failing_thrusters_indices = np.where(self.thruster_mask == PerturbationStatus.SAMPLE_PERTURBATION)[0]
+        # Vectorized input replacement
+        self.replace_thrust_inputs = jax.vmap(self.replace_with_traj_sample)
 
-        for idx in failing_thrusters_indices:
-            # Update the thruster input
-            u_nominal = input[idx]
-            input[idx] = self.get_perturbed_input(u_nominal, idx, current_sim_time)
-            
-            # Clip the sample to the thruster range
-            input[idx] = np.clip(input[idx], 0, self.model_config.Thrusters.thruster_list[idx].forcerange[1])
+    def apply(self, input: jnp.ndarray, current_sim_time) -> jnp.ndarray:
+        input = input.reshape(
+            self.num_envs, self.nu
+        )  # Reshape to account for multiple envs
+        if self.is_active and current_sim_time >= self.start_time:
+            input = self.replace_thrust_inputs(
+                input, jnp.full(self.num_envs, current_sim_time)
+            )
 
         return input
-    
-    def sample_perturbation(self, index=None) -> None:
+
+    def sample_perturbation(self, index=None, start_time=0.0) -> None:
         """
         Method to fail a random thruster or a specific one if provided.
         """
-        thruster_index = self.select_thruster(index)
-        self.thruster_mask[thruster_index] = PerturbationStatus.SAMPLE_PERTURBATION
-        print(f"Thruster {thruster_index} is failing.")
+        self.start_time = start_time
+        self.is_active = True
+        self.perturbed_envs = self.get_perturbed_envs(None, 0.1)
+        self.thruster_mask = self.thruster_mask.at[self.perturbed_envs, :].set(
+            self.select_thrusters(
+                index,
+                self.thruster_mask[self.perturbed_envs, :],
+                jnp.full(
+                    self.perturbed_envs.shape[0],
+                    PerturbationStatus.SAMPLE_PERTURBATION.value,
+                ),
+            )
+        )
+        print(f"Thruster(s) failing.")
 
     def key_callback(self, keycode=None) -> None:
         # Call correct method for key callbacks
         self.sample_perturbation(index=None)
+
+    def replace_with_traj_sample(
+        self, input_row: jnp.ndarray, current_sim_time: float
+    ) -> jnp.ndarray:
+        """
+        Return input row with updated thrust values.
+        """
+        # Apply the perturbation
+        updated_input_row = input_row
+        for i in range(len(input_row)):
+            if input_row[i].val[0] == PerturbationStatus.SAMPLE_PERTURBATION.value:
+                updated_input_row = input_row.at[i].set(
+                    jnp.min(
+                        self.get_perturbed_input(
+                            input_row[i].val[0], i, current_sim_time
+                        ),
+                        self.model_config.Thrusters.thruster_list[i].forcerange[1],
+                    )
+                )
+        return updated_input_row
 
     def get_perturbed_input(self, u_nominal, idx, current_sim_time) -> float:
         """
@@ -246,38 +388,43 @@ class SamplePerturbation(Perturbation):
         """
         # If the failure is starting now
         if self.ongoing_perturbation_mask[idx] == 0:
-            self.input_trajectories[idx, :] = self.sample_input_trajectory(u_nominal)
+            self.input_trajectories[idx, :] = self.sample_input_trajectory()
             self.ongoing_perturbation_mask[idx] = current_sim_time
             return self.input_trajectories[idx, 0]
         # If the failure took place already but is still unraveling
         else:
-            return self.input_trajectories[idx, int(np.floor(current_sim_time - self.ongoing_perturbation_mask[idx]))]
-    
+            return self.input_trajectories[
+                idx,
+                int(jnp.floor(current_sim_time - self.ongoing_perturbation_mask[idx])),
+            ]
 
-    def sample_input_trajectory(self, u_nominal) -> np.ndarray:
+    def sample_input_trajectory(self, u_nominal=1.0) -> jnp.ndarray:
         """
         Sample the perturbed inputs from a GP.
         """
         # Time points
-        t = np.linspace(0, self.max_duration, self.num_samples).reshape(-1, 1)
+        t = jnp.linspace(0, self.max_duration, self.num_samples).reshape(-1, 1)
 
         # Define the mean vector and covariance matrix
         mu = self.mean_func(t, u_nominal).ravel()
         cov = self.rbf_kernel(t, t, u_nominal)
 
         # Sample a trajectory from the GP
-        samples = np.random.multivariate_normal(mu, cov, 1)
+        key = jax.random.PRNGKey(np.random.randint(0, 99))  # No reproducability
+        samples = jax.random.multivariate_normal(key, mu, cov, 1)
 
-        return samples
-    
+        return jnp.tile(samples, (self.num_envs, 1))
+
     # Mean function of the GP
-    def mean_func(self, t: np.ndarray, u_nominal: float):
+    def mean_func(self, t: jnp.ndarray, u_nominal: float):
         b = 0.2
         c = 1.0
-        return u_nominal * np.exp(-b * t) * np.cos(c * t)
+        return u_nominal * jnp.exp(-b * t) * jnp.cos(c * t)
 
     # RBF kernel
     def rbf_kernel(self, t1, t2, u_nominal, base_length_scale=0.1, sigma_f=0.1):
         length_scale = base_length_scale * u_nominal
-        sqdist = np.sum(t1**2, 1).reshape(-1, 1) + np.sum(t2**2, 1) - 2 * np.dot(t1, t2.T)
-        return sigma_f**2 * np.exp(-0.5 / length_scale**2 * sqdist)
+        sqdist = (
+            jnp.sum(t1**2, 1).reshape(-1, 1) + jnp.sum(t2**2, 1) - 2 * jnp.dot(t1, t2.T)
+        )
+        return sigma_f**2 * jnp.exp(-0.5 / length_scale**2 * sqdist)

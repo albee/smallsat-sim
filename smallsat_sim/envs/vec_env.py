@@ -1,4 +1,5 @@
 from argparse import Namespace
+import numpy as np
 import jax
 import jax.numpy as jnp
 import mujoco
@@ -13,9 +14,13 @@ class VecEnv(BaseEnv):
     """
     Vectorized environment for the smallsat.
     """
+
     def __init__(self, args) -> None:
+        # Flag to know whether VecEnv is being used
+        self.using_rl = True
+
         # Number of environments running in parallel
-        self.n_envs = 1
+        self.num_envs = self.env_cfg.control.RL.num_envs
 
         super().__init__(args)
 
@@ -43,20 +48,24 @@ class VecEnv(BaseEnv):
         self.mjx_batch.replace(qvel=self.init_qvel)
         self.mjx_batch = self.jit_forward(self.mjx_model, self.mjx_batch)
 
-    def transition(self, actions: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    def transition(
+        self, actions: jnp.ndarray
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """
         Apply input action on the environment. Returns the states, rewards and wether the terminal state has been reached.
         """
         self.step(input=actions)
 
         # TODO: implement reward shaping
-        rewards = jnp.zeros(self.n_envs)
-        shaping = jnp.zeros(self.n_envs)
+        rewards = jnp.zeros(self.num_envs)
+        shaping = jnp.zeros(self.num_envs)
         if self.prev_shaping is not None:
             rewards = shaping - self.prev_shaping
         self.prev_shaping = shaping
 
-        terminal = jnp.zeros(self.n_envs, dtype=bool) # TODO: implement "game over" checking
+        terminal = jnp.zeros(
+            self.num_envs, dtype=bool
+        )  # TODO: implement "game over" checking
 
         return self.obs, rewards, terminal
 
@@ -92,23 +101,25 @@ class VecEnv(BaseEnv):
         #        omega (3)]
 
         # Retrieve current rotation matrix
-        R = self.mjx_batch.xmat[:,1,:,:]
+        R = self.mjx_batch.xmat[:, 1, :, :]
 
         # Rotate matrix
-        R = jnp.transpose(R, (0,2,1))
+        R = jnp.transpose(R, (0, 2, 1))
 
         @jax.vmap
         def multiply_transpose_velocity(R, vel):
             return jnp.matmul(R, vel)  # Shape (3,)
 
         # Rotate intertial velocity to body velocity
-        vel_body = multiply_transpose_velocity(R, self.mjx_batch.qvel[:,:3])
+        vel_body = multiply_transpose_velocity(R, self.mjx_batch.qvel[:, :3])
 
         # Create array of observations
-        obs = jnp.concatenate((self.mjx_batch.qpos, vel_body, self.mjx_batch.qvel[:,3:]), axis=1)
+        obs = jnp.concatenate(
+            (self.mjx_batch.qpos, vel_body, self.mjx_batch.qvel[:, 3:]), axis=1
+        )
 
         return obs
-    
+
     def _create_viewer(self, args) -> None:
         """
         Creates a viewer to visualize simulation
@@ -144,8 +155,10 @@ class VecEnv(BaseEnv):
 
         # Batch the data
         rng = jax.random.PRNGKey(0)
-        rng = jax.random.split(rng, self.n_envs)
-        self.mjx_batch = jax.vmap(lambda rng: self.mjx_data.replace(qpos=self.mjx_data.qpos))(rng)
+        rng = jax.random.split(rng, self.num_envs)
+        self.mjx_batch = jax.vmap(
+            lambda rng: self.mjx_data.replace(qpos=self.mjx_data.qpos)
+        )(rng)
         self.data_vec = mjx.get_data(self.model, self.mjx_batch)
         mjx.get_data_into(self.data_vec, self.model, self.mjx_batch)
 
@@ -170,7 +183,7 @@ class VecEnv(BaseEnv):
         """
         Updates the renderer.
         """
-        self.renderer.update_scene(self.data, self.cam) # TODO: select the right data
+        self.renderer.update_scene(self.data_vec[0], self.cam)
         sim_img = self.renderer.render().copy()
         self.frames.append(sim_img)
 
@@ -184,19 +197,10 @@ class VecEnv(BaseEnv):
         """
         # External disturbances
         if self.disturbances:
-            self.data.qfrc_applied = self.disturbances.apply()
+            self.mjx_batch.replace(qfrc_applied=self.disturbances.apply(self.data.time))
 
         # Perturbations
         if self.perturbations:
-                self.mjx_batch = self.mjx_batch.replace(ctrl=jax.numpy.asarray(self.perturbations.apply(input)))
+            self.mjx_batch.replace(ctrl=self.perturbations.apply(input, self.data.time))
         else:
-                self.mjx_batch = self.mjx_batch.replace(ctrl=jax.numpy.asarray(input))
-
-        # Print the control inputs for debugging
-        # print(f"Input: {input}")
-
-    def _key_callback(self, keycode) -> None:
-        """
-        Callback function for keypressed detected in the MuJoCo viewer
-        """
-        raise NotImplementedError("Key callbacks are not supported for simulation in parallel.")
+            self.mjx_batch.replace(ctrl=input)

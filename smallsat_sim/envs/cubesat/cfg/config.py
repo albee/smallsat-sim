@@ -2,6 +2,7 @@ from smallsat_sim.envs.base_env_config import BaseEnvConfig
 
 import numpy as np
 
+
 class Body:
     def __init__(self, name, pos=[0, 0, 0], euler=[0, 0, 0]) -> None:
         self.name = name
@@ -51,10 +52,10 @@ class EnvConfig(BaseEnvConfig):
 
             class cost:
                 # Intermediate quadratic cost on state
-                Q = np.zeros((13,13))
-                Q[10,10] = 1e-2
-                Q[11,11] = 1e-2
-                Q[12,12] = 1e-2
+                Q = np.zeros((13, 13))
+                Q[10, 10] = 1e-2
+                Q[11, 11] = 1e-2
+                Q[12, 12] = 1e-2
 
                 # Intermediate cost on input
                 R = 1e-3 * np.eye(12)
@@ -74,10 +75,10 @@ class EnvConfig(BaseEnvConfig):
 
             class cost:
                 # Intermediate quadratic cost on state
-                Q = np.zeros((13,13))
-                Q[10,10] = 1e-2
-                Q[11,11] = 1e-2
-                Q[12,12] = 1e-2
+                Q = np.zeros((13, 13))
+                Q[10, 10] = 1e-2
+                Q[11, 11] = 1e-2
+                Q[12, 12] = 1e-2
 
                 # Intermediate cost on input
                 R = 1e-3 * np.eye(12)
@@ -88,5 +89,7 @@ class EnvConfig(BaseEnvConfig):
         # RL controller params
         class RL:
             control_decimation = 25
-            
+
+            num_envs = 40
+
             # TODO: add RL params here

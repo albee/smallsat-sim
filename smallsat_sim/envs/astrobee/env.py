@@ -1,7 +1,12 @@
 import numpy as np
 
 from smallsat_sim.envs.base_env import BaseEnv
-from smallsat_sim.envs.perturbations import PerturbationList, StuckOffThrusters, StuckOnThrusters, SamplePerturbation
+from smallsat_sim.envs.perturbations import (
+    PerturbationList,
+    StuckOffThrusters,
+    StuckOnThrusters,
+    SamplePerturbation,
+)
 from smallsat_sim.envs.disturbances import DisturbanceList, ConstantForceDisturbance
 
 
@@ -14,7 +19,13 @@ class AstrobeeEnv(BaseEnv):
         super().__init__(args=args)
 
         # Instantiate perturbations
-        self.perturbations = PerturbationList([StuckOffThrusters(self.model_cfg), StuckOnThrusters(self.model_cfg), SamplePerturbation(self.model_cfg, 10.0)])
+        self.perturbations = PerturbationList(
+            [
+                StuckOffThrusters(self.env_cfg, self.model_cfg),
+                StuckOnThrusters(self.env_cfg, self.model_cfg),
+                SamplePerturbation(self.env_cfg, self.model_cfg, 10.0),
+            ]
+        )
 
         # Instantiate disturbances
-        self.disturbances = DisturbanceList([ConstantForceDisturbance(0.05, np.array([1, 1, 1]))])
+        self.disturbances = DisturbanceList([ConstantForceDisturbance(self.env_cfg)])

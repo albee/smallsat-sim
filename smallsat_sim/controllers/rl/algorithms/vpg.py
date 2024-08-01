@@ -11,6 +11,7 @@ class VPGAgent(BaseController):
     """
     Base agent (Vanilla Policy Gradient with Generalized Advantage Estimation).
     """
+
     def __init__(self, env, planner, activation=nnx.tanh) -> None:
         self.ctrl_cfg = env.env_cfg.control.RL
         super().__init__(env, planner, self.ctrl_cfg)
@@ -37,7 +38,7 @@ class VPGAgent(BaseController):
         logp = self.actor._log_prob_from_dist(pi, actions)
 
         return actions, values, logp
-        
+
     def get_control_input(self, obs: jnp.ndarray) -> jnp.ndarray:
         """
         Calculate the control input based on current observations for each environment.

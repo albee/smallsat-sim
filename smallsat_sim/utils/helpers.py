@@ -16,7 +16,6 @@ def get_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Parse command line inputs')
 
     # Add arguments
-    parser.add_argument('--mjx', action='store_true', help='Simulate using MJX instead of MuJoCo')
     parser.add_argument('--num_envs', type=int, help='Number of envs run in parallel', default=1)
     parser.add_argument('--headless', action='store_true', help='Run in headless mode')
     parser.add_argument('--num_bodies', type=int, help='Number of bodies in the simulation', default=1)

@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 from flax import nnx
-import tensorflow_probability.substrates.jax as tfp
+import distrax
 
 from smallsat_sim.controllers.rl.modules.mlp import mlp
 
@@ -22,7 +22,7 @@ class Actor(nnx.Module):
         """
         mu = self.mu_net(obs)
         std = jnp.exp(self.log_std)
-        return tfp.distributions.MultivariateNormalDiag(mu, std)
+        return distrax.MultivariateNormalDiag(mu, std)
     
     def _log_prob_from_dist(self, pi: jnp.ndarray, actions: jnp.ndarray):
         """

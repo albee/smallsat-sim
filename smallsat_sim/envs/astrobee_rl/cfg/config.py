@@ -29,33 +29,52 @@ class EnvConfig(BaseEnvConfig):
         for i in range(num_bodies):
             bodies_list.append(Body(name=f"body{i}", pos=[i, 0.0, 10.5]))
 
-
     # Holds all information for the controller in use
     class control:
 
         # RL controller params
         class RL:
             control_decimation = 25
-            
-            # TODO: add RL params here
 
+            num_envs = 40
+
+            # TODO: add RL params here
 
     class planner:
         resolution = 1  # Resolution of the grid
         epsilon = 2.5  # Initial heuristic inflation factor
-        epsilon_increment = 0.2 # Increment of the heuristic inflation factor
-        epsilon_decrement = 0.2 # Decrement of the heuristic inflation factor
-        bounds = np.array([[-10,-10,-10], [10, 10, 10]])  # Bounds for the planner
+        epsilon_increment = 0.2  # Increment of the heuristic inflation factor
+        epsilon_decrement = 0.2  # Decrement of the heuristic inflation factor
+        bounds = np.array([[-10, -10, -10], [10, 10, 10]])  # Bounds for the planner
         # Define the possible directions and their costs
-        unit_directions = {(1, 0, 0): 1, (0, 1, 0): 1, (0, 0, 1): 1, \
-                           (-1, 0, 0): 1, (0, -1, 0): 1, (0, 0, -1): 1, \
-                           (1, 1, 0): np.sqrt(2), (1, 0, 1): np.sqrt(2), (0, 1, 1): np.sqrt(2), \
-                           (-1, -1, 0): np.sqrt(2), (-1, 0, -1): np.sqrt(2), (0, -1, -1): np.sqrt(2), \
-                           (1, -1, 0): np.sqrt(2), (-1, 1, 0): np.sqrt(2), (1, 0, -1): np.sqrt(2), \
-                           (-1, 0, 1): np.sqrt(2), (0, 1, -1): np.sqrt(2), (0, -1, 1): np.sqrt(2), \
-                           (1, 1, 1): np.sqrt(3), (-1, -1, -1): np.sqrt(3), \
-                           (1, -1, -1): np.sqrt(3), (-1, 1, -1): np.sqrt(3), (-1, -1, 1): np.sqrt(3), \
-                           (1, 1, -1): np.sqrt(3), (1, -1, 1): np.sqrt(3), (-1, 1, 1): np.sqrt(3)}
-        
+        unit_directions = {
+            (1, 0, 0): 1,
+            (0, 1, 0): 1,
+            (0, 0, 1): 1,
+            (-1, 0, 0): 1,
+            (0, -1, 0): 1,
+            (0, 0, -1): 1,
+            (1, 1, 0): np.sqrt(2),
+            (1, 0, 1): np.sqrt(2),
+            (0, 1, 1): np.sqrt(2),
+            (-1, -1, 0): np.sqrt(2),
+            (-1, 0, -1): np.sqrt(2),
+            (0, -1, -1): np.sqrt(2),
+            (1, -1, 0): np.sqrt(2),
+            (-1, 1, 0): np.sqrt(2),
+            (1, 0, -1): np.sqrt(2),
+            (-1, 0, 1): np.sqrt(2),
+            (0, 1, -1): np.sqrt(2),
+            (0, -1, 1): np.sqrt(2),
+            (1, 1, 1): np.sqrt(3),
+            (-1, -1, -1): np.sqrt(3),
+            (1, -1, -1): np.sqrt(3),
+            (-1, 1, -1): np.sqrt(3),
+            (-1, -1, 1): np.sqrt(3),
+            (1, 1, -1): np.sqrt(3),
+            (1, -1, 1): np.sqrt(3),
+            (-1, 1, 1): np.sqrt(3),
+        }
+
         start_pos = (0, 0, 10)
         goal_pos = (0, 3, -10)

@@ -1,4 +1,5 @@
 import numpy as np
+import jax.numpy as jnp
 import mujoco
 import mujoco.viewer
 import cv2
@@ -33,6 +34,9 @@ class BaseEnv(object):
 
         # Initialize arguments
         self.args = args
+
+        # Flag to know whether VecEnv is being used
+        self.using_rl = False
 
     def reset(self) -> None:
         """
@@ -70,7 +74,7 @@ class BaseEnv(object):
         #        omega (3)]
 
         # Retrieve current rotation matrix
-        R = np.reshape(self.data.body('body0').xmat, (3,3))
+        R = np.reshape(self.data.body("body0").xmat, (3, 3))
 
         # Rotate intertial velocity to body velocity
         vel_body = R.T @ self.data.qvel[:3]
@@ -79,27 +83,41 @@ class BaseEnv(object):
         obs = np.concatenate((self.data.qpos, vel_body, self.data.qvel[3:]))
 
         return obs
-    
+
     def get_sim_rendering(self, output_filename: str) -> None:
         """
         Create a save a video rendering of the experiment.
         """
         if not self.args.video:
             return
-        
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        fps = 60 / 3 # Divide by number of reference points that you visualize
+
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        fps = 60 / 3  # Divide by number of reference points that you visualize
         height, width, _ = self.frames[0].shape
-        
+
         curr_datetime = datetime.now()
-        video_writer = cv2.VideoWriter(output_filename + "_" + curr_datetime.strftime("%Y-%m-%d_%H:%M:%S") + '.mp4', fourcc, fps, (width, height))
+        video_writer = cv2.VideoWriter(
+            output_filename
+            + "_"
+            + curr_datetime.strftime("%Y-%m-%d_%H:%M:%S")
+            + ".mp4",
+            fourcc,
+            fps,
+            (width, height),
+        )
 
         for frame in self.frames:
             video_writer.write(frame)
 
         video_writer.release()
 
-        print("Video saved as " + output_filename + "_" + curr_datetime.strftime("%Y-%m-%d_%H:%M:%S") + ".mp4\n")
+        print(
+            "Video saved as "
+            + output_filename
+            + "_"
+            + curr_datetime.strftime("%Y-%m-%d_%H:%M:%S")
+            + ".mp4\n"
+        )
 
     def _create_viewer(self) -> None:
         """
@@ -112,7 +130,7 @@ class BaseEnv(object):
 
         # Set default camera options
         self.viewer.cam.distance = 3.0
-        self.viewer.cam.trackbodyid = 1  # tracks smallsat
+        self.viewer.cam.trackbodyid = 2  # tracks smallsat
         self.viewer.cam.azimuth = 10.0
         self.viewer.cam.type = 1
 
@@ -132,7 +150,7 @@ class BaseEnv(object):
 
         # Save frames to create the video
         self.frames = []
-        
+
     def _load_cfg(self, env_name: str, model_name: str) -> dict:
         """
         Loads and returns the following config files:
@@ -205,11 +223,15 @@ class BaseEnv(object):
         """
         # External disturbances
         if self.disturbances:
-            self.data.qfrc_applied = self.disturbances.apply()
+            self.data.qfrc_applied = np.asarray(
+                self.disturbances.apply(self.data.time).reshape(-1)
+            )
 
         # Perturbations
         if self.perturbations:
-            self.data.ctrl = self.perturbations.apply(input, self.data.time)
+            self.data.ctrl = np.asarray(
+                self.perturbations.apply(jnp.asarray(input), self.data.time).reshape(-1)
+            )
         else:
             self.data.ctrl = input
 
@@ -230,4 +252,6 @@ class BaseEnv(object):
             if chr(keycode) in self.disturbances_keycodes:
                 self.disturbances.key_callback(keycode)
         except:
-            print("No disturbance or perturbation list registered. Keycallback unsuccessful.")
+            print(
+                "No disturbance or perturbation list registered. Keycallback unsuccessful."
+            )

@@ -9,6 +9,7 @@ def identity(input: jnp.ndarray) -> jnp.ndarray:
     """
     return input
 
+
 def mlp(sizes, activation, output_activation=identity):
     """
     Basic multilayer perceptron architecture.
@@ -20,6 +21,9 @@ def mlp(sizes, activation, output_activation=identity):
             activation_function = output_activation
         else:
             activation_function = activation
-        modules += [nnx.Linear(sizes[i], sizes[i+1], rngs=nnx.Rngs(params=0)), activation_function]
+        modules += [
+            nnx.Linear(sizes[i], sizes[i + 1], rngs=nnx.Rngs(params=0)),
+            activation_function,
+        ]
 
     return nnx.Sequential(*modules)
