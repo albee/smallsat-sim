@@ -1,5 +1,6 @@
 from smallsat_sim.controllers.base_controller import BaseController
 from smallsat_sim.envs.base_env import BaseEnv
+from smallsat_sim.planners.base_planner import BasePlanner
 
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
 
@@ -21,7 +22,7 @@ class NominalMPCCController(BaseController):
     https://docs.acados.org/
     """
 
-    def __init__(self, env, planner) -> None:
+    def __init__(self, env: BaseEnv, planner: BasePlanner) -> None:
         # Fetch correct controller config
         self.ctrl_cfg = env.env_cfg.control.NominalMPCC
 
@@ -44,7 +45,16 @@ class NominalMPCCController(BaseController):
             self.viz_offset = self.viewer.user_scn.ngeom
             self.viewer.user_scn.ngeom += self.ctrl_cfg.N + 1
         else:
-            self._visualize = lambda *args, **kwargs: None
+            self._visualize_prediction = lambda *args, **kwargs: None
+
+        # Check if there is a renderer. In case there is not,
+        # dynamically allocate the visualize_renderer method
+        # to a lambda function doing nothing.
+        if env.renderer:
+            self.renderer = env.renderer
+            self.frames = env.frames
+        else:
+            self._visualize_prediction_renderer = lambda *args, **kwargs: None
 
     def _generate_solver(self, env) -> None:
         """
@@ -285,7 +295,11 @@ class NominalMPCCController(BaseController):
         u0 = self.ocp_solver.solve_for_x0(
             env.obs[0:13], print_stats_on_failure=True, fail_on_nonzero_status=False
         )
-        self._visualize()
+        self._visualize_prediction()
+
+        if hasattr(self, "renderer") and self.renderer is not None:
+            _, _ = self.planner.get_reference(env.obs)
+            self._visualize_prediction_renderer()
 
         if False:
             solve_time = self.ocp_solver.get_stats("time_tot")
@@ -322,11 +336,10 @@ class NominalMPCCController(BaseController):
 
             self.ocp_solver.set(i, "p", ref)
 
-    def _visualize(self) -> None:
+    def _visualize_prediction(self) -> None:
         """
         Plot predicted trajectory of MPC in MuJoCo viewer.
         """
-
         for i in range(self.ctrl_cfg.N + 1):
             point = self.ocp_solver.get(i, "x")[0:3]
             mujoco.mjv_initGeom(
@@ -337,3 +350,24 @@ class NominalMPCCController(BaseController):
                 mat=np.eye(3).flatten(),
                 rgba=np.array([0, 0, 1, 2]),
             )
+
+    def _visualize_prediction_renderer(self) -> None:
+        """
+        Plot predicted trajectory of MPC in MuJoCo renderer.
+        """
+        for i in range(self.ctrl_cfg.N + 1):
+            point = self.ocp_solver.get(i, "x")[0:3]
+            mujoco.mjv_initGeom(
+                self.renderer.scene.geoms[i + self.renderer.scene.ngeom],
+                type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                size=[0.05, 0, 0],
+                pos=point,
+                mat=np.eye(3).flatten(),
+                rgba=np.array([1, 0, 0, 2]),
+            )
+
+        self.renderer.scene.ngeom += self.ctrl_cfg.N + 1
+
+        # Extract image from renderer and append it for post-processing
+        sim_img = self.renderer.render().copy()
+        self.frames.append(sim_img)
