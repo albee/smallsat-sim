@@ -44,8 +44,8 @@ class VecEnv(BaseEnv):
         self.prev_shaping = None
 
         # TODO: do we need to reset all of the MuJoCo data or is updating qpos and qvel enough?
-        self.mjx_batch.replace(qpos=self.init_qpos)
-        self.mjx_batch.replace(qvel=self.init_qvel)
+        self.mjx_batch = self.mjx_batch.replace(qpos=self.init_qpos)
+        self.mjx_batch = self.mjx_batch.replace(qvel=self.init_qvel)
         self.mjx_batch = self.jit_forward(self.mjx_model, self.mjx_batch)
 
     def transition(
@@ -153,11 +153,19 @@ class VecEnv(BaseEnv):
         print("Devices available to JAX: ", jax.devices())
         print("Device used by JAX: ", self.mjx_data.qpos.devices(), "\n")
 
-        # Batch the data
+        # Batch the data and randomize the starting position
         rng = jax.random.PRNGKey(0)
         rng = jax.random.split(rng, self.num_envs)
-        self.mjx_batch = jax.vmap(
-            lambda rng: self.mjx_data.replace(qpos=self.mjx_data.qpos)
+        self.mjx_batch = jax.vmap( # To have the same starting pos in all envs, just replace w/ qpos
+            lambda rng: self.mjx_data.replace(
+                qpos=self.mjx_data.qpos
+                + jnp.concatenate(
+                    [
+                        jax.random.uniform(rng, (3,), minval=-0.5, maxval=0.5),
+                        jnp.zeros(4),
+                    ]
+                )
+            )
         )(rng)
         self.data_vec = mjx.get_data(self.model, self.mjx_batch)
         mjx.get_data_into(self.data_vec, self.model, self.mjx_batch)
@@ -197,10 +205,14 @@ class VecEnv(BaseEnv):
         """
         # External disturbances
         if self.disturbances:
-            self.mjx_batch.replace(qfrc_applied=self.disturbances.apply(self.data.time))
+            self.mjx_batch = self.mjx_batch.replace(
+                qfrc_applied=self.disturbances.apply(self.data.time)
+            )
 
         # Perturbations
         if self.perturbations:
-            self.mjx_batch.replace(ctrl=self.perturbations.apply(input, self.data.time))
+            self.mjx_batch = self.mjx_batch.replace(
+                ctrl=self.perturbations.apply(input, self.data.time)
+            )
         else:
-            self.mjx_batch.replace(ctrl=input)
+            self.mjx_batch = self.mjx_batch.replace(ctrl=input)

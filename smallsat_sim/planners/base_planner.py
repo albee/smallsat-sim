@@ -37,6 +37,8 @@ class BasePlanner(object):
                 self.data_vec = env.data_vec
                 self.model = env.model
                 self.mjx_batch = env.mjx_batch
+        else:
+            self._visualize_renderer = lambda *args, **kwargs: None
 
     @abstractmethod
     def get_reference(self, obs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
