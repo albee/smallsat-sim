@@ -519,7 +519,6 @@ class MissionPlanner(BasePlanner):
             [waypoint.position for waypoint in self.waypoints],
             size=[0.1, 0, 0],
         )
-        # self._visualize_collision_constraints_renderer()
 
         return (
             self.waypoints[self.idx_reference_point].position.reshape(3, 1),
@@ -558,7 +557,6 @@ class MissionPlanner(BasePlanner):
             [waypoint.position for waypoint in self._intermediate_reference],
             size=[0.1, 0, 0],
         )
-        # self._visualize_collision_constraints_renderer()
 
         return (
             self._intermediate_reference[self.idx_reference_point].position.reshape(
@@ -641,53 +639,6 @@ class MissionPlanner(BasePlanner):
 
         else:
             return
-        
-    def _visualize_collision_constraints_renderer(self) -> None:
-        """
-        Visualizes the collision constraints around the mission trajectory
-        """
-
-        if hasattr(self, "renderer") and self.renderer is not None:
-
-            collision_radius = 1.0
-
-            for i, segment in enumerate(self.trajectory.reference):
-                # Increment ngeom
-                self.renderer.scene.ngeom += 1
-
-                # Extract points
-                start_point = segment.start_point.position
-                end_point = segment.end_point.position
-
-                # Initialize geometry
-                mujoco.mjv_initGeom(
-                    self.renderer.scene.geoms[self.renderer.scene.ngeom - 1],
-                    type=mujoco.mjtGeom.mjGEOM_CAPSULE,
-                    size=np.zeros(3),
-                    pos=np.zeros(3),
-                    mat=np.zeros(9),
-                    rgba=np.array([0.69, 0.4, 1, 0.1]),
-                )
-
-                # Make the connector geometry
-                mujoco.mjv_makeConnector(
-                    self.renderer.scene.geoms[self.renderer.scene.ngeom - 1],
-                    mujoco.mjtGeom.mjGEOM_CAPSULE,
-                    collision_radius,
-                    start_point[0],
-                    start_point[1],
-                    start_point[2],
-                    end_point[0],
-                    end_point[1],
-                    end_point[2],
-                )
-
-                # Extract image from renderer and append it for post-processing
-                sim_img = self.renderer.render().copy()
-                self.frames.append(sim_img)
-
-            else:
-                return
 
     def _create_trajectory(self) -> None:
         """
