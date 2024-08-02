@@ -35,6 +35,9 @@ class OraclePlanner(BasePlanner):
         if dist < self.clearance_dist:
             self.idx_reference_point += 1
 
+        # Visualize the waypoints in the saved video
+        self._visualize_renderer(self.reference_points)
+
         return (
             self.reference_points[
                 self.idx_reference_point % len(self.reference_points)
