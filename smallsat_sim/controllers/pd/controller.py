@@ -30,8 +30,6 @@ class PDController(BaseController):
         super().__init__(env, planner, ctrl_cfg)
 
         # Set some reference quantities (Deprecated?)
-        self.x_ref = self.planner.get_reference(env.obs)
-        self.quat_ref = np.array([1.0, 0.0, 0.0, 0.0])
         self.v_ref = np.zeros((3, 1))
         self.omega_ref = np.zeros((3, 1))  # Angular velocity
 
@@ -80,8 +78,7 @@ class PDController(BaseController):
 
     def get_control_input(self, env: BaseEnv) -> np.ndarray:
         """Defines the controller callback for the simulation step."""
-        desired_pos = self.planner.get_reference(env.obs).reshape(3, 1)  # Linear
-        desired_quat = self.quat_ref
+        desired_pos, desired_quat = self.planner.get_reference(env.obs)
         desired_linvel = self.v_ref  # Linear
         desired_angvel = np.zeros((3, 1))
         current_pos = np.reshape(env.obs[:3], (3, 1))

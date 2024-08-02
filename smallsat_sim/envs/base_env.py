@@ -90,9 +90,9 @@ class BaseEnv(object):
         """
         if not self.args.video:
             return
-
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        fps = 60 / 3  # Divide by number of reference points that you visualize
+        
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        fps = 60
         height, width, _ = self.frames[0].shape
 
         curr_datetime = datetime.now()
