@@ -6,6 +6,8 @@
 import argparse
 import numpy as np
 import torch
+import psutil
+import os
 
 from typing import Callable
 
@@ -149,3 +151,11 @@ def calc_model_error(obs: np.ndarray, x_past: np.ndarray, u_past: np.ndarray, f_
         )
     
     return model_error
+
+def get_memory_usage():
+    """
+    Returns current memory usage of Python (on CPU)
+    """
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    return mem_info.rss
