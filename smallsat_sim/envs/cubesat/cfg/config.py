@@ -90,6 +90,18 @@ class EnvConfig(BaseEnvConfig):
         class RL:
             control_decimation = 25
 
-            num_envs = 40
+            # Number of environments
+            num_envs = 4096
 
-            # TODO: add RL params here
+            # Hyperparams for the learning loop
+            steps_per_epoch = 3000
+            epochs = 50
+            max_epoch_len = 300
+            gamma = 0.99
+            lam = 0.97
+            actor_lr = 3e-3
+            critic_lr = 1e-3
+
+            # Hyperparams for the evaluation loop
+            episode_len = 300
+            n_evals = 100

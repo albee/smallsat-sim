@@ -25,7 +25,7 @@ class VecEnv(BaseEnv):
         super().__init__(args)
 
         # Observation and action spaces
-        self.obs_dim = 13
+        self.obs_dim = 9
         self.act_dim = 12
 
         # Initial position and velocity
@@ -43,31 +43,40 @@ class VecEnv(BaseEnv):
         """
         self.prev_shaping = None
 
-        # TODO: do we need to reset all of the MuJoCo data or is updating qpos and qvel enough?
+        # Updating only qpos and qvel, not resetting all of mj_data
         self.mjx_batch = self.mjx_batch.replace(qpos=self.init_qpos)
         self.mjx_batch = self.mjx_batch.replace(qvel=self.init_qvel)
         self.mjx_batch = self.jit_forward(self.mjx_model, self.mjx_batch)
 
     def transition(
-        self, actions: jnp.ndarray
+        self, actions: jnp.ndarray, states: jnp.ndarray
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """
-        Apply input action on the environment. Returns the states, rewards and wether the terminal state has been reached.
+        Apply input action on the environment. Returns the rewards and wether the terminal state has been reached.
         """
         self.step(input=actions)
 
-        # TODO: implement reward shaping
+        # TODO: implement reward shaping for the case when the agent is out-of-bounds (collision corridor)
+
+        # Penalize Euclidean distance from set point
         rewards = jnp.zeros(self.num_envs)
-        shaping = jnp.zeros(self.num_envs)
+        shaping = -100 * jnp.sqrt(
+            (states[:, 0]) ** 2
+            + (states[:, 1]) ** 2
+            + (states[:, 2]) ** 2
+        )
         if self.prev_shaping is not None:
             rewards = shaping - self.prev_shaping
         self.prev_shaping = shaping
 
-        terminal = jnp.zeros(
-            self.num_envs, dtype=bool
-        )  # TODO: implement "game over" checking
+        # Check if the agent is out-of-bounds or has reached the goal
+        is_terminal = jax.vmap(self._in_terminal_set)
+        terminal = is_terminal(states)
 
-        return self.obs, rewards, terminal
+        # Reward the agent for reaching the goal
+        rewards += jnp.where(terminal, 100, 0)
+
+        return rewards, terminal
 
     def step(self, input) -> None:
         """
@@ -84,9 +93,6 @@ class VecEnv(BaseEnv):
                 self._update_viewer()
 
             self.mjx_batch = self.jit_step(self.mjx_model, self.mjx_batch)
-
-        # Print some information for debugging
-        # print(f"Time: {self.mjx_batch.time[0]} and Pos = {self.mjx_batch.qpos[0]}")
 
         # Execute post physics steps
         self._post_physics_step()
@@ -119,6 +125,36 @@ class VecEnv(BaseEnv):
         )
 
         return obs
+    
+    def get_states(self, next_waypoint: jnp.ndarray) -> jnp.ndarray:
+        """
+        Return all states.
+        """
+        # obs = [r (3),
+        #        q (4),
+        #        v (3), --> in BODY frame
+        #        omega (3)]
+
+        # Retrieve current rotation matrix
+        R = self.mjx_batch.xmat[:, 1, :, :]
+
+        # Rotate matrix
+        R = jnp.transpose(R, (0, 2, 1))
+
+        @jax.vmap
+        def multiply_transpose_velocity(R, vel):
+            return jnp.matmul(R, vel)  # Shape (3,)
+
+        # Rotate intertial velocity to body velocity
+        vel_body = multiply_transpose_velocity(R, self.mjx_batch.qvel[:, :3])
+
+        # Create array of observations
+        delta_pos = self.mjx_batch.qpos[:, 0:3] - jnp.full((self.num_envs, 3), next_waypoint)
+        states = jnp.concatenate(
+            (delta_pos, vel_body, self.mjx_batch.qvel[:, 3:]), axis=1
+        )
+
+        return states
 
     def _create_viewer(self, args) -> None:
         """
@@ -156,17 +192,19 @@ class VecEnv(BaseEnv):
         # Batch the data and randomize the starting position
         rng = jax.random.PRNGKey(0)
         rng = jax.random.split(rng, self.num_envs)
-        self.mjx_batch = jax.vmap( # To have the same starting pos in all envs, just replace w/ qpos
-            lambda rng: self.mjx_data.replace(
-                qpos=self.mjx_data.qpos
-                + jnp.concatenate(
-                    [
-                        jax.random.uniform(rng, (3,), minval=-0.5, maxval=0.5),
-                        jnp.zeros(4),
-                    ]
+        self.mjx_batch = (
+            jax.vmap(  # To have the same starting pos in all envs, just replace w/ qpos
+                lambda rng: self.mjx_data.replace(
+                    qpos=self.mjx_data.qpos
+                    + jnp.concatenate(
+                        [
+                            jax.random.uniform(rng, (3,), minval=-0.5, maxval=0.5),
+                            jnp.zeros(4),
+                        ]
+                    )
                 )
-            )
-        )(rng)
+            )(rng)
+        )
         self.data_vec = mjx.get_data(self.model, self.mjx_batch)
         mjx.get_data_into(self.data_vec, self.model, self.mjx_batch)
 
@@ -216,3 +254,9 @@ class VecEnv(BaseEnv):
             )
         else:
             self.mjx_batch = self.mjx_batch.replace(ctrl=input)
+
+    def _in_terminal_set(self, delta_pos: jnp.ndarray) -> bool:
+        """
+        Returns one if in terminal set, zero otherwise.
+        """
+        return jnp.all(jnp.abs(delta_pos <= 0.5))

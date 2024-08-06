@@ -46,27 +46,23 @@ class VPGBuffer(object):
         # Update pointer
         self.ptr += 1
 
-    def end_traj(self, last_val=0):  # TODO: double-check this function
+    def end_traj(self, last_vals: jnp.ndarray):
         """
         Return the discounted rewards-to-go and TD residuals.
         """
         # Get the indices where the TD residuals and discounted reward-to-go are stored
         path_slice = slice(self.path_start_idx, self.ptr)
 
-        rews = jnp.concatenate(self.rew_buf[path_slice], last_val)
-        vals = jnp.concatenatet(self.val_buf[path_slice], last_val)
+        rews = jnp.concatenate([self.rew_buf[path_slice], last_vals.reshape((1, -1))])
+        vals = jnp.concatenate([self.val_buf[path_slice], last_vals.reshape((1, -1))])
         run_len = self.ptr - self.path_start_idx
-
-        self.ret_buf = self.ret_buf.at[self.ptr : self.path_start_idx].set(
-            jnp.cumsum(self.rew_buf[self.ptr : self.path_start_idx][::-1])[::-1]
-        )
 
         # TD residual calculation
         deltas = (
-            rews[:-1] - vals[:-1] + self.gamma * jnp.concatenate(vals[1:-1], vals[-1])
+            rews[:-1] - vals[:-1] + self.gamma * jnp.concatenate([vals[1:-1], vals[-1].reshape(1, -1)])
         )
         self.tdres_buf = self.tdres_buf.at[path_slice].set(
-            jnp.ndarray(
+            jnp.array(
                 [
                     discount_cumsum(deltas[t:run_len], self.gamma * self.lam)[0]
                     for t in range(run_len)
@@ -76,7 +72,7 @@ class VPGBuffer(object):
 
         # Discounted rewards-to-go calculation
         self.ret_buf = self.ret_buf.at[path_slice].set(
-            jnp.ndarray(
+            jnp.array(
                 [
                     discount_cumsum(rews[t:run_len], self.gamma)[0]
                     for t in range(run_len)
@@ -87,7 +83,7 @@ class VPGBuffer(object):
         # Update path start index
         self.path_start_idx = self.ptr
 
-    def get(self):  # TODO: double-check this function
+    def get(self):
         """
         Return all the data from the buffer (with advantages normalized). Reset pointers in the buffer.
         """
@@ -96,8 +92,8 @@ class VPGBuffer(object):
         self.ptr, self.path_start_idx = 0, 0
 
         # Normalize the TD residuals
-        tdres_mean = jnp.mean(self.tdres_buf)
-        tdres_std = jnp.std(self.tdres_buf)
+        tdres_mean = jnp.mean(self.tdres_buf, axis=0)
+        tdres_std = jnp.std(self.tdres_buf, axis=0)
         self.tdres_buf = (self.tdres_buf - tdres_mean) / tdres_std
 
         # Save the data in a dict

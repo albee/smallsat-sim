@@ -33,7 +33,6 @@ class VPGAgent(BaseController):
         pi, _ = self.actor.forward(states)
         key = jax.random.PRNGKey(42)
         actions = pi.sample(seed=key)
-        # actions = jax.random.choice(key, pi)
         values = self.critic.forward(states)
         logp = self.actor._log_prob_from_dist(pi, actions)
 

@@ -13,7 +13,7 @@ class Actor(nnx.Module):
     def __init__(self, obs_dim: int, act_dim: int, hidden_sizes: int, activation) -> None:
         super().__init__()
         log_std = -0.5 * jnp.ones(act_dim)
-        self.log_std = nnx.Param(log_std) # TODO: double-check this
+        self.log_std = nnx.Param(log_std)
         self.mu_net = mlp([obs_dim] + list(hidden_sizes) + [act_dim], activation)
 
     def _distribution(self, obs: jnp.ndarray):
