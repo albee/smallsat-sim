@@ -231,7 +231,7 @@ class GPMPC(BaseController):
             gp_model=gp_model,
             gp_feature_selector=input_selection,
             data_processing_strategy=zero_order_gpmpc.models.gpytorch_models.OnlineLearningStrategy(
-                max_num_points=self.M
+                max_num_points=self.M, device=next(gp_model.parameters()).device.type
             ),
             verbose=True,
         )
