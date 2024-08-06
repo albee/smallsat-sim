@@ -87,7 +87,7 @@ class GPMPC(BaseController):
     acados: https://docs.acados.org/
     """
 
-    def __init__(self, env, planner) -> None:
+    def __init__(self, env: BaseEnv, planner) -> None:
         # Fetch correct controller config
         self.ctrl_cfg = env.env_cfg.control.GPMPC
         self.N = self.ctrl_cfg.N
@@ -112,7 +112,7 @@ class GPMPC(BaseController):
         self._create_zoro_description(env)
 
         # Setup Gaussian Process
-        self._setup_gp()
+        self._setup_gp(obs=env.get_obs())
 
         # Miscellaneous
         self.last_solution = {
@@ -148,7 +148,7 @@ class GPMPC(BaseController):
         else:
             self._visualize = lambda *args, **kwargs: None
 
-    def _setup_gp(self) -> None:
+    def _setup_gp(self, obs: np.ndarray) -> None:
         """
         Initializes all needed quantities for the Gaussian Process
         """
@@ -165,13 +165,14 @@ class GPMPC(BaseController):
         )
         self.B_d_inv = torch.linalg.pinv(self.B_d).to(torch.float64)
 
-        # Initialize buffers to keep track of past state and input
+        # Initialize buffers to keep track of past (phyisical) states and inputs
         self.x_past = np.zeros(self.nx)
+        self.x_past[:-1] = obs
         self.u_past = np.zeros(self.nu)
 
         # Initialize some hyperparameters for GP
         # TODO: Move to configuration file
-        self.M = 501  # number of points in list
+        self.M = 200  # number of points in list
         self.gp_update_counter = 0  # Keep track how many times dict has been updated
         self.gp_initialized = False  # Keep track if GP is already initialized
 
@@ -210,26 +211,29 @@ class GPMPC(BaseController):
         )
 
         # Initialize GP itself
-        self.likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=6)
-        self.gp_model = BatchIndependentMultitaskGPModel(
-            train_x=self.z,
-            train_y=self.y,
-            likelihood=self.likelihood,
+        likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=6)
+        gp_model = BatchIndependentMultitaskGPModel(
+            train_x=None,
+            train_y=None,
+            likelihood=likelihood,
             residual_dimension=6,
             input_dimension=sum(input_feature_selection),
             use_ard=True,
         )
 
         # Train the GP offline
-        self._train_gp()
+        # self._train_gp()
+        gp_model.eval()
+        likelihood.eval()
 
         # Initialize the Residual Model
-        self.residual_model = GPyTorchResidualLearningModel(
-            gp_model=self.gp_model,
+        residual_model = GPyTorchResidualLearningModel(
+            gp_model=gp_model,
             gp_feature_selector=input_selection,
             data_processing_strategy=zero_order_gpmpc.models.gpytorch_models.OnlineLearningStrategy(
                 max_num_points=self.M
             ),
+            verbose=True,
         )
 
         # File naming stuff
@@ -250,7 +254,7 @@ class GPMPC(BaseController):
         self.gp_mpc = ZeroOrderGPMPC(
             self.ocp_init,
             self.nominal_sim,
-            gp_model=self.residual_model,
+            residual_model=residual_model,
             path_json_ocp=filename_ocp,
             path_json_sim=filename_sim,
             build_c_code=True,
@@ -493,19 +497,33 @@ class GPMPC(BaseController):
                 0.0001,
                 0.0001,
                 0.0001,
-                0.0001,
-                0.0001,
-                0.0001,
-                0.0001,
-                0.0001,
-                0.0001,
-                0.0001,
-                0.0001,
             ]
         )
 
+        unc_jac_G_mat = np.diag(
+            [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                0.0,
+            ]
+        )
+
+        unc_jac_G_mat = unc_jac_G_mat[:, ~np.all(unc_jac_G_mat == 0, axis=0)]
+
         # create zoro_description
         zoro_description = ZoroDescription()
+        zoro_description.unc_jac_G_mat = unc_jac_G_mat
         zoro_description.backoff_scaling_gamma = (
             0  # constraint tighenting (by how many sigma)
         )
@@ -521,7 +539,7 @@ class GPMPC(BaseController):
         zoro_description.input_P0 = False
         zoro_description.input_W_diag = True
         zoro_description.input_W_add_diag = True
-        zoro_description.output_P_matrices = True
+        zoro_description.output_P_matrices = False
         self.ocp_init.zoro_description = zoro_description
 
     def get_control_input(self, env) -> np.ndarray:
@@ -529,10 +547,17 @@ class GPMPC(BaseController):
         Calculate the control input based on current observation
         """
         obs = env.get_obs()
-        timestamp = env.data.time
 
-        # Record error statistics
-        self._record_stats(obs, timestamp)
+        # Check if new observation shall be added to dictionary
+        res_output = self._compute_residual(obs)
+
+        if res_output is not None:
+            residual, x_train = res_output
+            start_time = time.perf_counter()
+            self.gp_mpc.residual_model.record_datapoint(x_train, residual)
+            end_time = time.perf_counter()
+
+        print(f"Total Update GP time: {(end_time-start_time)}")
 
         # Check solver status and re-initialize if needed
         if self.gp_mpc.ocp_solver.status != 0:
@@ -557,7 +582,6 @@ class GPMPC(BaseController):
         start_time = time.time()
         self.gp_mpc.solve(n_iter_max=1)
         end_time = time.time()
-
         execution_time = end_time - start_time
         self.solve_time_tracker.add_solve_time(execution_time)
 
@@ -575,13 +599,13 @@ class GPMPC(BaseController):
         self._visualize()
 
         # Save current observation and input
-        self.x_past, self.u_past = obs, u0
+        self.x_past[:-1], self.u_past = obs, u0
 
         # Save theta for next iteration
         for i in range(self.ctrl_cfg.N + 1):
             self.theta_prev[i] = self.gp_mpc.ocp_solver.get(i, "x")[-1]
 
-        return u0[0:12]
+        return u0[:-1]
 
     def _set_params(self) -> None:
         """
@@ -622,97 +646,38 @@ class GPMPC(BaseController):
             .to(torch.float64)
         )
 
-    def _calc_outputs(self, obs: np.ndarray) -> torch.Tensor:
+    def _compute_residual(self, x_next: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
-        Calculates the output data y which is necessary for training
-        the GP appropriately.
+        Computes residual between actual state and expected state
 
         y_k = B_d^(-1) (x_{k+1} - f(x_k,u_k))
         """
 
+        # Calculate the prediction/model error
         model_error = calc_model_error(
-            obs=obs, x_past=self.x_past, u_past=self.u_past, f_int=self.f_int
+            obs=x_next,
+            x_past=self.x_past[:-1],
+            u_past=self.u_past[:-1],
+            f_int=self.f_int,
         )
 
-        return (self.B_d_inv @ model_error).T
+        # Ignore last row as theta not relevant
+        residual = (self.B_d_inv[:, :-1] @ model_error).squeeze(-1)
 
-    def _update_gp(self, obs: np.ndarray, timestamp: float) -> None:
-        """
-        Main method which checks if the GP needs to be updated
-        with a new point.
-        """
+        x_train = np.hstack((self.x_past, self.u_past))
 
-        # Check if new data shall be added to dictionary
-        # For now, always added
-
-        if timestamp == 0:
-            return
-
-        # Calculate features
-        z_k = self._obs_to_features(obs)
-
-        # Calculate the output y
-        y_k = self._calc_outputs(obs)
-
-        if len(self.dict["t"]) == self.M:
-            # Train GP first time dict is full
-            if not self.gp_initialized:
-                self.likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(
-                    num_tasks=6
-                )
-                self.gp = GP(
-                    train_x=self.dict["z"],
-                    train_y=self.dict["y"],
-                    likelihood=self.likelihood,
-                )
-                self._train_gp(self.gp)
-                self.gp_initialized = True
-
-            # Identify oldest element
-            oldest_idx = self.dict["t"].index(min(self.dict["t"]))
-
-            # Replace older data by new one
-            self.dict["z"][oldest_idx, :] = z_k
-            self.dict["y"][oldest_idx, :] = y_k
-            self.dict["t"][oldest_idx] = timestamp
-
-            # Replace data in GP
-            self.gp.set_train_data(inputs=self.dict["z"], targets=self.dict["y"])
-
-            self.gp_update_counter += 1
-
-            # Retrain hyperparameter every 100 updates
-            if self.gp_update_counter == 100:
-                self._train_gp(self.gp)
-                self.gp_update_counter = 0
-
-        else:
-            self.logger.log(sim_timestamp=timestamp, **{"z": z_k, "y": y_k})
-
-            # Append to current data
-            # Replace older data by new one
-            self.dict["z"] = torch.cat((self.dict["z"], z_k), dim=0)
-            self.dict["y"] = torch.cat((self.dict["y"], y_k), dim=0)
-            self.dict["t"].append(timestamp)
-
-        # Update Gaussian Process
+        return residual, x_train
 
     def _train_gp(self) -> None:
         """
         Trains the gp on the offline data
         """
-        # Set training parameters
-        training_iterations = 300
-        rng_seed = 456
-
         # Train GP on data offline
         self.gp_model, self.likelihood = train_gp_model(
-            self.gp_model, torch_seed=rng_seed, training_iterations=training_iterations
+            self.gp_model,
+            torch_seed=456,
+            training_iterations=300,
         )
-
-        # EVAL mode
-        self.gp_model.eval()
-        self.likelihood.eval()
 
     def _initialize_solver(self, env: BaseEnv) -> None:
         """
@@ -760,54 +725,3 @@ class GPMPC(BaseController):
                 mat=np.eye(3).flatten(),
                 rgba=np.array([0, 0, 1, 2]),
             )
-
-    def _record_stats(self, obs: np.ndarray, timestamp: float) -> None:
-        """
-        Record error statistics of the GP
-        Can be used for plotting and printing
-        """
-        if self.gp_initialized:
-            # Calculate nominal model error
-            e_nom = np.linalg.norm(
-                obs - self.f_int(self.x_past, self.u_past).squeeze(-1)
-            )
-
-            # Calculate GP error
-            self.gp.eval()
-            self.likelihood.eval()
-
-            with torch.no_grad(), gpytorch.settings.fast_pred_var():
-                features = self._obs_to_features(obs)
-                prediction = self.likelihood(self.gp(features))
-                mean = prediction.mean
-
-            e_gp = np.linalg.norm(
-                (
-                    obs
-                    - self.f_int(self.x_past, self.u_past).squeeze(-1)
-                    - torch.matmul(
-                        self.B_d,
-                        mean.T,
-                    )
-                    .squeeze(-1)
-                    .detach()
-                    .numpy()
-                )
-            )
-
-            if self.gp_update_counter == 50:
-                print(f"Nominal model error: {e_nom}")
-                print(f"Corrected model error: {e_gp}")
-
-                # Print the different hyperparameters
-                print("Mean Module Hyperparameters:")
-                for name, param in self.gp.mean_module.named_parameters():
-                    print(f"{name}: {param}")
-
-                print("\nCovariance Module Hyperparameters:")
-                for name, param in self.gp.covar_module.named_parameters():
-                    print(f"{name}: {param}")
-
-                print("\nLikelihood Hyperparameters:")
-                for name, param in self.gp.likelihood.named_parameters():
-                    print(f"{name}: {param}")
