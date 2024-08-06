@@ -63,6 +63,9 @@ from zero_order_gpmpc.models.gpytorch_models.gpytorch_gp import (
     BatchIndependentMultitaskGPModel,
 )
 
+# Import DataProcessing strategies from SmallSatSim
+from smallsat_sim.controllers.gp_mpc.online_learning.strategies import SlidingWindow
+
 
 # Set default torch dtype
 torch.set_default_dtype(torch.float64)
@@ -134,7 +137,7 @@ class GPMPC(BaseController):
         self._initialize_solver(env)
 
         # Solve time tracker
-        self.solve_time_tracker = SolveTimeTracker()
+        #self.solve_time_tracker = SolveTimeTracker()
 
         # Check if there is a viewer. In case there is not,
         # dynamically allocate the visualize method to a lambda
@@ -172,7 +175,7 @@ class GPMPC(BaseController):
 
         # Initialize some hyperparameters for GP
         # TODO: Move to configuration file
-        self.M = 200  # number of points in list
+        self.M = 50  # number of points in list
         self.gp_update_counter = 0  # Keep track how many times dict has been updated
         self.gp_initialized = False  # Keep track if GP is already initialized
 
@@ -230,7 +233,7 @@ class GPMPC(BaseController):
         residual_model = GPyTorchResidualLearningModel(
             gp_model=gp_model,
             gp_feature_selector=input_selection,
-            data_processing_strategy=zero_order_gpmpc.models.gpytorch_models.OnlineLearningStrategy(
+            data_processing_strategy=SlidingWindow(
                 max_num_points=self.M, device=next(gp_model.parameters()).device.type
             ),
             verbose=True,
@@ -554,10 +557,12 @@ class GPMPC(BaseController):
         if res_output is not None:
             residual, x_train = res_output
             start_time = time.perf_counter()
-            self.gp_mpc.residual_model.record_datapoint(x_train, residual)
+            self.gp_mpc.residual_model.record_datapoint(x_input=x_train,
+                                                        y_target=residual,
+                                                        timestamp=env.data.time)
             end_time = time.perf_counter()
 
-        print(f"Total Update GP time: {(end_time-start_time)}")
+        #print(f"Total Update GP time: {(end_time-start_time)}")
 
         # Check solver status and re-initialize if needed
         if self.gp_mpc.ocp_solver.status != 0:
@@ -583,12 +588,12 @@ class GPMPC(BaseController):
         self.gp_mpc.solve(n_iter_max=1)
         end_time = time.time()
         execution_time = end_time - start_time
-        self.solve_time_tracker.add_solve_time(execution_time)
+        #self.solve_time_tracker.add_solve_time(execution_time)
 
         self.X_res, U_res = self.gp_mpc.get_solution()
         u0 = U_res[0, :]
         solve_time = self.gp_mpc.solve_stats["timings"]["total"]
-        print(f"Total CPU time: {solve_time}")
+        #print(f"Total CPU time: {solve_time}")
 
         # Save current solution
         for i in range(self.N):
