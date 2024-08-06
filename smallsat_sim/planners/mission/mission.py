@@ -514,6 +514,12 @@ class MissionPlanner(BasePlanner):
                 self.idx_reference_point += 1
                 self.timer_started = True
 
+        # Visualize the waypoints and corridor in the saved video
+        self._visualize_renderer(
+            [waypoint.position for waypoint in self.waypoints],
+            size=[0.1, 0, 0],
+        )
+
         return (
             self.waypoints[self.idx_reference_point].position.reshape(3, 1),
             self.waypoints[self.idx_reference_point].attitude.reshape(4, 1),
@@ -545,6 +551,12 @@ class MissionPlanner(BasePlanner):
                 elif time.time() - self.start_time > 5:
                     self.idx_reference_point += 1
                     self.timer_started = True
+
+        # Visualize the waypoints and corridor in the saved video
+        self._visualize_renderer(
+            [waypoint.position for waypoint in self._intermediate_reference],
+            size=[0.1, 0, 0],
+        )
 
         return (
             self._intermediate_reference[self.idx_reference_point].position.reshape(
