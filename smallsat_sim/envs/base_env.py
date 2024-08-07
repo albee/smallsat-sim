@@ -79,10 +79,20 @@ class BaseEnv(object):
         # Create array of observations
         obs = np.concatenate((self.data.qpos, vel_body, self.data.qvel[3:]))
 
+        # Save ground truth observations
+        self.obs_gt = obs.copy()
+
         # Apply noise to observations
         obs = self._apply_obs_noise(obs.copy())
 
         return obs
+    
+    def get_obs_gt(self) -> np.ndarray | jnp.ndarray:
+        """
+        Return the GT observations. Use this method for
+        visualization and for evaluations.
+        """
+        return self.obs_gt
 
     def _apply_obs_noise(self, obs: np.ndarray | jnp.ndarray) -> np.ndarray | jnp.ndarray:
         """
