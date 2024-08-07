@@ -13,7 +13,7 @@ class BaseEnvConfig:
         dt = 1/500 # simulation runs @500Hz
         max_sim_time = 3600 # max. simulation time
         class noise:
-            add_obs_noise = True # add noise to ob of env
+            add_obs_noise = False # add noise to ob of env
             sigma_r = 1e-2
             sigma_q = 1e-3
             sigma_v = 1e-3
