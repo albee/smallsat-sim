@@ -63,7 +63,7 @@ class BaseEnv(object):
         # Execute post physics steps
         self._post_physics_step()
 
-    def get_obs(self) -> np.array:
+    def get_obs(self) -> np.ndarray:
         """
         Return all states
         """
@@ -89,7 +89,7 @@ class BaseEnv(object):
         obs = self._apply_obs_noise(obs.copy())
 
         return obs
-    
+
     def get_obs_gt(self) -> np.ndarray | jnp.ndarray:
         """
         Return the GT observations. Use this method for
@@ -97,7 +97,9 @@ class BaseEnv(object):
         """
         return self.obs_gt
 
-    def _apply_obs_noise(self, obs: np.ndarray | jnp.ndarray) -> np.ndarray | jnp.ndarray:
+    def _apply_obs_noise(
+        self, obs: np.ndarray | jnp.ndarray
+    ) -> np.ndarray | jnp.ndarray:
         """
         Applies additive Gaussian noise on top of observations.
         For MuJoCo: obs are of type np.ndarray
@@ -117,15 +119,23 @@ class BaseEnv(object):
 
                 # Add noise to observations and return
                 return obs + noise
-            
+
             # Multiple agents in MJX
             else:
                 # Calculate noise for each environment
                 num_envs = obs.shape[0]
-                noise_r = jnp.random.normal(0, self.env_cfg.sim.noise.sigma_r, (num_envs, 3))
-                noise_q = jnp.random.normal(0, self.env_cfg.sim.noise.sigma_q, (num_envs, 4))
-                noise_v = jnp.random.normal(0, self.env_cfg.sim.noise.sigma_v, (num_envs, 3))
-                noise_w = jnp.random.normal(0, self.env_cfg.sim.noise.sigma_w, (num_envs, 3))
+                noise_r = jnp.random.normal(
+                    0, self.env_cfg.sim.noise.sigma_r, (num_envs, 3)
+                )
+                noise_q = jnp.random.normal(
+                    0, self.env_cfg.sim.noise.sigma_q, (num_envs, 4)
+                )
+                noise_v = jnp.random.normal(
+                    0, self.env_cfg.sim.noise.sigma_v, (num_envs, 3)
+                )
+                noise_w = jnp.random.normal(
+                    0, self.env_cfg.sim.noise.sigma_w, (num_envs, 3)
+                )
 
                 # Concatenate noise along the second dimension
                 noise = jnp.concatenate((noise_r, noise_q, noise_v, noise_w), axis=1)
@@ -134,7 +144,6 @@ class BaseEnv(object):
                 return obs + noise
         else:
             return obs
-
 
     def get_sim_rendering(self, output_filename: str) -> None:
         """
@@ -230,7 +239,7 @@ class BaseEnv(object):
 
         return env_cfg, model_cfg
 
-    def _setup_sim(self, args: Namespace):
+    def _setup_sim(self, args: Namespace) -> None:
         """
         Prepares simulation according to args.
         Creates a viewer depending on headless flag.
@@ -258,13 +267,13 @@ class BaseEnv(object):
             self.renderer = None
             self._update_renderer = lambda *args, **kwargs: None
 
-    def _update_viewer(self):
+    def _update_viewer(self) -> None:
         """
         Updates the viewer
         """
         self.viewer.sync()
 
-    def _update_renderer(self):
+    def _update_renderer(self) -> None:
         """
         Updates the renderer.
         """
