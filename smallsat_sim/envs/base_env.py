@@ -3,6 +3,7 @@ import mujoco
 import mujoco.viewer
 import cv2
 import os
+import jax.numpy as jnp
 from datetime import datetime
 
 from smallsat_sim.envs.dynamics import SymbolicModel
@@ -73,6 +74,7 @@ class BaseEnv(object):
 
         # Retrieve current rotation matrix
         R = np.reshape(self.data.body("body0").xmat, (3, 3))
+        R = np.reshape(self.data.body("body0").xmat, (3, 3))
 
         # Rotate intertial velocity to body velocity
         vel_body = R.T @ self.data.qvel[:3]
@@ -80,7 +82,49 @@ class BaseEnv(object):
         # Create array of observations
         obs = np.concatenate((self.data.qpos, vel_body, self.data.qvel[3:]))
 
+        # Apply noise to observations
+        obs = self._apply_obs_noise(obs.copy())
+
         return obs
+
+    def _apply_obs_noise(self, obs: np.ndarray | jnp.ndarray) -> np.ndarray | jnp.ndarray:
+        """
+        Applies additive Gaussian noise on top of observations.
+        For MuJoCo: obs are of type np.ndarray
+        For MJX: obs are of type
+        """
+        if self.env_cfg.sim.noise.add_obs_noise:
+            # Single agent in MuJoCo
+            if isinstance(obs, np.ndarray):
+                # Calculate noise
+                noise_r = np.random.normal(0, self.env_cfg.sim.noise.sigma_r, 3)
+                noise_q = np.random.normal(0, self.env_cfg.sim.noise.sigma_q, 4)
+                noise_v = np.random.normal(0, self.env_cfg.sim.noise.sigma_v, 3)
+                noise_w = np.random.normal(0, self.env_cfg.sim.noise.sigma_w, 3)
+
+                # Concatenate noise
+                noise = np.concatenate((noise_r, noise_q, noise_v, noise_w))
+
+                # Add noise to observations and return
+                return obs + noise
+            
+            # Multiple agents in MJX
+            else:
+                # Calculate noise for each environment
+                num_envs = obs.shape[0]
+                noise_r = jnp.random.normal(0, self.env_cfg.sim.noise.sigma_r, (num_envs, 3))
+                noise_q = jnp.random.normal(0, self.env_cfg.sim.noise.sigma_q, (num_envs, 4))
+                noise_v = jnp.random.normal(0, self.env_cfg.sim.noise.sigma_v, (num_envs, 3))
+                noise_w = jnp.random.normal(0, self.env_cfg.sim.noise.sigma_w, (num_envs, 3))
+
+                # Concatenate noise along the second dimension
+                noise = jnp.concatenate((noise_r, noise_q, noise_v, noise_w), axis=1)
+
+                # Add noise to observations and return
+                return obs + noise
+        else:
+            return obs
+
 
     def get_sim_rendering(self, output_filename: str) -> None:
         """
@@ -154,6 +198,7 @@ class BaseEnv(object):
 
         # Save frames to create the video
         self.frames = []
+
 
     def _load_cfg(self, env_name: str, model_name: str) -> dict:
         """
@@ -252,6 +297,9 @@ class BaseEnv(object):
             if chr(keycode) in self.disturbances_keycodes:
                 self.disturbances.key_callback(keycode)
         except:
+            print(
+                "No disturbance or perturbation list registered. Keycallback unsuccessful."
+            )
             print(
                 "No disturbance or perturbation list registered. Keycallback unsuccessful."
             )
