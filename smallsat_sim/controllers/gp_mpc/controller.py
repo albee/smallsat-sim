@@ -1,5 +1,5 @@
 # Base classes
-from smallsat_sim.controllers.base_controller import BaseController
+from smallsat_sim.controllers.base_mpc_controller import BaseMPCController
 from smallsat_sim.envs.base_env import BaseEnv
 
 # Utils
@@ -81,7 +81,7 @@ class SolveTimeTracker:
         print(f"Mean solve time: {mean_solve_time}")
 
 
-class GPMPC(BaseController):
+class GPMPC(BaseMPCController):
     """
     This class implements a GP MPC controller based on GPyTorch and acados.
 
@@ -149,7 +149,18 @@ class GPMPC(BaseController):
             self.viz_offset = self.viewer.user_scn.ngeom
             self.viewer.user_scn.ngeom += self.ctrl_cfg.N + 1
         else:
-            self._visualize = lambda *args, **kwargs: None
+            self._visualize_prediction = lambda *args, **kwargs: None
+
+        # Check if there is a renderer. In case there is not,
+        # dynamically allocate the visualize_renderer method
+        # to a lambda function doing nothing.
+        if env.renderer:
+            self.renderer = env.renderer
+            self.frames = env.frames
+            self.data = env.data
+            self.env_cfg = env.env_cfg
+        else:
+            self._visualize_prediction_renderer = lambda *args, **kwargs: None
 
     def _setup_gp(self, obs: np.ndarray) -> None:
         """
@@ -595,13 +606,17 @@ class GPMPC(BaseController):
         solve_time = self.gp_mpc.solve_stats["timings"]["total"]
         #print(f"Total CPU time: {solve_time}")
 
+        self._visualize_prediction()
+
+        if hasattr(self, "renderer") and self.renderer is not None:
+            _, _ = self.planner.get_reference(env.obs)
+            self._visualize_prediction_renderer()
+
         # Save current solution
         for i in range(self.N):
             self.last_solution["states"][i] = self.gp_mpc.ocp_solver.get(i, "x")
             self.last_solution["inputs"][i] = self.gp_mpc.ocp_solver.get(i, "u")
         self.last_solution["states"][self.N] = self.gp_mpc.ocp_solver.get(self.N, "x")
-
-        self._visualize()
 
         # Save current observation and input
         self.x_past[:-1], self.u_past = obs, u0
@@ -716,7 +731,7 @@ class GPMPC(BaseController):
             self.last_solution["inputs"][i] = np.zeros((self.nu))
         self.last_solution["states"][self.N] = x_guess
 
-    def _visualize(self) -> None:
+    def _visualize_prediction(self) -> None:
         """
         Plot predicted trajectory of MPC in MuJoCo viewer.
         """
@@ -730,3 +745,28 @@ class GPMPC(BaseController):
                 mat=np.eye(3).flatten(),
                 rgba=np.array([0, 0, 1, 2]),
             )
+
+    def _visualize_prediction_renderer(self) -> None:
+        """
+        Plot predicted trajectory of MPC in MuJoCo renderer.
+        """
+        if (
+            self.data.time >= self.env_cfg.renderer.start_recording
+            and self.data.time <= self.env_cfg.renderer.end_recording
+        ):
+            for i in range(self.ctrl_cfg.N + 1):
+                point = self.gp_mpc.ocp_solver.get(i, "x")[0:3]
+                mujoco.mjv_initGeom(
+                    self.renderer.scene.geoms[i + self.renderer.scene.ngeom],
+                    type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                    size=[0.05, 0, 0],
+                    pos=point,
+                    mat=np.eye(3).flatten(),
+                    rgba=np.array([1, 0, 0, 2]),
+                )
+
+            self.renderer.scene.ngeom += self.ctrl_cfg.N + 1
+
+            # Extract image from renderer and append it for post-processing
+            sim_img = self.renderer.render().copy()
+            self.frames.append(sim_img)
