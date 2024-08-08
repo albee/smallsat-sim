@@ -53,6 +53,8 @@ class NominalMPCCController(BaseController):
         if env.renderer:
             self.renderer = env.renderer
             self.frames = env.frames
+            self.data = env.data
+            self.env_cfg = env.env_cfg
         else:
             self._visualize_prediction_renderer = lambda *args, **kwargs: None
 
@@ -355,19 +357,23 @@ class NominalMPCCController(BaseController):
         """
         Plot predicted trajectory of MPC in MuJoCo renderer.
         """
-        for i in range(self.ctrl_cfg.N + 1):
-            point = self.ocp_solver.get(i, "x")[0:3]
-            mujoco.mjv_initGeom(
-                self.renderer.scene.geoms[i + self.renderer.scene.ngeom],
-                type=mujoco.mjtGeom.mjGEOM_SPHERE,
-                size=[0.05, 0, 0],
-                pos=point,
-                mat=np.eye(3).flatten(),
-                rgba=np.array([1, 0, 0, 2]),
-            )
+        if (
+            self.data.time >= self.env_cfg.renderer.start_recording
+            and self.data.time <= self.env_cfg.renderer.end_recording
+        ):
+            for i in range(self.ctrl_cfg.N + 1):
+                point = self.ocp_solver.get(i, "x")[0:3]
+                mujoco.mjv_initGeom(
+                    self.renderer.scene.geoms[i + self.renderer.scene.ngeom],
+                    type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                    size=[0.05, 0, 0],
+                    pos=point,
+                    mat=np.eye(3).flatten(),
+                    rgba=np.array([1, 0, 0, 2]),
+                )
 
-        self.renderer.scene.ngeom += self.ctrl_cfg.N + 1
+            self.renderer.scene.ngeom += self.ctrl_cfg.N + 1
 
-        # Extract image from renderer and append it for post-processing
-        sim_img = self.renderer.render().copy()
-        self.frames.append(sim_img)
+            # Extract image from renderer and append it for post-processing
+            sim_img = self.renderer.render().copy()
+            self.frames.append(sim_img)
