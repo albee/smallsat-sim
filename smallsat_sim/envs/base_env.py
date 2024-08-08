@@ -123,6 +123,9 @@ class BaseEnv(object):
 
         print(f"Video saved as {video_path}\n")
 
+        # Reset frames to free up memory
+        self.frames = []
+
     def _create_viewer(self) -> None:
         """
         Creates a viewer to visualize simulation
