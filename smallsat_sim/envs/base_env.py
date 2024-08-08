@@ -2,20 +2,22 @@ import numpy as np
 import mujoco
 import mujoco.viewer
 import cv2
+import os
 from datetime import datetime
 
 from smallsat_sim.envs.dynamics import SymbolicModel
 from smallsat_sim.utils import xml_parser
-from smallsat_sim.utils.helpers import Rquat
 from smallsat_sim.envs.disturbances import DisturbanceList
 from smallsat_sim.envs.perturbations import PerturbationList
+
+from smallsat_sim import SMALLSAT_STEWARD_ROOT_DIR
 
 
 from argparse import Namespace
 
 
 class BaseEnv(object):
-    def __init__(self, args) -> None:
+    def __init__(self, args: Namespace) -> None:
         # Setup simulation environment
         self._setup_sim(args)
 
@@ -70,7 +72,7 @@ class BaseEnv(object):
         #        omega (3)]
 
         # Retrieve current rotation matrix
-        R = np.reshape(self.data.body('body0').xmat, (3,3))
+        R = np.reshape(self.data.body("body0").xmat, (3, 3))
 
         # Rotate intertial velocity to body velocity
         vel_body = R.T @ self.data.qvel[:3]
@@ -79,27 +81,47 @@ class BaseEnv(object):
         obs = np.concatenate((self.data.qpos, vel_body, self.data.qvel[3:]))
 
         return obs
-    
+
     def get_sim_rendering(self, output_filename: str) -> None:
         """
-        Create a save a video rendering of the experiment.
+        Create and save a video rendering of the experiment.
         """
         if not self.args.video:
             return
-        
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+
+        # Define video settings
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         fps = 60
         height, width, _ = self.frames[0].shape
-        
-        curr_datetime = datetime.now()
-        video_writer = cv2.VideoWriter(output_filename + "_" + curr_datetime.strftime("%Y-%m-%d_%H:%M:%S") + '.mp4', fourcc, fps, (width, height))
 
+        # Define save settings
+        curr_datetime = datetime.now()
+        video_dir = os.path.join(SMALLSAT_STEWARD_ROOT_DIR, "videos")
+        os.makedirs(video_dir, exist_ok=True)  # Ensure the video directory exists
+
+        video_path = os.path.join(
+            video_dir,
+            output_filename
+            + "_"
+            + curr_datetime.strftime("%Y-%m-%d_%H:%M:%S")
+            + ".mp4",
+        )
+
+        video_writer = cv2.VideoWriter(
+            video_path,
+            fourcc,
+            fps,
+            (width, height),
+        )
+
+        # Parse video frame by frame
         for frame in self.frames:
             video_writer.write(frame)
 
+        # Save video at specified location
         video_writer.release()
 
-        print("Video saved as " + output_filename + "_" + curr_datetime.strftime("%Y-%m-%d_%H:%M:%S") + ".mp4\n")
+        print(f"Video saved as {video_path}\n")
 
     def _create_viewer(self) -> None:
         """
@@ -132,7 +154,7 @@ class BaseEnv(object):
 
         # Save frames to create the video
         self.frames = []
-        
+
     def _load_cfg(self, env_name: str, model_name: str) -> dict:
         """
         Loads and returns the following config files:
@@ -230,4 +252,6 @@ class BaseEnv(object):
             if chr(keycode) in self.disturbances_keycodes:
                 self.disturbances.key_callback(keycode)
         except:
-            print("No disturbance or perturbation list registered. Keycallback unsuccessful.")
+            print(
+                "No disturbance or perturbation list registered. Keycallback unsuccessful."
+            )

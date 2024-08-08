@@ -253,7 +253,7 @@ def generate_mujoco_xml(env_config, model_config):
             <geom type="box" size="0.16 0.16 0.16" class="collision"/>\n"""
             for thruster in thrusters.thruster_list:
                 xml_content += f"            <site name='{body.name}_{thruster.site}' pos='{xmlify(thruster.pos)}' size='{thruster.size}'/>\n"
-        
+
             xml_content += "        </body>\n"
     else:
         # Define all free floating bodies
