@@ -18,7 +18,7 @@ env = AstrobeeEnv(args=args)
 planner = MissionPlanner(env)
 
 # Create controller
-ctrl = NominalMPCCController(env, planner)
+ctrl = PDController(env, planner)
 
 # Define start time
 start_time = time.time()

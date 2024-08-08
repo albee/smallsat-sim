@@ -2,7 +2,6 @@ import numpy as np
 import mujoco
 from abc import abstractmethod
 
-from smallsat_sim.envs.base_env_config import BaseEnvConfig
 from smallsat_sim.envs.base_env import BaseEnv
 
 

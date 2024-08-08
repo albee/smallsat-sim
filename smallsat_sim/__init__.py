@@ -1,7 +1,10 @@
 import os
 
-# Absolute path to root directoy of smallsat-sim repository
+# Absolute path to root directoy to smallsat-sim folder
 SMALLSAT_SIM_ROOT_DIR = os.path.dirname(os.path.realpath(__file__))
+
+# Absolute path to root directory of smallsat-steward repository
+SMALLSAT_STEWARD_ROOT_DIR = os.path.join(SMALLSAT_SIM_ROOT_DIR, "..")
 
 # Absolute path to controllers directory in smallsat-sim repository
 SMALLSAT_SIM_CONTROLLERS_DIR = os.path.join(SMALLSAT_SIM_ROOT_DIR, "controllers")
