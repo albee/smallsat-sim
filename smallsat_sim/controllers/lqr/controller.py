@@ -41,7 +41,7 @@ class LQRController(BaseController):
         self.R = self.ctrl_cfg.cost.R
 
     
-    def check_controllability(self, A, B) -> bool:
+    def check_controllability(self, A: np.ndarray, B: np.ndarray) -> bool:
         """
         Check if the system is controllable.
         """
@@ -76,7 +76,7 @@ class LQRController(BaseController):
         B = B * 0.5
 
         # Check if the system is controllable (for debugging purposes)
-        # is_controllable = self.check_controllability(A, B)
+        is_controllable = self.check_controllability(A, B)
 
         # Solve the DARE
         P = solve_discrete_are(A, B, self.Q, self.R)
