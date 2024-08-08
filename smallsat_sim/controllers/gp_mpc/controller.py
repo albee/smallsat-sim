@@ -5,6 +5,7 @@ from smallsat_sim.envs.base_env import BaseEnv
 # Utils
 from smallsat_sim.utils.helpers import calc_model_error
 from smallsat_sim.utils.logger import Logger
+from memory_profiler import profile
 
 # General libraries
 import gpytorch
@@ -137,7 +138,7 @@ class GPMPC(BaseMPCController):
         self._initialize_solver(env)
 
         # Solve time tracker
-        #self.solve_time_tracker = SolveTimeTracker()
+        # self.solve_time_tracker = SolveTimeTracker()
 
         # Check if there is a viewer. In case there is not,
         # dynamically allocate the visualize method to a lambda
@@ -568,12 +569,12 @@ class GPMPC(BaseMPCController):
         if res_output is not None:
             residual, x_train = res_output
             start_time = time.perf_counter()
-            self.gp_mpc.residual_model.record_datapoint(x_input=x_train,
-                                                        y_target=residual,
-                                                        timestamp=env.data.time)
+            self.gp_mpc.residual_model.record_datapoint(
+                x_input=x_train, y_target=residual, timestamp=env.data.time
+            )
             end_time = time.perf_counter()
 
-        #print(f"Total Update GP time: {(end_time-start_time)}")
+        # print(f"Total Update GP time: {(end_time-start_time)}")
 
         # Check solver status and re-initialize if needed
         if self.gp_mpc.ocp_solver.status != 0:
@@ -599,12 +600,12 @@ class GPMPC(BaseMPCController):
         self.gp_mpc.solve(n_iter_max=1)
         end_time = time.time()
         execution_time = end_time - start_time
-        #self.solve_time_tracker.add_solve_time(execution_time)
+        # self.solve_time_tracker.add_solve_time(execution_time)
 
         self.X_res, U_res = self.gp_mpc.get_solution()
         u0 = U_res[0, :]
         solve_time = self.gp_mpc.solve_stats["timings"]["total"]
-        #print(f"Total CPU time: {solve_time}")
+        # print(f"Total CPU time: {solve_time}")
 
         self._visualize_prediction()
 
@@ -651,20 +652,6 @@ class GPMPC(BaseMPCController):
             ref = np.concatenate((p_start, t, theta_1, q_des))
 
             self.gp_mpc.p_hat_nonlin[i, :] = ref.flatten()
-
-    def _obs_to_features(self, obs: np.ndarray) -> torch.Tensor:
-        """
-        Converts the environment observations to features used
-        for Gaussian Process Regression
-
-        [r,q,v,w] -> [v,w]
-        """
-
-        return (
-            torch.from_numpy(np.concatenate((self.x_past[7:], self.u_past)))
-            .unsqueeze(0)
-            .to(torch.float64)
-        )
 
     def _compute_residual(self, x_next: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
