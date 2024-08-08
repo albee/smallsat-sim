@@ -1,4 +1,4 @@
-from smallsat_sim.controllers.base_controller import BaseController
+from smallsat_sim.controllers.base_mpc_controller import BaseMPCController
 from smallsat_sim.envs.base_env import BaseEnv
 
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
@@ -11,7 +11,7 @@ import mujoco
 from casadi import SX
 
 
-class NominalMPCController(BaseController):
+class NominalMPCController(BaseMPCController):
     """
     This class implements a nominal MPC controller based on acados.
     More specifically. this is a positional tracking controller,
