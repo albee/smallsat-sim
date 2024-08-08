@@ -7,6 +7,8 @@ from abc import abstractmethod
 
 class BaseMPCController(BaseController):
     def __init__(self, env: BaseEnv, planner: BasePlanner, ctrl_cfg: object) -> None:
+        # Flag to indicate whether the controller is MPC-based (for visualization purposes)
+        planner.is_mpc = True
 
         super().__init__(env, planner, ctrl_cfg)
 

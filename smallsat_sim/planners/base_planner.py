@@ -12,6 +12,9 @@ class BasePlanner(object):
     """
 
     def __init__(self, env: BaseEnv) -> None:
+        # Flag to indicate whether the controller is MPC-based
+        self.is_mpc = False
+
         # Check if there is a viewer. In case there is not,
         # dynamically allocate the visualize method to a lambda
         # function doing nothing.
@@ -73,7 +76,7 @@ class BasePlanner(object):
             and self.data.time <= self.env_cfg.renderer.end_recording
         ):
             self.renderer.scene.ngeom = 0
-            
+
             # Update the renderer scene
             self.renderer.update_scene(self.data, self.cam)
 
@@ -93,5 +96,6 @@ class BasePlanner(object):
                 )
 
             # Extract image from renderer and append it for post-processing
-            sim_img = self.renderer.render().copy()
-            self.frames.append(sim_img)
+            if not self.is_mpc:
+                sim_img = self.renderer.render().copy()
+                self.frames.append(sim_img)
