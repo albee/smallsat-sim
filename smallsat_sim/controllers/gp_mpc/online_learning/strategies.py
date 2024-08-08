@@ -71,10 +71,10 @@ class SlidingWindow(OnlineLearningStrategy):
             self.timestamps.append(timestamp)
 
             return
-
+        
         # Check if GP is already full
         if gp_model.train_inputs[0].shape[-2] >= self.max_num_points:
-            with torch.no_grad(), gpytorch.settings.fast_pred_var():
+            with torch.no_grad():
                 # Initialize selector
                 selector = torch.ones(self.max_num_points, requires_grad=False)
 
@@ -95,7 +95,7 @@ class SlidingWindow(OnlineLearningStrategy):
 
                 return fantasy_model
 
-        with torch.no_grad(), gpytorch.settings.fast_pred_var():
+        with torch.no_grad():
             # Add observation and return updated model
             fantasy_model = gp_model.get_fantasy_model(
                 gp_feature_selector(x_input), y_target
