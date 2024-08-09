@@ -84,7 +84,7 @@ class BaseEnv(object):
         obs = np.concatenate((self.data.qpos, vel_body, self.data.qvel[3:]))
 
         # Save ground truth observations
-        self.obs_gt = obs.copy()
+        self.obs_gt = obs
 
         # Apply noise to observations
         self.obs = self._apply_obs_noise(obs)
