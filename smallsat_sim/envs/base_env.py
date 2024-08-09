@@ -75,7 +75,6 @@ class BaseEnv(object):
 
         # Retrieve current rotation matrix
         R = np.reshape(self.data.body("body0").xmat, (3, 3))
-        R = np.reshape(self.data.body("body0").xmat, (3, 3))
 
         # Rotate intertial velocity to body velocity
         vel_body = R.T @ self.data.qvel[:3]
@@ -223,7 +222,6 @@ class BaseEnv(object):
 
         # Save frames to create the video
         self.frames = []
-
 
     def _load_cfg(self, env_name: str, model_name: str) -> dict:
         """
