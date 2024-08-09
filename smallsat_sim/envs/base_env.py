@@ -9,7 +9,7 @@ from smallsat_sim.envs.dynamics import SymbolicModel
 from smallsat_sim.utils import xml_parser
 from smallsat_sim.envs.disturbances import DisturbanceList
 from smallsat_sim.envs.perturbations import PerturbationList
-
+from smallsat_sim.utils.logger import Logger
 from smallsat_sim import SMALLSAT_STEWARD_ROOT_DIR
 
 
@@ -35,6 +35,13 @@ class BaseEnv(object):
 
         # Initialize arguments
         self.args = args
+
+        # Save time of simulation start (for filenames)
+        self.sim_start_time = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+
+        # Initialize logger if enabled
+        if args.log:
+            self.logger = Logger(log_name=self.sim_start_time)
 
     def reset(self) -> None:
         """
@@ -95,16 +102,12 @@ class BaseEnv(object):
         height, width, _ = self.frames[0].shape
 
         # Define save settings
-        curr_datetime = datetime.now()
         video_dir = os.path.join(SMALLSAT_STEWARD_ROOT_DIR, "videos")
         os.makedirs(video_dir, exist_ok=True)  # Ensure the video directory exists
 
         video_path = os.path.join(
             video_dir,
-            output_filename
-            + "_"
-            + curr_datetime.strftime("%Y-%m-%d_%H:%M:%S")
-            + ".mp4",
+            output_filename + "_" + self.sim_start_time + ".mp4",
         )
 
         video_writer = cv2.VideoWriter(

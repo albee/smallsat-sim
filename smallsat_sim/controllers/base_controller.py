@@ -14,6 +14,10 @@ class BaseController(ABC):
         # NOTE: This works as ctrl_cfg is passed by reference
         env.env_cfg.control.control_decimation = ctrl_cfg.control_decimation
 
+        # Copy logger to controller class if one is registered in env
+        if hasattr(env, "logger"):
+            self.logger = env.logger
+
     @abstractmethod
     def get_control_input(self, env: BaseEnv) -> None:
         """
