@@ -30,6 +30,7 @@ def get_args() -> argparse.Namespace:
     parser.add_argument(
         "--video", action="store_true", help="Create a video of the experiment"
     )
+    parser.add_argument("--log", action="store_true", help="Enable data logging")
 
     # Parse the arguments
     args = parser.parse_args()

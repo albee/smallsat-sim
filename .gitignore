@@ -23,5 +23,9 @@ videos/
 # utils for lamda-quad
 .lambda-quad/
 
+# logs
+*.pkl
+logs/
+
 # external libraries during development
 external/
