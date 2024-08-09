@@ -22,8 +22,8 @@ class Logger(object):
 
     def __init__(self, log_name: Optional[str] = None) -> None:
         self.base_log_dir = os.path.join(SMALLSAT_STEWARD_ROOT_DIR, "logs")
-        
-        # Logname only past when recording data, not loading
+
+        # Logname only passed when recording data, not for loading
         if log_name:
             self.log_dir = os.path.join(self.base_log_dir, log_name)
             os.makedirs(self.log_dir, exist_ok=True)
@@ -61,7 +61,7 @@ class Logger(object):
 
     def reset_logs(self) -> None:
         """
-        Reset the logs after saving.
+        Reset the logs after saving to free up memory.
         """
         self.logs = defaultdict(dict)
 
@@ -70,6 +70,7 @@ class Logger(object):
         Return the path to the most recent log directory in the base logs directory,
         using the fact that folder names are datetime strings.
         """
+        # Find all subfolders
         subfolders = [
             f
             for f in os.listdir(self.base_log_dir)
@@ -90,6 +91,8 @@ class Logger(object):
             folder = self._get_most_recent_log_dir()
         if folder is None:
             return []
+        
+        print(f"Loading log files from directory: {folder}")
 
         pkl_files = [f for f in os.listdir(folder) if f.endswith(".pkl")]
         pkl_files.sort()
@@ -106,8 +109,6 @@ class Logger(object):
             raise FileNotFoundError(
                 "No log files found in the most recent log directory."
             )
-
-        print(f"Loading log files: {pkl_files}")
 
         # Load and concatenate all DataFrames
         df_list = [pd.read_pickle(file) for file in pkl_files]
