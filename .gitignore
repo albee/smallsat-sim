@@ -22,3 +22,7 @@ videos/
 
 # utils for lamda-quad
 .lambda-quad/
+
+# logs
+*.pkl
+logs/
