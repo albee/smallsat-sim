@@ -32,7 +32,7 @@ class BaseEnv(object):
         self.perturbations_keycodes = PerturbationList([]).keycode_dict.keys()
 
         # Initialize observations
-        self.obs = self.get_obs()
+        self.set_obs()
 
         # Initialize arguments
         self.args = args
@@ -63,9 +63,10 @@ class BaseEnv(object):
         # Execute post physics steps
         self._post_physics_step()
 
-    def get_obs(self) -> np.ndarray:
+    def set_obs(self) -> None:
         """
-        Return all states
+        Sets the (noisy) observations which can be fetched by
+        the get_obs() method.
         """
         # obs = [r (3),
         #        q (4),
@@ -86,16 +87,20 @@ class BaseEnv(object):
         self.obs_gt = obs.copy()
 
         # Apply noise to observations
-        obs = self._apply_obs_noise(obs.copy())
+        self.obs = self._apply_obs_noise(obs)
 
-        return obs
+    def get_obs(self) -> np.ndarray | jnp.ndarray:
+        """
+        Returns the current (noisy) observations
+        """
+        return self.obs.copy()
 
     def get_obs_gt(self) -> np.ndarray | jnp.ndarray:
         """
         Return the GT observations. Use this method for
         visualization and for evaluations.
         """
-        return self.obs_gt
+        return self.obs_gt.copy()
 
     def _apply_obs_noise(
         self, obs: np.ndarray | jnp.ndarray
@@ -122,6 +127,7 @@ class BaseEnv(object):
 
             # Multiple agents in MJX
             else:
+                # TODO @dschwartz: Implement this correctly for JAX
                 # Calculate noise for each environment
                 num_envs = obs.shape[0]
                 noise_r = jnp.random.normal(
@@ -304,7 +310,7 @@ class BaseEnv(object):
         Executes actions after stepping simulation
         """
         # Fetch most recent observations
-        self.obs = self.get_obs()
+        self.set_obs()
 
     def _key_callback(self, keycode) -> None:
         """
