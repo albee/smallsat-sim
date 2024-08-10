@@ -3,7 +3,11 @@ from smallsat_sim.controllers.base_mpc_controller import BaseMPCController
 from smallsat_sim.envs.base_env import BaseEnv
 
 # Utils
-from smallsat_sim.utils.helpers import calc_model_error
+from smallsat_sim.utils.helpers import (
+    calc_model_error,
+    calc_attitude_error,
+    calc_lateral_tracking_error,
+)
 from smallsat_sim.utils.logger import Logger
 from memory_profiler import profile
 
@@ -72,16 +76,6 @@ from smallsat_sim.controllers.gp_mpc.online_learning.strategies import SlidingWi
 torch.set_default_dtype(torch.float64)
 
 
-class SolveTimeTracker:
-    def __init__(self):
-        self.solve_times = []
-
-    def add_solve_time(self, solve_time):
-        self.solve_times.append(solve_time)
-        mean_solve_time = sum(self.solve_times) / len(self.solve_times)
-        print(f"Mean solve time: {mean_solve_time}")
-
-
 class GPMPC(BaseMPCController):
     """
     This class implements a GP MPC controller based on GPyTorch and acados.
@@ -103,11 +97,11 @@ class GPMPC(BaseMPCController):
         self.f = env.symbolic_model.f_expl_expr_func
         self.f_int = env.symbolic_model.get_integrator(dt=self.ctrl_cfg.Ts)
 
-        # Initialize logger
-        self.logger = Logger()
-        _, self.logged_data = self.logger.load_data_from_hdf5(
-            "mujoco_log_20240707_145725.h5"
-        )
+        # # Initialize logger
+        # self.logger = Logger()
+        # _, self.logged_data = self.logger.load_data_from_hdf5(
+        #     "mujoco_log_20240707_145725.h5"
+        # )
 
         # Generate solver
         self._generate_nominal_ocp(env)
@@ -137,9 +131,6 @@ class GPMPC(BaseMPCController):
         # Initialize solver
         self._initialize_solver(env)
 
-        # Solve time tracker
-        # self.solve_time_tracker = SolveTimeTracker()
-
         # Check if there is a viewer. In case there is not,
         # dynamically allocate the visualize method to a lambda
         # function doing nothing.
@@ -167,11 +158,11 @@ class GPMPC(BaseMPCController):
         """
         Initializes all needed quantities for the Gaussian Process
         """
-        # Initialize empty feature tensor (z)
-        self.z = torch.from_numpy(self.logged_data["z"].squeeze(1))
+        # # Initialize empty feature tensor (z)
+        # self.z = torch.from_numpy(self.logged_data["z"].squeeze(1))
 
-        # Initialize empty ouput tensor (y)
-        self.y = torch.from_numpy(self.logged_data["y"].squeeze(1))
+        # # Initialize empty ouput tensor (y)
+        # self.y = torch.from_numpy(self.logged_data["y"].squeeze(1))
 
         # Initialize subspace matrix B_d
         # Shape: (nx, 6)
@@ -596,17 +587,11 @@ class GPMPC(BaseMPCController):
         self.gp_mpc.ocp_solver.set(0, "ubx", env.obs[0:13])
 
         # Solve for the first control input in receding horizon fashion
-        start_time = time.time()
         self.gp_mpc.solve(n_iter_max=1)
-        end_time = time.time()
-        execution_time = end_time - start_time
-        # self.solve_time_tracker.add_solve_time(execution_time)
-
         self.X_res, U_res = self.gp_mpc.get_solution()
         u0 = U_res[0, :]
-        solve_time = self.gp_mpc.solve_stats["timings"]["total"]
-        # print(f"Total CPU time: {solve_time}")
 
+        # Visualize
         self._visualize_prediction()
 
         if hasattr(self, "renderer") and self.renderer is not None:
@@ -625,6 +610,9 @@ class GPMPC(BaseMPCController):
         # Save theta for next iteration
         for i in range(self.ctrl_cfg.N + 1):
             self.theta_prev[i] = self.gp_mpc.ocp_solver.get(i, "x")[-1]
+
+        # Log quantities
+        self._log(run_id=env.run_id, timestamp=env.data.time, env=env)
 
         return u0[:-1]
 
@@ -718,6 +706,46 @@ class GPMPC(BaseMPCController):
             self.last_solution["inputs"][i] = np.zeros((self.nu))
         self.last_solution["states"][self.N] = x_guess
 
+    def _log(self, run_id: int, timestamp: float, env: BaseEnv) -> None:
+        """
+        Logs desired quantities if flag is enabled
+        """
+        if self.has_logger:
+            obs_gt = (
+                env.get_obs()
+            )  # TODO: Change this to get GT obs, once MR has been merged
+
+            # Tracking error
+            tracking_error = calc_lateral_tracking_error(
+                obs=obs_gt, planner=self.planner
+            )
+
+            # Attitude error
+            _, curr_arc_length = self.planner.closest_point_on_trajectory(
+                point=obs_gt[:3]
+            )
+            q_ref = self.planner.trajectory.get_intermediate_reference(
+                curr_arc_length
+            ).attitude
+
+            attitude_error = calc_attitude_error(q_ref=q_ref, q=obs_gt[3:7])
+
+            # Track solve time
+            solve_time = self.gp_mpc.solve_stats["timings"]["total"][0]
+
+            # Track cost value of current solution
+            mpc_cost = self.gp_mpc.ocp_solver.get_cost()
+
+            # Log quantities
+            self.logger.log(
+                run_id=run_id,
+                timestamp=timestamp,
+                tracking_error=tracking_error,
+                attitude_error=attitude_error,
+                solve_time=solve_time,
+                mpc_cost=mpc_cost,
+            )
+
     def _visualize_prediction(self) -> None:
         """
         Plot predicted trajectory of MPC in MuJoCo viewer.
@@ -749,7 +777,7 @@ class GPMPC(BaseMPCController):
                     size=[0.05, 0, 0],
                     pos=point,
                     mat=np.eye(3).flatten(),
-                    rgba=np.array([1, 0, 0, 2]),
+                    rgba=np.array([0, 0, 1, 2]),
                 )
 
             self.renderer.scene.ngeom += self.ctrl_cfg.N + 1

@@ -6,7 +6,6 @@ CasADi is used to achieve this task, which is a symbolic framework.
 
 import numpy as np
 import casadi as ca
-from smallsat_sim.utils.helpers import skew
 
 from casadi import SX, DM
 
@@ -107,7 +106,7 @@ class SymbolicModel:
         # System transformation matrix from CG to CO
         # CG = Center of Gravity, CO = Center origin (body frame)
         H = np.eye(6, 6)
-        H[0:3, 3:6] = np.transpose(skew(np.array(self.com_offset)))
+        H[0:3, 3:6] = np.transpose(ca.skew(np.array(self.com_offset)))
 
         # Transform system matrices to body frame by similarity transformation
         M_body = H.T @ M_com @ H
