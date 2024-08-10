@@ -11,7 +11,7 @@ class Logger(object):
     Logger class to record desired quantities when running simulations.
 
     Example usage:
-    logger = SimulationLogger()
+    logger = Logger()
     logger.log(run_id, timestamp, tracking_error=0.05, mpc_cost=1.2)
     logger.save_log()
 
