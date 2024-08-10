@@ -1,11 +1,11 @@
 import numpy as np
 import mujoco
-from abc import abstractmethod
+from abc import abstractmethod, ABC
 
 from smallsat_sim.envs.base_env import BaseEnv
 
 
-class BasePlanner(object):
+class BasePlanner(ABC):
     """
     Base class of planner objects.
     """
@@ -38,6 +38,16 @@ class BasePlanner(object):
     def get_reference(self, obs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
         Returns a reference for the position and attitude based on current observations
+        """
+        pass
+
+    @abstractmethod
+    def closest_point_on_trajectory(
+        self, point: np.ndarray
+    ) -> tuple[np.ndarray, float]:
+        """
+        Finds the closest point on the trajectory to the given point.
+        Returns the position and corresponding arc length.
         """
         pass
 
