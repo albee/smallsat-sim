@@ -366,12 +366,20 @@ class NominalMPCCController(BaseMPCController):
 
             attitude_error = calc_attitude_error(q_ref=q_ref, q=obs_gt[3:7])
 
+            # Track solve time
+            solve_time = self.ocp_solver.get_stats("time_tot")
+
+            # Track cost value of current solution
+            mpc_cost = self.ocp_solver.get_cost()
+
             # Log quantities
             self.logger.log(
                 run_id=run_id,
                 timestamp=timestamp,
                 tracking_error=tracking_error,
                 attitude_error=attitude_error,
+                solve_time = solve_time,
+                mpc_cost = mpc_cost
             )
 
     def _visualize_prediction(self) -> None:
