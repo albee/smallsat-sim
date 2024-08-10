@@ -39,6 +39,9 @@ class BaseEnv(object):
         # Save time of simulation start (for filenames)
         self.sim_start_time = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
 
+        # Initialize MC iterations
+        self.run_id = 0
+
         # Initialize logger if enabled
         if args.log:
             self.logger = Logger(log_name=self.sim_start_time)
