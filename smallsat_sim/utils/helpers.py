@@ -12,6 +12,8 @@ from smallsat_sim.controllers.base_mpc_controller import BaseMPCController
 from smallsat_sim.envs.base_env import BaseEnv
 from smallsat_sim.planners.base_planner import BasePlanner
 
+from scipy.spatial.transform import Rotation as R
+
 
 def get_args() -> argparse.Namespace:
     """
@@ -157,7 +159,7 @@ def quat_conjugate(q) -> np.ndarray:
     return q_conj
 
 
-def lateral_tracking_error(obs: np.ndarray, planner: BasePlanner) -> float:
+def calc_lateral_tracking_error(obs: np.ndarray, planner: BasePlanner) -> float:
     """
     Computes the lateral tracking error at a given point
     """
@@ -168,3 +170,22 @@ def lateral_tracking_error(obs: np.ndarray, planner: BasePlanner) -> float:
 
     # Compute l2 distance (is orthogonal already)
     return np.linalg.norm(closest_point - current_pos)
+
+
+def calc_attitude_error(q_ref: np.ndarray, q: np.ndarray) -> float:
+    """
+    Computes the attitude error as rotation angle.
+    The angle error is the smallest angle by which you would need to rotate
+    the object (or frame of reference) from its current orientation (actual quaternion)
+    to match the desired orientation (desired quaternion).
+    Returned in radians. Use np.degrees() for conversion.
+    """
+    # Convert the quaternions to scipy Rotation objects
+    desired_rotation = R.from_quat(q_ref)
+    actual_rotation = R.from_quat(q)
+
+    # Calculate the relative rotation (error quaternion)
+    error_rotation = desired_rotation * actual_rotation.inv()
+
+    # Extract the angle of the error quaternion
+    return error_rotation.magnitude()
