@@ -115,3 +115,12 @@ class PDController(BaseController):
         # Only allow non-negative thrust values
         u = self._apply_ctrl_constraint(env, u_unconstrained)
         return u
+    
+    def _log(self, run_id: int, timestamp: float, env: BaseEnv) -> None:
+        """
+        Logs desired quantities if flag is enabled
+        """
+        raise NotImplementedError(
+            f"The _log method is not implemented for the class {self.__class__.__name__}"
+        )
+

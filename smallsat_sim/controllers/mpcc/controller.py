@@ -1,6 +1,7 @@
 from smallsat_sim.controllers.base_mpc_controller import BaseMPCController
 from smallsat_sim.envs.base_env import BaseEnv
 from smallsat_sim.planners.base_planner import BasePlanner
+from smallsat_sim.utils.helpers import lateral_tracking_error
 
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
 
@@ -311,6 +312,9 @@ class NominalMPCCController(BaseMPCController):
         for i in range(self.ctrl_cfg.N + 1):
             self.theta_prev[i] = self.ocp_solver.get(i, "x")[-1]
 
+        # Log quantities
+        self._log(run_id=env.run_id, timestamp=env.data.time, env=env)
+
         return u0[0:12]
 
     def _set_params(self) -> None:
@@ -337,6 +341,20 @@ class NominalMPCCController(BaseMPCController):
             ref = np.concatenate((p_start, t, theta_1, q_des))
 
             self.ocp_solver.set(i, "p", ref)
+
+    def _log(self, run_id: int, timestamp: float, env: BaseEnv) -> None:
+        """
+        Logs desired quantities if flag is enabled
+        """
+        if self.has_logger:
+            obs_gt = (
+                env.get_obs()
+            )  # TODO: Change this to get GT obs, once MR has been merged
+            # Tracking error
+            tracking_error = lateral_tracking_error(obs=obs_gt, planner=self.planner)
+            self.logger.log(
+                run_id=run_id, timestamp=timestamp, tracking_error=tracking_error
+            )
 
     def _visualize_prediction(self) -> None:
         """
