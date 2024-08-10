@@ -1,11 +1,11 @@
 import numpy as np
 import mujoco
-from abc import abstractmethod
+from abc import abstractmethod, ABC
 
 from smallsat_sim.envs.base_env import BaseEnv
 
 
-class BasePlanner(object):
+class BasePlanner(ABC):
     """
     Base class of planner objects.
     """
@@ -41,6 +41,16 @@ class BasePlanner(object):
         """
         pass
 
+    @abstractmethod
+    def closest_point_on_trajectory(
+        self, point: np.ndarray
+    ) -> tuple[np.ndarray, float]:
+        """
+        Finds the closest point on the trajectory to the given point.
+        Returns the position and corresponding arc length.
+        """
+        pass
+
     def visualize(
         self, points: list[np.ndarray], color=[1, 0, 0, 2], size=[0.05, 0, 0]
     ):
@@ -65,7 +75,7 @@ class BasePlanner(object):
             )
 
     def _visualize_renderer(
-        self, points: list[np.ndarray], color=[0, 0, 1, 2], size=[0.05, 0, 0]
+        self, points: list[np.ndarray], color=[1, 0, 0, 2], size=[0.05, 0, 0]
     ) -> None:
         """
         Visualizes reference points in the MuJoCo renderer.
