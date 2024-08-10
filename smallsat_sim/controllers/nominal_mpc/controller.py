@@ -317,7 +317,7 @@ class NominalMPCController(BaseMPCController):
                     size=[0.05, 0, 0],
                     pos=point,
                     mat=np.eye(3).flatten(),
-                    rgba=np.array([1, 0, 0, 2]),
+                    rgba=np.array([0, 0, 1, 2]),
                 )
 
             self.renderer.scene.ngeom += self.ctrl_cfg.N + 1

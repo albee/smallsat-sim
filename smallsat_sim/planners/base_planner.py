@@ -75,7 +75,7 @@ class BasePlanner(ABC):
             )
 
     def _visualize_renderer(
-        self, points: list[np.ndarray], color=[0, 0, 1, 2], size=[0.05, 0, 0]
+        self, points: list[np.ndarray], color=[1, 0, 0, 2], size=[0.05, 0, 0]
     ) -> None:
         """
         Visualizes reference points in the MuJoCo renderer.

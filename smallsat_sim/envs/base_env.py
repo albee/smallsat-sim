@@ -101,7 +101,7 @@ class BaseEnv(object):
 
         # Define video settings
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        fps = 60
+        fps = self.env_cfg.renderer.fps
         height, width, _ = self.frames[0].shape
 
         # Define save settings
@@ -122,6 +122,7 @@ class BaseEnv(object):
 
         # Parse video frame by frame
         for frame in self.frames:
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             video_writer.write(frame)
 
         # Save video at specified location
@@ -152,7 +153,7 @@ class BaseEnv(object):
         Creates a renderer to visualize the experiments (to later save them to a video).
         """
         # Create instance of MuJoCo renderer
-        self.renderer = mujoco.Renderer(self.model, width=1920, height=1080)
+        self.renderer = mujoco.Renderer(self.model, width=self.env_cfg.renderer.width, height=1440)
 
         # Set up the scene and the default camera options
         self.cam = mujoco.MjvCamera()

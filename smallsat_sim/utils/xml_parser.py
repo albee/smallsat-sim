@@ -25,7 +25,7 @@ def generate_mujoco_xml(env_config, model_config):
             <headlight ambient="{env_config.visual['headlight']['ambient']}" specular="{env_config.visual['headlight']['specular']}" diffuse="{env_config.visual['headlight']['diffuse']}"/>
         </visual>
         <visual>
-            <global offwidth="1920" offheight="1080"/>
+            <global offwidth="{env_config.renderer.width}" offheight="{env_config.renderer.height}"/>
         </visual>
         <option gravity="0 0 0"/>
         <default>
