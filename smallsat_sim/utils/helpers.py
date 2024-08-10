@@ -6,6 +6,14 @@
 import argparse
 import numpy as np
 
+# Import all base classes for typing
+from smallsat_sim.controllers.base_controller import BaseController
+from smallsat_sim.controllers.base_mpc_controller import BaseMPCController
+from smallsat_sim.envs.base_env import BaseEnv
+from smallsat_sim.planners.base_planner import BasePlanner
+
+from scipy.spatial.transform import Rotation as R
+
 
 def get_args() -> argparse.Namespace:
     """
@@ -57,7 +65,7 @@ def refModel3(x_d, v_d, a_d, r, wn_d, zeta_d, v_max, sampleTime):
     return x_d, v_d, a_d
 
 
-def Tquat(q) -> np.ndarray:
+def Tquat(q: np.ndarray) -> np.ndarray:
     """Tq = Tquat(q) computes the quaternion transformation matrix Tq of
     dimension 4 x 3 for attitude such that q_dot = Tq * w
     """
@@ -81,7 +89,7 @@ def Tquat(q) -> np.ndarray:
     return T
 
 
-def Rquat(q) -> np.ndarray:
+def Rquat(q: np.ndarray) -> np.ndarray:
     """R = Rquat(q) computes the rotation matrix R of dimension 3 x 3
     for attitude from a quaternion q.
     """
@@ -98,11 +106,11 @@ def Rquat(q) -> np.ndarray:
     return R
 
 
-def skew(x) -> np.ndarray:
+def skew(x: np.ndarray) -> np.ndarray:
     return np.array([[0, -x[2], x[1]], [x[2], 0, -x[0]], [-x[1], x[0], 0]])
 
 
-def sgn_quat(x) -> int:
+def sgn_quat(x: float) -> int:
     """sgn = sgn_quat(x) returns the sign of a quaternion x."""
     if x >= 0:
         sgn = 1
@@ -111,7 +119,7 @@ def sgn_quat(x) -> int:
     return sgn
 
 
-def quat_multiply(q1, q2) -> np.ndarray:
+def quat_multiply(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
     """q = quat_multiply(q1,q2) computes the quaternion product q of
     two quaternions q1 and q2.
     """
@@ -149,3 +157,35 @@ def quat_conjugate(q) -> np.ndarray:
     else:
         raise ValueError("input must be of dim. 4 (unit quaternion)")
     return q_conj
+
+
+def calc_lateral_tracking_error(obs: np.ndarray, planner: BasePlanner) -> float:
+    """
+    Computes the lateral tracking error at a given point
+    """
+    current_pos = obs[:3]
+
+    # Compute the closest point
+    closest_point, _ = planner.closest_point_on_trajectory(point=obs[:3])
+
+    # Compute l2 distance (is orthogonal already)
+    return np.linalg.norm(closest_point - current_pos)
+
+
+def calc_attitude_error(q_ref: np.ndarray, q: np.ndarray) -> float:
+    """
+    Computes the attitude error as rotation angle.
+    The angle error is the smallest angle by which you would need to rotate
+    the object (or frame of reference) from its current orientation (actual quaternion)
+    to match the desired orientation (desired quaternion).
+    Returned in radians. Use np.degrees() for conversion.
+    """
+    # Convert the quaternions to scipy Rotation objects
+    desired_rotation = R.from_quat(q_ref)
+    actual_rotation = R.from_quat(q)
+
+    # Calculate the relative rotation (error quaternion)
+    error_rotation = desired_rotation * actual_rotation.inv()
+
+    # Extract the angle of the error quaternion
+    return error_rotation.magnitude()

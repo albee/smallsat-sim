@@ -653,6 +653,7 @@ class MissionPlanner(BasePlanner):
     ) -> tuple[np.ndarray, float]:
         """
         Finds the closest point on the trajectory to the given point.
+        Returns the position and corresponding arc length.
         """
         closest_point = None
         closest_segment_idx = None

@@ -93,7 +93,7 @@ class NominalMPCController(BaseMPCController):
 
         acados_model.f_impl_expr = ca.vertcat(acados_model.f_impl_expr, x_a_dot)
 
-        acados_model.con_h_expr_e = (model.x - x_a)
+        acados_model.con_h_expr_e = model.x - x_a
 
         # Assign parameters and model
         Ts = self.ctrl_cfg.Ts
@@ -267,7 +267,9 @@ class NominalMPCController(BaseMPCController):
         [self.ocp_solver.set(i, "p", ref) for i in range(self.ctrl_cfg.N + 1)]
 
         # Solve for the first control input in receding horizon fashion
-        u0 = self.ocp_solver.solve_for_x0(env.obs[0:13], print_stats_on_failure=True, fail_on_nonzero_status=False)
+        u0 = self.ocp_solver.solve_for_x0(
+            env.obs[0:13], print_stats_on_failure=True, fail_on_nonzero_status=False
+        )
         self._visualize_prediction()
         if hasattr(self, "renderer") and self.renderer is not None:
             _, _ = self.planner.get_reference(env.obs)
@@ -275,11 +277,19 @@ class NominalMPCController(BaseMPCController):
 
         return u0
 
+    def _log(self, run_id: int, timestamp: float, env: BaseEnv) -> None:
+        """
+        Logs desired quantities if flag is enabled
+        """
+        raise NotImplementedError(
+            f"The _log method is not implemented for the class {self.__class__.__name__}"
+        )
+
     def _visualize_prediction(self) -> None:
         """
         Plot predicted trajectory of MPC in MuJoCo viewer.
         """
-        
+
         for i in range(self.ctrl_cfg.N + 1):
             point = self.ocp_solver.get(i, "x")[0:3]
             mujoco.mjv_initGeom(
@@ -307,7 +317,7 @@ class NominalMPCController(BaseMPCController):
                     size=[0.05, 0, 0],
                     pos=point,
                     mat=np.eye(3).flatten(),
-                    rgba=np.array([1, 0, 0, 2]),
+                    rgba=np.array([0, 0, 1, 2]),
                 )
 
             self.renderer.scene.ngeom += self.ctrl_cfg.N + 1
