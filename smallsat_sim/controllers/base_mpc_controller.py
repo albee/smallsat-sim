@@ -4,6 +4,8 @@ from smallsat_sim.controllers.base_controller import BaseController
 
 from abc import abstractmethod
 
+import numpy as np
+
 
 class BaseMPCController(BaseController):
     def __init__(self, env: BaseEnv, planner: BasePlanner, ctrl_cfg: object) -> None:
@@ -16,6 +18,13 @@ class BaseMPCController(BaseController):
     def get_control_input(self, env: BaseEnv) -> None:
         """
         Returns the control input
+        """
+        pass
+
+    @abstractmethod
+    def _log(self, run_id: int, timestamp: float, obs: np.ndarray) -> None:
+        """
+        Logs desired quantities if flag is enabled
         """
         pass
 
