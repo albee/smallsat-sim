@@ -212,7 +212,7 @@ class GPMPC(BaseMPCController):
             1,
             0,
         ]
-        input_selection = zero_order_gpmpc.models.gpytorch_models.FeatureSelector(
+        self.input_selection = zero_order_gpmpc.models.gpytorch_models.FeatureSelector(
             input_feature_selection
         )
 
@@ -235,7 +235,7 @@ class GPMPC(BaseMPCController):
         # Initialize the Residual Model
         residual_model = GPyTorchResidualLearningModel(
             gp_model=gp_model,
-            gp_feature_selector=input_selection,
+            gp_feature_selector=self.input_selection,
             data_processing_strategy=SlidingWindow(
                 max_num_points=self.M, device=next(gp_model.parameters()).device.type
             ),
@@ -557,6 +557,11 @@ class GPMPC(BaseMPCController):
         # Check if new observation shall be added to dictionary
         res_output = self._compute_residual(obs)
 
+        # If logging enabled, calculate the prediction errors
+        # NOTE: Must be done here, before new observation is added
+        # to the GP's dictionary
+        self._calc_prediction_errors(env)
+
         if res_output is not None:
             residual, x_train = res_output
             start_time = time.perf_counter()
@@ -662,6 +667,43 @@ class GPMPC(BaseMPCController):
         x_train = np.hstack((self.x_past, self.u_past))
 
         return residual, x_train
+
+    def _calc_prediction_errors(self, env: BaseEnv) -> None:
+        """
+        Calculates the prediction errors of both:
+            - Nominal model
+            - Nominal model + learned residual
+        """
+        if (
+            self.has_logger
+            and self.gp_mpc.residual_model.gp_model.train_inputs is not None
+        ):
+            # Retrieve obs (NOTE: Use GT obs here?)
+            obs = env.get_obs()
+
+            # Calculate nominal prediction error
+            e_nom = calc_model_error(
+                obs=obs,
+                x_past=self.x_past[:-1],
+                u_past=self.u_past[:-1],
+                f_int=self.f_int,
+            )
+
+            # Calculate GP prediction error
+            x_test = torch.from_numpy(np.hstack((self.x_past, self.u_past))).unsqueeze(0)
+            with torch.no_grad():
+                z_test = self.input_selection(x_test)
+                predicted_residual = self.gp_mpc.residual_model.gp_model(z_test)
+            e_gp = e_nom - torch.matmul(self.B_d[:-1,:], predicted_residual.mean.T)
+
+            # L2 norm of both
+            e_gp = torch.norm(e_gp, 2).item()
+            e_nom = torch.norm(e_nom, 2).item()
+
+            # Log quantities
+            self.logger.log(
+                run_id=env.run_id, timestamp=env.data.time, e_gp=e_gp, e_nom=e_nom
+            )
 
     def _train_gp(self) -> None:
         """
