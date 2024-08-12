@@ -8,13 +8,14 @@ from smallsat_sim.planners.oracle.oracle import OraclePlanner
 from smallsat_sim.planners.mission.mission import MissionPlanner
 
 
-# os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '.50'
-# os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
-
-os.environ["MUJOCO_GL"] = "egl"
-xla_flags = os.environ.get("XLA_FLAGS", "")
-xla_flags += " --xla_gpu_triton_gemm_any=True"
-os.environ["XLA_FLAGS"] = xla_flags
+# Set flags to improve XLA performance on GPU
+os.environ['XLA_FLAGS'] = (
+    '--xla_gpu_enable_triton_softmax_fusion=true '
+    '--xla_gpu_triton_gemm_any=True '
+    # '--xla_gpu_enable_async_collectives=true '
+    # '--xla_gpu_enable_latency_hiding_scheduler=true '
+    # '--xla_gpu_enable_highest_priority_async_stream=true '
+)
 
 # Get arguments for script execution
 args = get_args()

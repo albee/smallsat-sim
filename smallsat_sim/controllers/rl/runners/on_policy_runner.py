@@ -1,7 +1,10 @@
+import os
 import time
+import jax
 import jax.numpy as jnp
 from flax import nnx
 import optax
+import orbax.checkpoint as ocp
 
 from smallsat_sim.envs.vec_env import VecEnv
 from smallsat_sim.planners.base_planner import BasePlanner
@@ -21,6 +24,9 @@ class OnPolicyRunner(object):
         self.reference_point = planner.reference_points[8]
         self._load_rl_hyperparams()
 
+        # Checkpointer to save the trained modules
+        self.checkpointer = ocp.StandardCheckpointer()
+
     def learn(self):
         """
         Main training loop.
@@ -29,13 +35,13 @@ class OnPolicyRunner(object):
 
         # Define the actor and critic loss
         @nnx.jit
-        def actor_loss_fn(tdres: jnp.ndarray):
-            _, logp_a = self.agent.actor.forward(obs, actions)
+        def actor_loss_fn(actor_model, tdres: jnp.ndarray):
+            _, logp_a = actor_model.forward(obs, actions)
             return -jnp.sum(tdres * logp_a)
 
         @nnx.jit
-        def critic_loss_fn(returns: jnp.ndarray):
-            values = self.agent.critic.forward(obs)
+        def critic_loss_fn(critic_model, returns: jnp.ndarray):
+            values = critic_model.forward(obs)
             return jnp.mean((values - returns) ** 2)  # MSE loss
 
         # Set up buffer
@@ -125,23 +131,33 @@ class OnPolicyRunner(object):
             returns = data["ret"]
 
             # Policy gradient update
-            loss, grads = nnx.value_and_grad(actor_loss_fn(tdres))(self.agent.actor)
+            loss, grads = nnx.value_and_grad(actor_loss_fn)(self.agent.actor, tdres)
             print(f"{loss = }")
             actor_optimizer.update(grads)
 
             # Value function updates
             for _ in range(100):
-                loss, grads = nnx.value_and_grad(critic_loss_fn(returns))(
-                    self.agent.critic
+                loss, grads = nnx.value_and_grad(critic_loss_fn)(
+                    self.agent.critic, returns
                 )
                 print(f"{loss = }")
                 critic_optimizer.update(grads)
+
+        # Save the trained actor and critic network weights
+        self._save_trained_modules()
 
     def evaluate(self) -> None:
         """
         Evaluate the agent.
         """
         print("Evaluating agent...")
+
+        # Check if trained actor and critic modules are available and load them
+        ckpt_dir = os.listdir("/tmp/checkpoints/vpg_training/")
+        if len(ckpt_dir) == 0:
+            raise Exception("No training has been done yet.")
+        else:
+            self._load_trained_modules()
 
         returns = jnp.zeros((self.env.num_envs, self.n_evals))
 
@@ -163,10 +179,17 @@ class OnPolicyRunner(object):
 
     def control(
         self,
-    ) -> None:  # TODO: save the base and policy networks to be able to use them here
+    ) -> None:
         """
         Control the agent using the previously trained RL controller.
         """
+        # Check if trained actor and critic modules are available and load them
+        ckpt_dir = os.listdir("/tmp/checkpoints/vpg_training/")
+        if len(ckpt_dir) == 0:
+            raise Exception("No training has been done yet.")
+        else:
+            self._load_trained_modules()
+
         start_time = time.time()
         states = self.env.get_states(self.reference_point)
         terminal = jnp.zeros(self.env.num_envs, dtype=bool)
@@ -193,3 +216,30 @@ class OnPolicyRunner(object):
         self.critic_lr = self.env.env_cfg.control.RL.critic_lr
         self.episode_len = self.env.env_cfg.control.RL.episode_len
         self.n_evals = self.env.env_cfg.control.RL.n_evals
+
+    def _save_trained_modules(self) -> None:
+        """
+        Save the actor and critic network params.
+        """
+        ckpt_path = ocp.test_utils.erase_and_create_empty("/tmp/checkpoints/")
+        ckpt = {
+            "actor_model": nnx.state(self.agent.actor),
+            "critic_model": nnx.state(self.agent.critic),
+        }
+        self.checkpointer.save(ckpt_path / "vpg_training/", ckpt)
+
+    def _load_trained_modules(self) -> None:
+        """
+        Load the actor and critic network params.
+        """
+        ckpt = {
+            "actor_model": nnx.state(self.agent.actor),
+            "critic_model": nnx.state(self.agent.critic),
+        }
+        abstract_ckpt = jax.tree_util.tree_map(ocp.utils.to_shape_dtype_struct, ckpt)
+        restored_state = self.checkpointer.restore(
+            "/tmp/checkpoints/vpg_training/",
+            args=ocp.args.StandardRestore(abstract_ckpt),
+        )
+        nnx.update(self.agent.actor.mu_net, restored_state["actor_model"].mu_net)
+        nnx.update(self.agent.critic.v_net, restored_state["critic_model"].v_net)

@@ -1,4 +1,3 @@
-import jax
 import jax.numpy as jnp
 from flax import nnx
 import distrax
@@ -21,14 +20,14 @@ class Actor(nnx.Module):
         Return a Gaussian distribution over actions given observations.
         """
         mu = self.mu_net(obs)
-        std = jnp.exp(self.log_std)
+        std = jnp.exp(self.log_std.value)
         return distrax.MultivariateNormalDiag(mu, std)
     
     def _log_prob_from_dist(self, pi: jnp.ndarray, actions: jnp.ndarray):
         """
         Return the log-probability of actions under the action distribution.
         """
-        return pi.log_prob(actions).sum(axis=-1)
+        return pi.log_prob(actions)
 
     def forward(self, obs: jnp.ndarray, actions=None):
         """
