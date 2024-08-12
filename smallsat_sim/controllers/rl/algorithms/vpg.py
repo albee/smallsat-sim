@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
+from smallsat_sim.envs.base_env import BaseEnv
 from smallsat_sim.controllers.base_controller import BaseController
 from smallsat_sim.controllers.rl.modules.base_network import Critic
 from smallsat_sim.controllers.rl.modules.base_policy import Actor
@@ -43,3 +44,11 @@ class VPGAgent(BaseController):
         Calculate the control input based on current observations for each environment.
         """
         return self.act(obs)[0]
+
+    def _log(self, run_id: int, timestamp: float, env: BaseEnv) -> None:
+        """
+        Logs desired quantities if flag is enabled
+        """
+        raise NotImplementedError(
+            f"The _log method is not implemented for the class {self.__class__.__name__}"
+        )

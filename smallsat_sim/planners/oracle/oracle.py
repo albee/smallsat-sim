@@ -45,6 +45,15 @@ class OraclePlanner(BasePlanner):
             np.array([1, 0, 0, 0]).reshape(4, 1),
         )
 
+    def closest_point_on_trajectory(
+        self, point: np.ndarray
+    ) -> tuple[np.ndarray, float]:
+        """
+        Finds the closest point on the trajectory to the given point.
+        Returns the position and corresponding arc length.
+        """
+        raise NotImplementedError
+
     def _generate_reference(self):
         """
         Generates a circle in the yz plane around the gateway
