@@ -2,6 +2,8 @@ import numpy as np
 import mujoco
 import mujoco.viewer
 import cv2
+import os
+import jax
 import jax.numpy as jnp
 from datetime import datetime
 
@@ -10,12 +12,14 @@ from smallsat_sim.utils import xml_parser
 from smallsat_sim.envs.disturbances import DisturbanceList
 from smallsat_sim.envs.perturbations import PerturbationList
 
+from smallsat_sim import SMALLSAT_STEWARD_ROOT_DIR
+
 
 from argparse import Namespace
 
 
 class BaseEnv(object):
-    def __init__(self, args) -> None:
+    def __init__(self, args: Namespace) -> None:
         # Setup simulation environment
         self._setup_sim(args)
 
@@ -29,7 +33,7 @@ class BaseEnv(object):
         self.perturbations_keycodes = PerturbationList([]).keycode_dict.keys()
 
         # Initialize observations
-        self.obs = self.get_obs()
+        self.set_obs()
 
         # Initialize arguments
         self.args = args
@@ -60,9 +64,10 @@ class BaseEnv(object):
         # Execute post physics steps
         self._post_physics_step()
 
-    def get_obs(self) -> np.ndarray:
+    def set_obs(self) -> None:
         """
-        Return all states
+        Sets the (noisy) observations which can be fetched by
+        the get_obs() method.
         """
         # obs = [r (3),
         #        q (4),
@@ -79,19 +84,23 @@ class BaseEnv(object):
         obs = np.concatenate((self.data.qpos, vel_body, self.data.qvel[3:]))
 
         # Save ground truth observations
-        self.obs_gt = obs.copy()
+        self.obs_gt = obs
 
         # Apply noise to observations
-        obs = self._apply_obs_noise(obs.copy())
+        self.obs = self._apply_obs_noise(obs)
 
-        return obs
+    def get_obs(self) -> np.ndarray | jnp.ndarray:
+        """
+        Returns the current (noisy) observations
+        """
+        return self.obs.copy()
 
     def get_obs_gt(self) -> np.ndarray | jnp.ndarray:
         """
         Return the GT observations. Use this method for
         visualization and for evaluations.
         """
-        return self.obs_gt
+        return self.obs_gt.copy()
 
     def _apply_obs_noise(
         self, obs: np.ndarray | jnp.ndarray
@@ -118,19 +127,30 @@ class BaseEnv(object):
 
             # Multiple agents in MJX
             else:
+                # Fix a random seed for the PRNG key and set the key
+                random_seed = np.random.randint(0, high=9999, size=4)
+
                 # Calculate noise for each environment
                 num_envs = obs.shape[0]
-                noise_r = jnp.random.normal(
-                    0, self.env_cfg.sim.noise.sigma_r, (num_envs, 3)
+                noise_r = jax.random.multivariate_normal(
+                    jax.random.PRNGKey(random_seed[0]),
+                    jnp.zeros((num_envs, 3)),
+                    self.env_cfg.sim.noise.sigma_r * jnp.identity(3),
                 )
-                noise_q = jnp.random.normal(
-                    0, self.env_cfg.sim.noise.sigma_q, (num_envs, 4)
+                noise_q = jax.random.multivariate_normal(
+                    jax.random.PRNGKey(random_seed[0]),
+                    jnp.zeros((num_envs, 4)),
+                    self.env_cfg.sim.noise.sigma_q * jnp.identity(4),
                 )
-                noise_v = jnp.random.normal(
-                    0, self.env_cfg.sim.noise.sigma_v, (num_envs, 3)
+                noise_v = jax.random.multivariate_normal(
+                    jax.random.PRNGKey(random_seed[0]),
+                    jnp.zeros((num_envs, 3)),
+                    self.env_cfg.sim.noise.sigma_v * jnp.identity(3),
                 )
-                noise_w = jnp.random.normal(
-                    0, self.env_cfg.sim.noise.sigma_w, (num_envs, 3)
+                noise_w = jax.random.multivariate_normal(
+                    jax.random.PRNGKey(random_seed[0]),
+                    jnp.zeros((num_envs, 3)),
+                    self.env_cfg.sim.noise.sigma_w * jnp.identity(3),
                 )
 
                 # Concatenate noise along the second dimension
@@ -143,38 +163,44 @@ class BaseEnv(object):
 
     def get_sim_rendering(self, output_filename: str) -> None:
         """
-        Create a save a video rendering of the experiment.
+        Create and save a video rendering of the experiment.
         """
         if not self.args.video:
             return
 
+        # Define video settings
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         fps = 60
         height, width, _ = self.frames[0].shape
 
+        # Define save settings
         curr_datetime = datetime.now()
-        video_writer = cv2.VideoWriter(
+        video_dir = os.path.join(SMALLSAT_STEWARD_ROOT_DIR, "videos")
+        os.makedirs(video_dir, exist_ok=True)  # Ensure the video directory exists
+
+        video_path = os.path.join(
+            video_dir,
             output_filename
             + "_"
             + curr_datetime.strftime("%Y-%m-%d_%H:%M:%S")
             + ".mp4",
+        )
+
+        video_writer = cv2.VideoWriter(
+            video_path,
             fourcc,
             fps,
             (width, height),
         )
 
+        # Parse video frame by frame
         for frame in self.frames:
             video_writer.write(frame)
 
+        # Save video at specified location
         video_writer.release()
 
-        print(
-            "Video saved as "
-            + output_filename
-            + "_"
-            + curr_datetime.strftime("%Y-%m-%d_%H:%M:%S")
-            + ".mp4\n"
-        )
+        print(f"Video saved as {video_path}\n")
 
     def _create_viewer(self) -> None:
         """
@@ -293,7 +319,7 @@ class BaseEnv(object):
         Executes actions after stepping simulation
         """
         # Fetch most recent observations
-        self.obs = self.get_obs()
+        self.set_obs()
 
     def _key_callback(self, keycode) -> None:
         """

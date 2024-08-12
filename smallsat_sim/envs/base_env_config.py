@@ -21,4 +21,4 @@ class BaseEnvConfig:
 
     class renderer:
         start_recording = 0.0 # Start time of the recorded window
-        end_recording = 60.0 # Finish time of the recorded window
+        end_recording = 2.0 # Finish time of the recorded window

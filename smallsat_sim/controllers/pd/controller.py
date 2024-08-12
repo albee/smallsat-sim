@@ -15,6 +15,7 @@
 # under the License.
 
 from smallsat_sim.controllers.base_controller import BaseController
+from smallsat_sim.planners.base_planner import BasePlanner
 from smallsat_sim.envs.base_env import BaseEnv
 from smallsat_sim.utils.helpers import quat_multiply, quat_conjugate, Rquat, sgn_quat
 
@@ -22,7 +23,7 @@ import numpy as np
 
 
 class PDController(BaseController):
-    def __init__(self, env, planner) -> None:
+    def __init__(self, env: BaseEnv, planner: BasePlanner) -> None:
         # Fetch correct controller config
         ctrl_cfg = env.env_cfg.control.PD
 
@@ -102,9 +103,8 @@ class PDController(BaseController):
         )
         # PD, angular part, (alpha=angular acceleration).
         # Note: angular velocity is decomposed in the body frame
-        desired_alpha = (
-            self.Kp_q * sgn_quat(eta_error) * eps_error
-            + self.Kd_q * (desired_angvel - current_angvel)
+        desired_alpha = self.Kp_q * sgn_quat(eta_error) * eps_error + self.Kd_q * (
+            desired_angvel - current_angvel
         )
         desired_acceleration = np.append(desired_linacc, desired_alpha)
 
