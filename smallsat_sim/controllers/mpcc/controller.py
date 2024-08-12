@@ -1,6 +1,7 @@
-from smallsat_sim.controllers.base_controller import BaseController
+from smallsat_sim.controllers.base_mpc_controller import BaseMPCController
 from smallsat_sim.envs.base_env import BaseEnv
 from smallsat_sim.planners.base_planner import BasePlanner
+from smallsat_sim.utils.helpers import calc_lateral_tracking_error, calc_attitude_error
 
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
 
@@ -12,7 +13,7 @@ import mujoco
 from casadi import SX
 
 
-class NominalMPCCController(BaseController):
+class NominalMPCCController(BaseMPCController):
     """
     This class implements a nominal MPC controller based on acados.
     More specifically. this is a positional tracking controller,
@@ -53,6 +54,8 @@ class NominalMPCCController(BaseController):
         if env.renderer:
             self.renderer = env.renderer
             self.frames = env.frames
+            self.data = env.data
+            self.env_cfg = env.env_cfg
         else:
             self._visualize_prediction_renderer = lambda *args, **kwargs: None
 
@@ -309,6 +312,9 @@ class NominalMPCCController(BaseController):
         for i in range(self.ctrl_cfg.N + 1):
             self.theta_prev[i] = self.ocp_solver.get(i, "x")[-1]
 
+        # Log quantities
+        self._log(run_id=env.run_id, timestamp=env.data.time, env=env)
+
         return u0[0:12]
 
     def _set_params(self) -> None:
@@ -328,13 +334,53 @@ class NominalMPCCController(BaseController):
             p_start = self.planner.trajectory._get_start_point_segment(theta_curr)
             t = self.planner.trajectory._get_tangent_segment(theta_curr)
             theta_1 = self.planner.trajectory._get_start_arc_length_segment(theta_curr)
-            q_des = self.planner.trajectory.get_intermediate_reference(
+            q_ref = self.planner.trajectory.get_intermediate_reference(
                 theta_curr
             ).attitude
 
-            ref = np.concatenate((p_start, t, theta_1, q_des))
+            ref = np.concatenate((p_start, t, theta_1, q_ref))
 
             self.ocp_solver.set(i, "p", ref)
+
+    def _log(self, run_id: int, timestamp: float, env: BaseEnv) -> None:
+        """
+        Logs desired quantities if flag is enabled
+        """
+        if self.has_logger:
+            obs_gt = (
+                env.get_obs()
+            )  # TODO: Change this to get GT obs, once MR has been merged
+
+            # Tracking error
+            tracking_error = calc_lateral_tracking_error(
+                obs=obs_gt, planner=self.planner
+            )
+
+            # Attitude error
+            _, curr_arc_length = self.planner.closest_point_on_trajectory(
+                point=obs_gt[:3]
+            )
+            q_ref = self.planner.trajectory.get_intermediate_reference(
+                curr_arc_length
+            ).attitude
+
+            attitude_error = calc_attitude_error(q_ref=q_ref, q=obs_gt[3:7])
+
+            # Track solve time
+            solve_time = self.ocp_solver.get_stats("time_tot")
+
+            # Track cost value of current solution
+            mpc_cost = self.ocp_solver.get_cost()
+
+            # Log quantities
+            self.logger.log(
+                run_id=run_id,
+                timestamp=timestamp,
+                tracking_error=tracking_error,
+                attitude_error=attitude_error,
+                solve_time = solve_time,
+                mpc_cost = mpc_cost
+            )
 
     def _visualize_prediction(self) -> None:
         """
@@ -355,19 +401,23 @@ class NominalMPCCController(BaseController):
         """
         Plot predicted trajectory of MPC in MuJoCo renderer.
         """
-        for i in range(self.ctrl_cfg.N + 1):
-            point = self.ocp_solver.get(i, "x")[0:3]
-            mujoco.mjv_initGeom(
-                self.renderer.scene.geoms[i + self.renderer.scene.ngeom],
-                type=mujoco.mjtGeom.mjGEOM_SPHERE,
-                size=[0.05, 0, 0],
-                pos=point,
-                mat=np.eye(3).flatten(),
-                rgba=np.array([1, 0, 0, 2]),
-            )
+        if (
+            self.data.time >= self.env_cfg.renderer.start_recording
+            and self.data.time <= self.env_cfg.renderer.end_recording
+        ):
+            for i in range(self.ctrl_cfg.N + 1):
+                point = self.ocp_solver.get(i, "x")[0:3]
+                mujoco.mjv_initGeom(
+                    self.renderer.scene.geoms[i + self.renderer.scene.ngeom],
+                    type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                    size=[0.05, 0, 0],
+                    pos=point,
+                    mat=np.eye(3).flatten(),
+                    rgba=np.array([0, 0, 1, 2]),
+                )
 
-        self.renderer.scene.ngeom += self.ctrl_cfg.N + 1
+            self.renderer.scene.ngeom += self.ctrl_cfg.N + 1
 
-        # Extract image from renderer and append it for post-processing
-        sim_img = self.renderer.render().copy()
-        self.frames.append(sim_img)
+            # Extract image from renderer and append it for post-processing
+            sim_img = self.renderer.render().copy()
+            self.frames.append(sim_img)

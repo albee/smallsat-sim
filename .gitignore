@@ -18,5 +18,11 @@ c_generated_code/
 
 # video files
 *.mp4
+videos/
+
 # utils for lamda-quad
 .lambda-quad/
+
+# logs
+*.pkl
+logs/

@@ -3,20 +3,22 @@ import jax.numpy as jnp
 import mujoco
 import mujoco.viewer
 import cv2
+import os
 from datetime import datetime
 
 from smallsat_sim.envs.dynamics import SymbolicModel
 from smallsat_sim.utils import xml_parser
-from smallsat_sim.utils.helpers import Rquat
 from smallsat_sim.envs.disturbances import DisturbanceList
 from smallsat_sim.envs.perturbations import PerturbationList
+from smallsat_sim.utils.logger import Logger
+from smallsat_sim import SMALLSAT_STEWARD_ROOT_DIR
 
 
 from argparse import Namespace
 
 
 class BaseEnv(object):
-    def __init__(self, args) -> None:
+    def __init__(self, args: Namespace) -> None:
         # Setup simulation environment
         self._setup_sim(args)
 
@@ -37,6 +39,16 @@ class BaseEnv(object):
 
         # Flag to know whether VecEnv is being used
         self.using_rl = False
+
+        # Save time of simulation start (for filenames)
+        self.sim_start_time = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+
+        # Initialize MC iterations
+        self.run_id = 0
+
+        # Initialize logger if enabled
+        if args.log:
+            self.logger = Logger(log_name=self.sim_start_time)
 
     def reset(self) -> None:
         """
@@ -86,38 +98,44 @@ class BaseEnv(object):
 
     def get_sim_rendering(self, output_filename: str) -> None:
         """
-        Create a save a video rendering of the experiment.
+        Create and save a video rendering of the experiment.
         """
         if not self.args.video:
             return
-        
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        fps = 60
+
+        # Define video settings
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        fps = self.env_cfg.renderer.fps
         height, width, _ = self.frames[0].shape
 
-        curr_datetime = datetime.now()
+        # Define save settings
+        video_dir = os.path.join(SMALLSAT_STEWARD_ROOT_DIR, "videos")
+        os.makedirs(video_dir, exist_ok=True)  # Ensure the video directory exists
+
+        video_path = os.path.join(
+            video_dir,
+            output_filename + "_" + self.sim_start_time + ".mp4",
+        )
+
         video_writer = cv2.VideoWriter(
-            output_filename
-            + "_"
-            + curr_datetime.strftime("%Y-%m-%d_%H:%M:%S")
-            + ".mp4",
+            video_path,
             fourcc,
             fps,
             (width, height),
         )
 
+        # Parse video frame by frame
         for frame in self.frames:
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             video_writer.write(frame)
 
+        # Save video at specified location
         video_writer.release()
 
-        print(
-            "Video saved as "
-            + output_filename
-            + "_"
-            + curr_datetime.strftime("%Y-%m-%d_%H:%M:%S")
-            + ".mp4\n"
-        )
+        print(f"Video saved as {video_path}\n")
+
+        # Reset frames to free up memory
+        self.frames = []
 
     def _create_viewer(self) -> None:
         """
@@ -139,7 +157,7 @@ class BaseEnv(object):
         Creates a renderer to visualize the experiments (to later save them to a video).
         """
         # Create instance of MuJoCo renderer
-        self.renderer = mujoco.Renderer(self.model, width=1920, height=1080)
+        self.renderer = mujoco.Renderer(self.model, width=self.env_cfg.renderer.width, height=1440)
 
         # Set up the scene and the default camera options
         self.cam = mujoco.MjvCamera()

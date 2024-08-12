@@ -2,6 +2,7 @@ import time
 from smallsat_sim.utils.helpers import get_args
 
 from smallsat_sim.controllers.pd.controller import PDController
+from smallsat_sim.controllers.nominal_mpc.controller import NominalMPCController
 from smallsat_sim.controllers.mpcc.controller import NominalMPCCController
 from smallsat_sim.controllers.lqr.controller import LQRController
 
@@ -20,7 +21,7 @@ env = AstrobeeEnv(args=args)
 planner = MissionPlanner(env)
 
 # Create controller
-ctrl = NominalMPCCController(env, planner)
+ctrl = PDController(env, planner)
 
 # Define start time
 start_time = time.time()

@@ -37,22 +37,22 @@ class LQRController(BaseController):
         self.omega_ref = np.zeros((3, 1))
 
         # Get the cost function matrices
-        self.Q = self.ctrl_cfg.cost.Q + 1e-5 * np.eye(self.nx, self.nx) # Perturb for numerical stability
+        self.Q = self.ctrl_cfg.cost.Q + 1e-5 * np.eye(
+            self.nx, self.nx
+        )  # Perturb for numerical stability
         self.R = self.ctrl_cfg.cost.R
 
-    
-    def check_controllability(self, A, B) -> bool:
+    def check_controllability(self, A: np.ndarray, B: np.ndarray) -> bool:
         """
         Check if the system is controllable.
         """
         ctrb_matrix = control.ctrb(A, B)
 
-        if (np.linalg.matrix_rank(ctrb_matrix) != A.shape[0]):
+        if np.linalg.matrix_rank(ctrb_matrix) != A.shape[0]:
             print("System is not controllable.")
             return False
-        
-        return True
 
+        return True
 
     def get_lqr_gain(self, x: np.ndarray) -> np.ndarray:
         """
@@ -76,7 +76,7 @@ class LQRController(BaseController):
         B = B * 0.5
 
         # Check if the system is controllable (for debugging purposes)
-        # is_controllable = self.check_controllability(A, B)
+        is_controllable = self.check_controllability(A, B)
 
         # Solve the DARE
         P = solve_discrete_are(A, B, self.Q, self.R)
@@ -86,7 +86,6 @@ class LQRController(BaseController):
 
         return K
 
-        
     def get_control_input(self, env: BaseEnv) -> np.ndarray:
         """
         Calculate the control input based on current observation.
@@ -97,12 +96,22 @@ class LQRController(BaseController):
 
         # Compute the LQR gain
         self.K = self.get_lqr_gain(x)
-        
+
         # Get the reference position
         r_ref, quat_ref = self.planner.get_reference(env.obs)
-        x_ref = np.concatenate((r_ref, quat_ref, self.v_ref, self.omega_ref)).squeeze(-1)
+        x_ref = np.concatenate((r_ref, quat_ref, self.v_ref, self.omega_ref)).squeeze(
+            -1
+        )
 
         # Compute optimal control signal
-        u_opt = - self.K @ (x - x_ref)
+        u_opt = -self.K @ (x - x_ref)
 
         return u_opt
+
+    def _log(self, run_id: int, timestamp: float, env: BaseEnv) -> None:
+        """
+        Logs desired quantities if flag is enabled
+        """
+        raise NotImplementedError(
+            f"The _log method is not implemented for the class {self.__class__.__name__}"
+        )

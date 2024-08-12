@@ -25,7 +25,7 @@ def generate_mujoco_xml(env_config, model_config):
             <headlight ambient="{env_config.visual['headlight']['ambient']}" specular="{env_config.visual['headlight']['specular']}" diffuse="{env_config.visual['headlight']['diffuse']}"/>
         </visual>
         <visual>
-            <global offwidth="1920" offheight="1080"/>
+            <global offwidth="{env_config.renderer.width}" offheight="{env_config.renderer.height}"/>
         </visual>
         <option gravity="0 0 0"/>
         <default>
@@ -253,7 +253,7 @@ def generate_mujoco_xml(env_config, model_config):
             <geom type="box" size="0.16 0.16 0.16" class="collision"/>\n"""
             for thruster in thrusters.thruster_list:
                 xml_content += f"            <site name='{body.name}_{thruster.site}' pos='{xmlify(thruster.pos)}' size='{thruster.size}'/>\n"
-        
+
             xml_content += "        </body>\n"
     else:
         # Define all free floating bodies
