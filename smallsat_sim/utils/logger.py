@@ -87,23 +87,28 @@ class Logger(object):
         Return a list of all pickle files in the specified folder, sorted by name.
         If no folder is specified, use the most recent folder.
         """
-        if folder is None:
+        if isinstance(folder, str):
+            folder = os.path.join(self.base_log_dir, folder)
+        elif folder is None:
             folder = self._get_most_recent_log_dir()
+
         if folder is None:
             return []
-        
+
         print(f"Loading log files from directory: {folder}")
 
         pkl_files = [f for f in os.listdir(folder) if f.endswith(".pkl")]
         pkl_files.sort()
         return [os.path.join(folder, f) for f in pkl_files]
 
-    def load_log(self, run_id: Optional[int] = None) -> pd.DataFrame:
+    def load_log(
+        self, run_id: Optional[int] = None, folder: Optional[str] = None
+    ) -> pd.DataFrame:
         """
         Load the saved log data from all pickle files in the most recent log directory, concatenating them into a single DataFrame.
         If run_id is specified, filter the DataFrame by that run_id.
         """
-        pkl_files = self._get_all_pickle_files()
+        pkl_files = self._get_all_pickle_files(folder=folder)
 
         if not pkl_files:
             raise FileNotFoundError(
