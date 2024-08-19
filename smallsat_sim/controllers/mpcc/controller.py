@@ -174,8 +174,8 @@ class NominalMPCCController(BaseMPCController):
             + e_q.T @ Q_q @ e_q
             + omega.T @ Q_omega @ omega
             + (model.u.T) @ R @ (model.u)
-            + r_d_theta * d_theta**2
-            - q_theta * theta
+            + r_d_theta * d_theta * d_theta
+            - q_theta * d_theta
         )
 
         # Nonlinear constraint
