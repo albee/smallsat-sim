@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Optional, List
 import jax
 import jax.numpy as jnp
 
@@ -18,16 +19,16 @@ class Disturbance(ABC):
         pass
 
     @abstractmethod
-    def key_callback(self, keycode=None) -> None:
+    def key_callback(self, keycode: Optional[int] = None) -> None:
         pass
 
 
-class DisturbanceList(object):
+class DisturbanceList(ABC):
     """
     Applies multiple disturbances sequentially
     """
 
-    def __init__(self, disturbances: list[Disturbance]) -> None:
+    def __init__(self, disturbances: List[Disturbance]) -> None:
         super().__init__()
         self.disturbances = disturbances
 
@@ -40,16 +41,16 @@ class DisturbanceList(object):
             }
         }
 
-    def apply(self, current_sim_time):
+    def apply(self, timestamp: Optional[float] = 0.0):
         # Net force vector of all the disturbances in the list
         self.net_force = jnp.zeros(6)
 
         for disturbance in self.disturbances:
-            self.net_force += disturbance.apply(current_sim_time)
+            self.net_force += disturbance.apply(timestamp)
 
         return self.net_force
 
-    def key_callback(self, keycode):
+    def key_callback(self, keycode: Optional[int] = None):
         """
         Handles external keycall back calls based on registered disturbance modules inside of self.disturbances.
         """
@@ -60,7 +61,9 @@ class DisturbanceList(object):
         if isinstance(disturbance_index, int):
             self.disturbances[disturbance_index].key_callback(keycode)
 
-    def _check_registered_disturbances(self, keycode) -> None | int:
+    def _check_registered_disturbances(
+        self, keycode: Optional[int] = None
+    ) -> Optional[int]:
         # Iterate over disturbances to find a matching type
         for idx, disturbance in enumerate(self.disturbances):
             if disturbance.failure_type == self.keycode_dict[chr(keycode)]["type"]:
@@ -76,7 +79,7 @@ class DisturbanceList(object):
 
     def _get_disturbance_index_from_string(
         self, desired_disturbance: str
-    ) -> None | int:
+    ) -> Optional[int]:
         # Iterate over disturbances to find a matching type
         for idx, disturbance in enumerate(self.disturbances):
             if disturbance.failure_type == desired_disturbance:
@@ -93,7 +96,11 @@ class ConstantForceDisturbance(Disturbance):
     """
 
     def __init__(
-        self, env_config, magnitude=None, direction=None, disturbed_envs=None
+        self,
+        env_config,
+        magnitude: Optional[float] = None,
+        direction: Optional[float] = None,
+        disturbed_envs: Optional[float] = None,
     ) -> None:
         super().__init__()
 
@@ -150,15 +157,15 @@ class ConstantForceDisturbance(Disturbance):
         force, torque = self.magnitude * self.direction, jnp.zeros((self.num_envs, 3))
         self.const_force = jnp.concatenate((force, torque), axis=1)
 
-    def apply(self, current_sim_time) -> jnp.ndarray:
-        if self.is_active and current_sim_time >= self.start_time:
+    def apply(self, timestamp: Optional[float] = 0.0) -> jnp.ndarray:
+        if self.is_active and timestamp >= self.start_time:
             mask = jnp.zeros_like(self.const_force)
             mask = mask.at[self.disturbed_envs, :].set(1)
             return self.const_force * mask
         else:
             return jnp.zeros((self.num_envs, 6))
 
-    def const_force_disturbance(self, start_time=0.0) -> None:
+    def const_force_disturbance(self, start_time: Optional[float] = 0.0) -> None:
         """
         Activate the constant force disturbance.
         """
@@ -173,6 +180,6 @@ class ConstantForceDisturbance(Disturbance):
         self.is_active = False
         print("Constant force disturbance is inactive.")
 
-    def key_callback(self, keycode=None) -> None:
+    def key_callback(self, keycode: Optional[int] = None) -> None:
         # Call correct method for key callbacks
         self.const_force_disturbance()

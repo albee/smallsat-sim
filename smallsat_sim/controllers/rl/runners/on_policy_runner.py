@@ -21,7 +21,7 @@ class OnPolicyRunner(object):
         # Initialize the environment and agent
         self.env = env
         self.agent = VPGAgent(self.env, planner)
-        self.reference_point = planner.reference_points[8]
+        self.reference_point = planner.reference_points[0]
         self._load_rl_hyperparams()
 
         # Checkpointer to save the trained modules

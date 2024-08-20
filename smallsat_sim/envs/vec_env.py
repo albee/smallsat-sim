@@ -25,7 +25,7 @@ class VecEnv(BaseEnv):
         super().__init__(args)
 
         # Observation and action spaces
-        self.obs_dim = 9
+        self.obs_dim = 12
         self.act_dim = 12
 
         # Initial position and velocity
@@ -39,12 +39,25 @@ class VecEnv(BaseEnv):
 
     def reset(self) -> None:
         """
-        Reset the agent to the initial state in all the environment instances.
+        Reset the agent in all the environment instances, while randomizing the initial position.
         """
         self.prev_shaping = None
 
         # Updating only qpos and qvel, not resetting all of mj_data
-        self.mjx_batch = self.mjx_batch.replace(qpos=self.init_qpos)
+        self.mjx_data = self.mjx_data.replace(qpos=self.init_qpos[0])
+        rng = jax.random.PRNGKey(np.random.randint(0, 9999))
+        rng = jax.random.split(rng, self.num_envs)
+        self.mjx_batch = jax.vmap(
+            lambda rng: self.mjx_data.replace(
+                qpos=jnp.concatenate(
+                    [
+                        self.mjx_data.qpos[0:3]
+                        + jax.random.uniform(rng, (3,), minval=-1.0, maxval=1.0),
+                        self._get_random_quaternion(rng),
+                    ]
+                )
+            )
+        )(rng)
         self.mjx_batch = self.mjx_batch.replace(qvel=self.init_qvel)
         self.mjx_batch = self.jit_forward(self.mjx_model, self.mjx_batch)
 
@@ -61,10 +74,16 @@ class VecEnv(BaseEnv):
         # Penalize Euclidean distance from set point
         rewards = jnp.zeros(self.num_envs)
         shaping = -100 * jnp.sqrt(
-            (states[:, 0]) ** 2
-            + (states[:, 1]) ** 2
-            + (states[:, 2]) ** 2
+            (states[:, 0]) ** 2 + (states[:, 1]) ** 2 + (states[:, 2]) ** 2
+        ) - 20 * jnp.sqrt(
+            (states[:, 3]) ** 2 + (states[:, 4]) ** 2 + (states[:, 5]) ** 2
         )
+        # print(-100 * jnp.sqrt(
+        #     (states[:, 0]) ** 2 + (states[:, 1]) ** 2 + (states[:, 2]) ** 2
+        # ))
+        # print(- 20 * jnp.sqrt(
+        #     (states[:, 3]) ** 2 + (states[:, 4]) ** 2 + (states[:, 5]) ** 2
+        # ))
         if self.prev_shaping is not None:
             rewards = shaping - self.prev_shaping
         self.prev_shaping = shaping
@@ -74,7 +93,7 @@ class VecEnv(BaseEnv):
         terminal = is_terminal(states)
 
         # Reward the agent for reaching the goal
-        rewards += jnp.where(terminal, 100, 0)
+        rewards += jnp.where(terminal, 1000, 0)
 
         return rewards, terminal
 
@@ -125,16 +144,11 @@ class VecEnv(BaseEnv):
         )
 
         return obs
-    
+
     def get_states(self, next_waypoint: jnp.ndarray) -> jnp.ndarray:
         """
         Return all states.
         """
-        # obs = [r (3),
-        #        q (4),
-        #        v (3), --> in BODY frame
-        #        omega (3)]
-
         # Retrieve current rotation matrix
         R = self.mjx_batch.xmat[:, 1, :, :]
 
@@ -148,10 +162,22 @@ class VecEnv(BaseEnv):
         # Rotate intertial velocity to body velocity
         vel_body = multiply_transpose_velocity(R, self.mjx_batch.qvel[:, :3])
 
+        # Compute the distance on each axis to the reference point
+        delta_pos = self.mjx_batch.qpos[:, 0:3] - jnp.full(
+            (self.num_envs, 3), next_waypoint
+        )
+
+        # Compute the attitude error
+        reference_attitude = jnp.array([1, 0, 0, 0])
+        self.get_all_error_quaternions = jax.vmap(self._get_error_quaternion)
+        delta_att = self.get_all_error_quaternions(
+            self.mjx_batch.qpos[:, 3:7],
+            jnp.full((self.num_envs, 4), reference_attitude),
+        )
+
         # Create array of observations
-        delta_pos = self.mjx_batch.qpos[:, 0:3] - jnp.full((self.num_envs, 3), next_waypoint)
         states = jnp.concatenate(
-            (delta_pos, vel_body, self.mjx_batch.qvel[:, 3:]), axis=1
+            (delta_pos, delta_att, vel_body, self.mjx_batch.qvel[:, 3:]), axis=1
         )
 
         return states
@@ -192,18 +218,10 @@ class VecEnv(BaseEnv):
         # Batch the data and randomize the starting position
         rng = jax.random.PRNGKey(0)
         rng = jax.random.split(rng, self.num_envs)
-        self.mjx_batch = (
-            jax.vmap(  # To have the same starting pos in all envs, just replace w/ qpos
-                lambda rng: self.mjx_data.replace(
-                    qpos=self.mjx_data.qpos
-                    + jnp.concatenate(
-                        [
-                            jax.random.uniform(rng, (3,), minval=-0.5, maxval=0.5),
-                            jnp.zeros(4),
-                        ]
-                    )
-                )
-            )(rng)
+        self.mjx_batch = jax.vmap(  # The initial position is randomized when the env is reset (at init and after each epoch)
+            lambda rng: self.mjx_data.replace(qpos=self.mjx_data.qpos)
+        )(
+            rng
         )
         self.data_vec = mjx.get_data(self.model, self.mjx_batch)
         mjx.get_data_into(self.data_vec, self.model, self.mjx_batch)
@@ -259,4 +277,68 @@ class VecEnv(BaseEnv):
         """
         Returns one if in terminal set, zero otherwise.
         """
-        return jnp.all(jnp.abs(delta_pos <= 0.5))
+        # return jnp.all(jnp.abs(delta_pos) <= 0.5)
+        return (
+            jnp.sqrt(delta_pos[0] ** 2 + delta_pos[1] ** 2 + delta_pos[2] ** 2) <= 0.25
+        )
+
+    def _get_error_quaternion(self, q: jnp.ndarray, q_des: jnp.ndarray) -> jnp.ndarray:
+        """
+        Return the error between two quaternions.
+        """
+        # Quaternion error
+        q_conj = jnp.array([q[0], -q[1], -q[2], -q[3]])
+        e_q = jnp.array(
+            [
+                q_des[0] * q_conj[0]
+                - q_des[1] * q_conj[1]
+                - q_des[2] * q_conj[2]
+                - q_des[3] * q_conj[3],
+                q_des[0] * q_conj[1]
+                + q_des[1] * q_conj[0]
+                + q_des[2] * q_conj[3]
+                - q_des[3] * q_conj[2],
+                q_des[0] * q_conj[2]
+                - q_des[1] * q_conj[3]
+                + q_des[2] * q_conj[0]
+                + q_des[3] * q_conj[1],
+                q_des[0] * q_conj[3]
+                + q_des[1] * q_conj[2]
+                - q_des[2] * q_conj[1]
+                + q_des[3] * q_conj[0],
+            ]
+        )
+
+        # We only want to minimize eps part of error quaternion
+        e_q = e_q[1:4]
+
+        return e_q
+
+    def _get_random_quaternion(self, rng) -> jnp.ndarray:
+        """
+        Return a random quaternion.
+        """
+        key, subkey1, subkey2 = jax.random.split(rng, 3)
+
+        # Generate random samples from a uniform distribution over [0, 2π)
+        theta1 = jax.random.uniform(key, (1,)) * 2 * jnp.pi
+        theta2 = jax.random.uniform(subkey1, (1,)) * 2 * jnp.pi
+        theta3 = jax.random.uniform(subkey2, (1,)) * 2 * jnp.pi
+
+        # Compute quaternion components
+        w = jnp.sin(theta1) * jnp.cos(theta2) * jnp.cos(theta3) + jnp.cos(
+            theta1
+        ) * jnp.sin(theta2) * jnp.sin(theta3)
+        x = jnp.cos(theta1) * jnp.sin(theta2) * jnp.cos(theta3) - jnp.sin(
+            theta1
+        ) * jnp.cos(theta2) * jnp.sin(theta3)
+        y = jnp.sin(theta1) * jnp.cos(theta2) * jnp.cos(theta3) - jnp.cos(
+            theta1
+        ) * jnp.sin(theta2) * jnp.sin(theta3)
+        z = jnp.cos(theta1) * jnp.cos(theta2) * jnp.sin(theta3) + jnp.sin(
+            theta1
+        ) * jnp.sin(theta2) * jnp.cos(theta3)
+
+        quaternion = jnp.array([w, x, y, z]).reshape(-1)
+
+        return quaternion
