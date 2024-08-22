@@ -201,7 +201,7 @@ class StuckOffThrusters(Perturbation):
         self,
         env_config: BaseEnvConfig,
         model_config: BaseModelConfig,
-        perturbed_envs: Optional[jnp.ndarray],
+        perturbed_envs: Optional[jnp.ndarray] = None,
     ) -> None:
         super().__init__(env_config, model_config)
 

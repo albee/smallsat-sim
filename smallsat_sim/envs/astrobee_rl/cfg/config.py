@@ -27,7 +27,7 @@ class EnvConfig(BaseEnvConfig):
         num_bodies = 1
         bodies_list = []
         for i in range(num_bodies):
-            bodies_list.append(Body(name=f"body{i}", pos=[i, 0.0, 10.5]))
+            bodies_list.append(Body(name=f"body{i}", pos=[i, 0.0, 10.17]))
 
     # Holds all information for the controller in use
     class control:

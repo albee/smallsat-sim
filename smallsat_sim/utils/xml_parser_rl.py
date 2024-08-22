@@ -55,6 +55,8 @@ def generate_mujoco_xml(env_config, model_config):
             <material name="Orion" texture="Orion_BaseColor" specular="0.0" shininess="0.5"/>
             <texture type="2d" name="Power_And_Propulsion_Element_BaseColor" file="gateway/Power_And_Propulsion_Element_BaseColor.png"/>
             <material name="Power_And_Propulsion_Element" texture="Power_And_Propulsion_Element_BaseColor" specular="0.0" shininess="0.5"/>
+            <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1=".1 .2 .3" rgb2=".2 .3 .4"/>
+            <material name="grid" texture="grid" texrepeat="1 1" texuniform="true" reflectance=".2"/>
     """
 
     # Check whether astrobee or cubesat is used.
@@ -197,6 +199,9 @@ def generate_mujoco_xml(env_config, model_config):
                 xml_content += f"            <site name='{body.name}_{thruster.site}' pos='{xmlify(thruster.pos)}' size='{thruster.size}'/>\n"
                 xml_content += "        </body>\n"
 
+    xml_content += """ <!-- Define the floor -->
+                       <geom name="floor" type="plane" pos="0 0 9" size="10 10 0.1" material="grid" condim="1"/>
+"""
     xml_content += """    </worldbody>
 """
     xml_content += """    <!--Thruster sites are placed based on the description of Astrobee's thrusters-->

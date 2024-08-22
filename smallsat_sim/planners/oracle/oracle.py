@@ -4,7 +4,7 @@ import numpy as np
 
 
 class OraclePlanner(BasePlanner):
-    def __init__(self, env, radius=10.5, spacing=0.5, clearance_dist=0.2) -> None:
+    def __init__(self, env, radius=10.17, spacing=0.5, clearance_dist=0.2) -> None:
         super().__init__(env)
         self.radius = radius
         self.spacing = spacing
@@ -17,7 +17,7 @@ class OraclePlanner(BasePlanner):
         self._generate_reference()
 
         # visualize the circle
-        self.visualize(self.reference_points)
+        self.visualize([self.reference_points[0]])
 
     def get_reference(self, obs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """

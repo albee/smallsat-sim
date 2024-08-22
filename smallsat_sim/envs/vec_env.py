@@ -25,8 +25,8 @@ class VecEnv(BaseEnv):
         super().__init__(args)
 
         # Observation and action spaces
-        self.obs_dim = 12
-        self.act_dim = 12
+        self.obs_dim = 6
+        self.act_dim = 8
 
         # Initial position and velocity
         self.init_qpos = self.mjx_batch.qpos
@@ -51,9 +51,10 @@ class VecEnv(BaseEnv):
             lambda rng: self.mjx_data.replace(
                 qpos=jnp.concatenate(
                     [
-                        self.mjx_data.qpos[0:3]
-                        + jax.random.uniform(rng, (3,), minval=-1.0, maxval=1.0),
-                        self._get_random_quaternion(rng),
+                        self.mjx_data.qpos[0:2]
+                        + jax.random.uniform(rng, (2,), minval=-1.0, maxval=1.0),
+                        self.mjx_data.qpos[2].reshape(-1),
+                        self._get_random_quaternion(rng)
                     ]
                 )
             )
@@ -74,16 +75,10 @@ class VecEnv(BaseEnv):
         # Penalize Euclidean distance from set point
         rewards = jnp.zeros(self.num_envs)
         shaping = -100 * jnp.sqrt(
-            (states[:, 0]) ** 2 + (states[:, 1]) ** 2 + (states[:, 2]) ** 2
+            (states[:, 0]) ** 2 + (states[:, 1]) ** 2
         ) - 20 * jnp.sqrt(
-            (states[:, 3]) ** 2 + (states[:, 4]) ** 2 + (states[:, 5]) ** 2
+            (states[:, 3]) ** 2
         )
-        # print(-100 * jnp.sqrt(
-        #     (states[:, 0]) ** 2 + (states[:, 1]) ** 2 + (states[:, 2]) ** 2
-        # ))
-        # print(- 20 * jnp.sqrt(
-        #     (states[:, 3]) ** 2 + (states[:, 4]) ** 2 + (states[:, 5]) ** 2
-        # ))
         if self.prev_shaping is not None:
             rewards = shaping - self.prev_shaping
         self.prev_shaping = shaping
@@ -162,22 +157,21 @@ class VecEnv(BaseEnv):
         # Rotate intertial velocity to body velocity
         vel_body = multiply_transpose_velocity(R, self.mjx_batch.qvel[:, :3])
 
+        # Compute rotation angle
+        rot_angle = jnp.arctan2(R[:, 2, 1], R[:, 1, 1])
+
         # Compute the distance on each axis to the reference point
         delta_pos = self.mjx_batch.qpos[:, 0:3] - jnp.full(
             (self.num_envs, 3), next_waypoint
         )
 
         # Compute the attitude error
-        reference_attitude = jnp.array([1, 0, 0, 0])
-        self.get_all_error_quaternions = jax.vmap(self._get_error_quaternion)
-        delta_att = self.get_all_error_quaternions(
-            self.mjx_batch.qpos[:, 3:7],
-            jnp.full((self.num_envs, 4), reference_attitude),
-        )
+        ref_orientation = jnp.full(self.num_envs, jnp.pi / 2)
+        delta_orientation = ref_orientation - rot_angle
 
         # Create array of observations
         states = jnp.concatenate(
-            (delta_pos, delta_att, vel_body, self.mjx_batch.qvel[:, 3:]), axis=1
+            (delta_pos[:, 0:2], delta_orientation.reshape(-1, 1), vel_body[:, 0:2], self.mjx_batch.qvel[:, 5].reshape(-1, 1)), axis=1
         )
 
         return states
@@ -318,27 +312,13 @@ class VecEnv(BaseEnv):
         """
         Return a random quaternion.
         """
-        key, subkey1, subkey2 = jax.random.split(rng, 3)
-
         # Generate random samples from a uniform distribution over [0, 2π)
-        theta1 = jax.random.uniform(key, (1,)) * 2 * jnp.pi
-        theta2 = jax.random.uniform(subkey1, (1,)) * 2 * jnp.pi
-        theta3 = jax.random.uniform(subkey2, (1,)) * 2 * jnp.pi
+        theta = jax.random.uniform(rng, (1,)) * 2 * jnp.pi
 
         # Compute quaternion components
-        w = jnp.sin(theta1) * jnp.cos(theta2) * jnp.cos(theta3) + jnp.cos(
-            theta1
-        ) * jnp.sin(theta2) * jnp.sin(theta3)
-        x = jnp.cos(theta1) * jnp.sin(theta2) * jnp.cos(theta3) - jnp.sin(
-            theta1
-        ) * jnp.cos(theta2) * jnp.sin(theta3)
-        y = jnp.sin(theta1) * jnp.cos(theta2) * jnp.cos(theta3) - jnp.cos(
-            theta1
-        ) * jnp.sin(theta2) * jnp.sin(theta3)
-        z = jnp.cos(theta1) * jnp.cos(theta2) * jnp.sin(theta3) + jnp.sin(
-            theta1
-        ) * jnp.sin(theta2) * jnp.cos(theta3)
+        w = jnp.cos(theta / 2)
+        z = jnp.sin(theta / 2)
 
-        quaternion = jnp.array([w, x, y, z]).reshape(-1)
+        quaternion = jnp.array([w, jnp.zeros_like(w), jnp.zeros_like(w), z]).reshape(-1)
 
         return quaternion
