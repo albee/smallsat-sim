@@ -10,6 +10,13 @@ import casadi as ca
 from casadi import SX, DM
 
 
+def skew(x: np.ndarray) -> np.ndarray:
+    """
+    Computes the skew matrix of a vector x.
+    """
+    return np.array([[0, -x[2], x[1]], [x[2], 0, -x[0]], [-x[1], x[0], 0]])
+
+
 class SymbolicModel:
     """
     Class that contains all necessary components of a symbolic model.
@@ -64,7 +71,9 @@ class SymbolicModel:
         # Create state and input symbols
         r = ca.vertcat(*[SX.sym(name) for name in ["rx", "ry", "rz"]])
         q = ca.vertcat(*[SX.sym(name) for name in ["eta", "eps1", "eps2", "eps3"]])
-        v = ca.vertcat(*[SX.sym(name) for name in ["vx", "vy", "vz"]])
+        v = ca.vertcat(
+            *[SX.sym(name) for name in ["vx", "vy", "vz"]]
+        )  # Velocity in inertial frame
         omega = ca.vertcat(
             *[SX.sym(name) for name in ["omega_x", "omega_y", "omega_z"]]
         )
@@ -106,31 +115,41 @@ class SymbolicModel:
         # System transformation matrix from CG to CO
         # CG = Center of Gravity, CO = Center origin (body frame)
         H = np.eye(6, 6)
-        H[0:3, 3:6] = np.transpose(ca.skew(np.array(self.com_offset)))
+        H[0:3, 3:6] = np.transpose(skew(np.array(self.com_offset)))
 
         # Transform system matrices to body frame by similarity transformation
         M_body = H.T @ M_com @ H
-        M_body_inv = np.linalg.inv(M_body)
+        M_body_inv = ca.DM(np.linalg.inv(M_body))
 
         # Rotation matrix from quaternion
-        eta, eps = q[0], q[1:4]
-        S = ca.skew(eps)
-        R_quat = SX.eye(3) + 2 * eta * S + 2 * ca.mtimes(S, S)
-
-        # Quaternion kinematics transformation
-        T_quat = 0.5 * ca.vertcat(
-            ca.horzcat(-eps[0], -eps[1], -eps[2]),
-            ca.horzcat(eta, -eps[2], eps[1]),
-            ca.horzcat(eps[2], eta, -eps[0]),
-            ca.horzcat(-eps[1], eps[0], eta)
+        # Notation: R_{IB} (from body to inertial frame)
+        R_quat = ca.vertcat(
+            ca.horzcat(
+                1 - 2 * (q[2] ** 2 + q[3] ** 2),
+                2 * (q[1] * q[2] - q[0] * q[3]),
+                2 * (q[1] * q[3] + q[0] * q[2]),
+            ),
+            ca.horzcat(
+                2 * (q[1] * q[2] + q[0] * q[3]),
+                1 - 2 * (q[1] ** 2 + q[3] ** 2),
+                2 * (q[2] * q[3] - q[0] * q[1]),
+            ),
+            ca.horzcat(
+                2 * (q[1] * q[3] - q[0] * q[2]),
+                2 * (q[2] * q[3] + q[0] * q[1]),
+                1 - 2 * (q[1] ** 2 + q[2] ** 2),
+            ),
         )
 
-        # System Jacobian
-        J_quat = SX(7, 6)
-        J_quat[0:3, 0:3] = R_quat
-        J_quat[3:7, 3:6] = T_quat
+        # Quaternion kinematics transformation (for Hamiltonian product)
+        T_quat = 0.5 * ca.vertcat(
+            ca.horzcat(-q[1], -q[2], -q[3]),
+            ca.horzcat(q[0], -q[3], q[2]),
+            ca.horzcat(q[3], q[0], -q[1]),
+            ca.horzcat(-q[2], q[1], q[0]),
+        )
 
-        # Coriolis effect in body frame
+        # Coriolis effect in body frame (due to CoM offset)
         c = ca.vertcat(
             m * ca.mtimes([ca.skew(omega), ca.skew(omega), self.com_offset]),
             ca.mtimes(
@@ -146,13 +165,17 @@ class SymbolicModel:
             ),
         )
 
+        # Calculate the applied wrench in body frame
+        # wrench = [Fx, Fy, Fz, Tx, Ty, Tz]
+        wrench = ca.mtimes(M_body_inv, -c + ca.mtimes(DM(self.mixer), u))
+
         # State space equations
+        # NOTE: Force vector rotated to inertial frame, Torque still in body frame
         f_expl = ca.vertcat(
-            ca.mtimes(J_quat, ca.vertcat(v, omega)),
-            ca.mtimes(
-                M_body_inv,
-                -c + ca.mtimes(DM(self.mixer), u),
-            ),
+            v,  # r_dot = v (since v is in the inertial frame)
+            ca.mtimes(T_quat, omega),  # q_dot
+            ca.mtimes(R_quat, wrench[0:3]),
+            wrench[3:6],
         )
 
         # Save everything to symbolic model object (for MPC generation)
