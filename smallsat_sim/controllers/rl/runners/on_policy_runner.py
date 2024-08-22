@@ -1,5 +1,7 @@
 import os
 import time
+from etils import epath
+from pathlib import Path
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -153,7 +155,8 @@ class OnPolicyRunner(object):
         print("Evaluating agent...")
 
         # Check if trained actor and critic modules are available and load them
-        ckpt_dir = os.listdir("/tmp/checkpoints/vpg_training/")
+        ckpt_dir = os.listdir("smallsat_sim/controllers/rl/checkpoints/vpg_training/")
+        
         if len(ckpt_dir) == 0:
             raise Exception("No training has been done yet.")
         else:
@@ -184,7 +187,7 @@ class OnPolicyRunner(object):
         Control the agent using the previously trained RL controller.
         """
         # Check if trained actor and critic modules are available and load them
-        ckpt_dir = os.listdir("/tmp/checkpoints/vpg_training/")
+        ckpt_dir = os.listdir("smallsat_sim/controllers/rl/checkpoints/vpg_training/")
         if len(ckpt_dir) == 0:
             raise Exception("No training has been done yet.")
         else:
@@ -221,7 +224,7 @@ class OnPolicyRunner(object):
         """
         Save the actor and critic network params.
         """
-        ckpt_path = ocp.test_utils.erase_and_create_empty("/tmp/checkpoints/")
+        ckpt_path = ocp.test_utils.erase_and_create_empty(Path.home() / epath.Path("smallsat-sim/smallsat_sim/controllers/rl/checkpoints"))
         ckpt = {
             "actor_model": nnx.state(self.agent.actor),
             "critic_model": nnx.state(self.agent.critic),
