@@ -27,7 +27,7 @@ class EnvConfig(BaseEnvConfig):
         bodies_list = []
         for i in range(num_bodies):
             bodies_list.append(
-                Body(name=f"body{i}", pos=[-3.3, -9, 0.8], euler=[0, 0, 0])
+                Body(name=f"body{i}", pos=[-3.3, -9.5, 0.8], euler=[0, 0, 0])
             )
 
     # Holds all information for the controller in use
@@ -112,7 +112,7 @@ class EnvConfig(BaseEnvConfig):
         class NominalMPCC:
             # Decimate the controller frequency such that it doesn't
             # run equally fast to the simulation discretization
-            control_decimation = 40
+            control_decimation = 50
             Ts = BaseEnvConfig.sim.dt * control_decimation
 
             # Define MPC's horizon
@@ -120,26 +120,23 @@ class EnvConfig(BaseEnvConfig):
 
             class cost:
                 # Intermediate cost on input
-                R = 1e-2 * np.eye(12)
+                R = 5e-2 * np.eye(12)
 
                 # Cost on lag error
-                q_l = 1e-2
+                q_l = 5e-2
 
                 # Contouring cost
-                Q_c = 1e-2 * np.eye(3)
+                Q_c = 1e-1 * np.eye(3)
 
                 # Cost on angular velocity
-                Q_omega = 5e-3 * np.eye(3)
-
-                # Cost on d_theta
-                r_d_theta = 1e-4
+                Q_omega = 5e-2 * np.eye(3)
 
                 # Reward for progress
-                q_theta = 1e-3
+                q_theta = 5e-2
 
                 # Penalty on attitude error
-                Q_q = 2e-1 * np.eye(3)
-                
+                Q_q = 1e-2 * np.eye(4)
+
         # GPMPC controller parameters
         class GPMPC:
             # Decimate the controller frequency such that it doesn't
@@ -155,7 +152,7 @@ class EnvConfig(BaseEnvConfig):
                 R = 1e-2 * np.eye(12)
 
                 # Cost on lag error
-                q_l = 1e-2
+                q_l = 2e-2
 
                 # Contouring cost
                 Q_c = 1e-2 * np.eye(3)
@@ -167,11 +164,10 @@ class EnvConfig(BaseEnvConfig):
                 r_d_theta = 1e-4
 
                 # Reward for progress
-                q_theta = 1e-3
+                q_theta = 3.5e-3
 
                 # Penalty on attitude error
-                Q_q = 2e-1 * np.eye(3)
-
+                Q_q = 5e-3 * np.eye(3)
 
     class planner:
         resolution = 1  # Resolution of the grid
@@ -211,4 +207,3 @@ class EnvConfig(BaseEnvConfig):
 
         start_pos = (0, 0, 10)
         goal_pos = (0, 3, -10)
-
