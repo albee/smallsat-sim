@@ -72,23 +72,45 @@ class BaseEnv(object):
         # Execute post physics steps
         self._post_physics_step()
 
-    def get_obs(self) -> np.array:
+    def get_obs(self, v_frame: str = "body") -> np.ndarray:
         """
         Return all states
+
+        args:
+            v_frame (str): Specifies the frame of the velocity in the returned observation.
+                             - "body": Return the velocity in the body frame.
+                             - "inertial": Return the velocity in the inertial frame.
+
+        returns:
+            np.array: Array of observations containing position, orientation, velocity
+                      and angular velocity.
         """
         # obs = [r (3),
         #        q (4),
-        #        v (3), --> in BODY frame
+        #        v (3), --> in body/inertial frame
         #        omega (3)]
 
-        # Retrieve current rotation matrix
-        R = np.reshape(self.data.body("body0").xmat, (3, 3))
+        if v_frame == "body":
 
-        # Rotate intertial velocity to body velocity
-        vel_body = R.T @ self.data.qvel[:3]
+            # Retrieve current rotation matrix
+            R = np.reshape(self.data.body("body0").xmat.copy(), (3, 3))
+
+            # Rotate intertial velocity to body velocity
+            v = R.T @ self.data.qvel[:3].copy()
+
+        elif v_frame == "inertial":
+
+            # Retrieve inertial velocity from MuJoCo
+            v = self.data.qvel[:3].copy()
+
+        else:
+            raise RuntimeError(
+                f"Specified velocity frame {v_frame} not valid. "
+                "Must be either 'body' or 'inertial'."
+            )
 
         # Create array of observations
-        obs = np.concatenate((self.data.qpos, vel_body, self.data.qvel[3:]))
+        obs = np.concatenate((self.data.qpos, v, self.data.qvel[3:6]))
 
         return obs
 
@@ -153,7 +175,11 @@ class BaseEnv(object):
         Creates a renderer to visualize the experiments (to later save them to a video).
         """
         # Create instance of MuJoCo renderer
-        self.renderer = mujoco.Renderer(self.model, width=self.env_cfg.renderer.width, height=1440)
+        self.renderer = mujoco.Renderer(
+            self.model,
+            width=self.env_cfg.renderer.width,
+            height=self.env_cfg.renderer.height,
+        )
 
         # Set up the scene and the default camera options
         self.cam = mujoco.MjvCamera()
