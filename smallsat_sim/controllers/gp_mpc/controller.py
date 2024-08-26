@@ -110,7 +110,7 @@ class GPMPC(BaseMPCController):
         self._create_zoro_description(env)
 
         # Setup Gaussian Process
-        self._setup_gp(obs=env.get_obs())
+        self._setup_gp(obs=env.get_obs(v_frame="body"))
 
         # Miscellaneous
         self.last_solution = {
@@ -178,7 +178,7 @@ class GPMPC(BaseMPCController):
 
         # Initialize some hyperparameters for GP
         # TODO: Move to configuration file
-        self.M = 50  # number of points in list
+        self.M = 100  # number of points in list
         self.gp_update_counter = 0  # Keep track how many times dict has been updated
         self.gp_initialized = False  # Keep track if GP is already initialized
 
@@ -259,7 +259,6 @@ class GPMPC(BaseMPCController):
         # Generate ZeroOrderGPMPC
         self.gp_mpc = ZeroOrderGPMPC(
             self.ocp_init,
-            self.nominal_sim,
             residual_model=residual_model,
             path_json_ocp=filename_ocp,
             path_json_sim=filename_sim,
@@ -317,7 +316,6 @@ class GPMPC(BaseMPCController):
         q_l = self.ctrl_cfg.cost.q_l
         Q_c = self.ctrl_cfg.cost.Q_c
         Q_omega = self.ctrl_cfg.cost.Q_omega
-        r_d_theta = self.ctrl_cfg.cost.r_d_theta
         q_theta = self.ctrl_cfg.cost.q_theta
         Q_q = self.ctrl_cfg.cost.Q_q
 
@@ -328,7 +326,8 @@ class GPMPC(BaseMPCController):
         # Extract states for ease of use
         r = model.x[0:3]
         q = model.x[3:7]
-        omega = model.x[7:10]
+        v = model.x[7:10]
+        omega = model.x[10:13]
 
         # Calculate errors
         e = r - g
@@ -373,17 +372,16 @@ class GPMPC(BaseMPCController):
         )
 
         # We only want to minimize eps part of error quaternion
-        e_q = e_q[1:4]
+        e_q_vec = e_q - ca.DM([1, 0, 0, 0])
 
         # Setup cost
         ocp.cost.cost_type = "EXTERNAL"
         ocp.model.cost_expr_ext_cost = (
             q_l * e_l * e_l
             + e_c.T @ Q_c @ e_c
-            + e_q.T @ Q_q @ e_q
+            + e_q_vec.T @ Q_q @ e_q_vec
             + omega.T @ Q_omega @ omega
             + (model.u.T) @ R @ (model.u)
-            + r_d_theta * d_theta * d_theta
             - q_theta * d_theta
         )
 
@@ -392,49 +390,99 @@ class GPMPC(BaseMPCController):
         ocp.constraints.lh = np.array([0.0])
         ocp.constraints.uh = np.array([1.0 * 1.0])
 
+        # Terminal constraint
+        # acados_model.con_h_expr_e = acados_model.con_h_expr
+        # ocp.constraints.lh_e = np.array([0.0])
+        # ocp.constraints.uh_e = np.array([0.1 * 0.1])
+
         # Set OCP dimensions
         nx = acados_model.x.size()[0]  # number of states
         nu = acados_model.u.size()[0]  # number of inputs
         ocp.dims.nx = nx
         self.nx = nx
+        ocp.dims.nsbx = nx
         ocp.dims.nu = nu
         self.nu = nu
         ocp.dims.np = p.size()[0]  # number of parameters
         ocp.dims.N = self.ctrl_cfg.N  # prediction horizon length
+
+        # Nonlinear constraints
         if acados_model.con_h_expr is not None:
             ocp.dims.nh = acados_model.con_h_expr.size()[0]
+            ocp.dims.nsh = 1
         else:
             ocp.dims.nh = 0
+            ocp.dims.nsh = 0
+        ocp.constraints.idxsh = np.array(range(ocp.dims.nsh))
 
+        # Terminal nonlinear constraints
         if acados_model.con_h_expr_e is not None:
             ocp.dims.nh_e = acados_model.con_h_expr_e.size()[0]
+            ocp.dims.nsh_e = 1
         else:
             ocp.dims.nh_e = 0
+            ocp.dims.nsh_e = 0
+
+        # Total number of slacks at stages (1, N-1)
+        ocp.dims.ns = nx + ocp.dims.nsh
 
         # Define state constraints
-        # Lower and Upper bound constraints for intermediate stages
+        # Lower bound constraints for intermediate stages
         ocp.constraints.lbx = np.array(
             [
-                -100,
-                -100,
-                -100,
-                -1.1,
-                -1.1,
-                -1.1,
-                -1.1,
-                -0.4,
-                -0.4,
-                -0.4,
-                -0.5,
-                -0.5,
-                -0.5,
-                0,
+                -100,  # x
+                -100,  # y
+                -100,  # z
+                -1.0,  # q[0]
+                -1.0,  # q[1]
+                -1.0,  # q[2]
+                -1.0,  # q[3]
+                -0.3,  # vx
+                -0.3,  # vy
+                -0.3,  # vz
+                -0.1,  # omega_x
+                -0.1,  # omega_y
+                -0.1,  # omega_z
+                0,  # theta
             ]
         )
+
+        # Upper bound constraints for intermediate stages
         ocp.constraints.ubx = np.array(
-            [100, 100, 100, 1.1, 1.1, 1.1, 1.1, 0.4, 0.4, 0.4, 0.5, 0.5, 0.5, 1000]
+            [
+                100,  # x
+                100,  # y
+                100,  # z
+                1.0,  # q[0]
+                1.0,  # q[1]
+                1.0,  # q[2]
+                1.0,  # q[3]
+                0.3,  # vx
+                0.3,  # vy
+                0.3,  # vz
+                0.1,  # omega_x
+                0.1,  # omega_y
+                0.1,  # omega_z
+                1000,  # theta
+            ]
         )
+
+        # Indexes of the state variables to which the constraints apply
         ocp.constraints.idxbx = np.arange(nx)
+
+        # Slacks on lower/upper bounds
+        ocp.constraints.lsbx = np.zeros(ocp.dims.nsbx)
+        ocp.constraints.usbx = np.zeros(ocp.dims.nsbx)
+        ocp.constraints.usbx[7:10] = 0.05
+        ocp.constraints.usbx[7:10] = -0.05
+        ocp.constraints.usbx[10:13] = 0.02
+        ocp.constraints.usbx[10:13] = -0.02
+        ocp.constraints.idxsbx = np.arange(nx)
+
+        ocp.cost.Zl = 5e+02 * np.ones(ocp.dims.ns)
+        ocp.cost.Zu = 5e+02 * np.ones(ocp.dims.ns)
+        ocp.cost.zl = 5e+03 * np.ones(ocp.dims.ns)
+        ocp.cost.zu = 5e+03 * np.ones(ocp.dims.ns)
 
         # Define input constraints
         # Fetch thurster limits from the model configuration
@@ -443,12 +491,16 @@ class GPMPC(BaseMPCController):
         ]
         ocp.constraints.lbu = np.array([forces[0] for forces in thruster_forces])
         ocp.constraints.ubu = np.array([forces[1] for forces in thruster_forces])
-        ocp.constraints.idxbu = np.arange(nu - 1)
+        
+        # Attach dtheta constraints
+        ocp.constraints.lbu = np.append(ocp.constraints.lbu, 0.0)
+        ocp.constraints.ubu = np.append(ocp.constraints.ubu, 0.2)
+        ocp.constraints.idxbu = np.arange(nu)
 
         # Set intial condition
-        ocp.constraints.idxbx_0 = np.arange(nx - 1)
-        ocp.constraints.lbx_0 = env.obs[0:13].copy()
-        ocp.constraints.ubx_0 = env.obs[0:13].copy()
+        ocp.constraints.idxbx_0 = np.arange(nx)
+        ocp.constraints.lbx_0 = ocp.constraints.lbx
+        ocp.constraints.ubx_0 = ocp.constraints.ubx
         ocp.parameter_values = np.zeros(ocp.dims.np)
 
         # Configure solver options
@@ -552,7 +604,7 @@ class GPMPC(BaseMPCController):
         """
         Calculate the control input based on current observation
         """
-        obs = env.get_obs()
+        obs = env.get_obs(v_frame="body")
 
         # Check if new observation shall be added to dictionary
         res_output = self._compute_residual(obs)
@@ -588,11 +640,12 @@ class GPMPC(BaseMPCController):
             self.gp_mpc.ocp_solver.set(i, "u", self.last_solution["inputs"][i_next])
 
         # Set initial condition
-        self.gp_mpc.ocp_solver.set(0, "lbx", env.obs[0:13])
-        self.gp_mpc.ocp_solver.set(0, "ubx", env.obs[0:13])
+        xinit = np.append(env.get_obs(v_frame="body"), self.theta_prev[1])
+        self.gp_mpc.ocp_solver.set(0, "lbx", xinit)
+        self.gp_mpc.ocp_solver.set(0, "ubx", xinit)
 
         # Solve for the first control input in receding horizon fashion
-        self.gp_mpc.solve(n_iter_max=1)
+        self.gp_mpc.solve()
         self.X_res, U_res = self.gp_mpc.get_solution()
         u0 = U_res[0, :]
 
@@ -619,7 +672,9 @@ class GPMPC(BaseMPCController):
         # Log quantities
         self._log(run_id=env.run_id, timestamp=env.data.time, env=env)
 
-        return u0[:-1]
+        # Return output
+        # NOTE: Very important to copy input to not mess with reference stuff
+        return u0[:-1].copy()
 
     def _set_params(self) -> None:
         """
@@ -679,7 +734,7 @@ class GPMPC(BaseMPCController):
             and self.gp_mpc.residual_model.gp_model.train_inputs is not None
         ):
             # Retrieve obs (NOTE: Use GT obs here?)
-            obs = env.get_obs()
+            obs = env.get_obs(v_frame="body")
 
             # Calculate nominal prediction error
             e_nom = calc_model_error(
@@ -754,7 +809,7 @@ class GPMPC(BaseMPCController):
         """
         if self.has_logger:
             obs_gt = (
-                env.get_obs()
+                env.get_obs(v_frame="body")
             )  # TODO: Change this to get GT obs, once MR has been merged
 
             # Tracking error
@@ -773,7 +828,8 @@ class GPMPC(BaseMPCController):
             attitude_error = calc_attitude_error(q_ref=q_ref, q=obs_gt[3:7])
 
             # Track solve time
-            solve_time = self.gp_mpc.solve_stats["timings"]["total"][0]
+            # TODO: Where to get this from?
+            solve_time = 0
 
             # Track cost value of current solution
             mpc_cost = self.gp_mpc.ocp_solver.get_cost()
