@@ -64,6 +64,9 @@ class SymbolicModel:
                 )
             )
 
+        # self.mixer[:, 1] = 0
+        # self.mixer[:, 3] = 0
+
     def _setup_model(self) -> None:
         """
         Sets up the symbolic model for integration and generation of solvers in CasADi
@@ -149,7 +152,7 @@ class SymbolicModel:
             ca.horzcat(-q[2], q[1], q[0]),
         )
 
-        # Coriolis effect in body frame (due to CoM offset)
+        # Centrifugal effect in body frame (due to CoM offset)
         c = ca.vertcat(
             m * ca.mtimes([ca.skew(omega), ca.skew(omega), self.com_offset]),
             ca.mtimes(
@@ -170,13 +173,22 @@ class SymbolicModel:
         wrench = ca.mtimes(M_body_inv, -c + ca.mtimes(DM(self.mixer), u))
 
         # State space equations
-        # NOTE: Force vector rotated to inertial frame, Torque still in body frame
+        # NOTE: Velocity in BODY frame
         f_expl = ca.vertcat(
-            v,  # r_dot = v (since v is in the inertial frame)
+            ca.mtimes(R_quat, v),  # r_dot = v (since v is in the inertial frame)
             ca.mtimes(T_quat, omega),  # q_dot
-            ca.mtimes(R_quat, wrench[0:3]),
+            wrench[0:3] - ca.mtimes(ca.skew(omega), v),
             wrench[3:6],
         )
+
+        # Inertial frame velocity
+        # NOTE: Force vector rotated to inertial frame, Torque still in body frame
+        # f_expl = ca.vertcat(
+        #     v,  # r_dot = v (since v is in the inertial frame)
+        #     ca.mtimes(T_quat, omega),  # q_dot
+        #     ca.mtimes(R_quat, wrench[0:3]),
+        #     wrench[3:6],
+        # )
 
         # Save everything to symbolic model object (for MPC generation)
         self.x = x
