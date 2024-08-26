@@ -17,7 +17,7 @@ class OraclePlanner(BasePlanner):
         self._generate_reference()
 
         # visualize the circle
-        self.visualize(self.reference_points)
+        self.visualize([self.reference_points[0]])
 
     def get_reference(self, obs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
