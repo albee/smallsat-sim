@@ -149,25 +149,22 @@ class EnvConfig(BaseEnvConfig):
 
             class cost:
                 # Intermediate cost on input
-                R = 1e-2 * np.eye(12)
+                R = 5e-2 * np.eye(12)
 
                 # Cost on lag error
-                q_l = 2e-2
+                q_l = 5e-2
 
                 # Contouring cost
-                Q_c = 1e-2 * np.eye(3)
+                Q_c = 9e-2 * np.eye(3)
 
                 # Cost on angular velocity
-                Q_omega = 5e-3 * np.eye(3)
-
-                # Cost on d_theta
-                r_d_theta = 1e-4
+                Q_omega = 1e-2 * np.eye(3)
 
                 # Reward for progress
-                q_theta = 3.5e-3
+                q_theta = 5e-2
 
                 # Penalty on attitude error
-                Q_q = 5e-3 * np.eye(3)
+                Q_q = 1e-3 * np.eye(4)
 
     class planner:
         resolution = 1  # Resolution of the grid
