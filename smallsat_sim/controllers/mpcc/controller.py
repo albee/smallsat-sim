@@ -236,6 +236,8 @@ class NominalMPCCController(BaseMPCController):
                 0,  # theta
             ]
         )
+
+        # Upper bound constraints for intermediate stages
         ocp.constraints.ubx = np.array(
             [
                 100,  # x
@@ -267,10 +269,10 @@ class NominalMPCCController(BaseMPCController):
         ocp.constraints.usbx[10:13] = -0.02
         ocp.constraints.idxsbx = np.arange(nx)
 
-        ocp.cost.Zl = 5e+02 * np.ones(ocp.dims.ns)
-        ocp.cost.Zu = 5e+02 * np.ones(ocp.dims.ns)
-        ocp.cost.zl = 5e+03 * np.ones(ocp.dims.ns)
-        ocp.cost.zu = 5e+03 * np.ones(ocp.dims.ns)
+        ocp.cost.Zl = 5e02 * np.ones(ocp.dims.ns)
+        ocp.cost.Zu = 5e02 * np.ones(ocp.dims.ns)
+        ocp.cost.zl = 5e03 * np.ones(ocp.dims.ns)
+        ocp.cost.zu = 5e03 * np.ones(ocp.dims.ns)
 
         # Define input constraints
         # Fetch thurster limits from the model configuration
@@ -320,7 +322,7 @@ class NominalMPCCController(BaseMPCController):
 
         # Retrieve closest point on track (relevant for theta)
         _, theta_init = self.planner.closest_point_on_trajectory(
-            env.get_obs(v_frame="inertial")[0:3]
+            env.get_obs(v_frame="body")[0:3]
         )
 
         # Array to store previous theta
@@ -328,12 +330,32 @@ class NominalMPCCController(BaseMPCController):
 
         # Warm start solver
         # Initial condition and Warm start
+        v_init = 0.00
+        Ts = self.ctrl_cfg.Ts
+        distance_on_track = theta_init
         x_guess = np.zeros((14, 1))
-        x_guess[0:13, 0] = env.get_obs(v_frame="inertial")
-        x_guess[-1, 0] = theta_init
+        u_guess = np.random.uniform(low=0.0, high=0.3, size=(13, 1))
 
-        [self.ocp_solver.set(i, "x", x_guess) for i in range(self.ctrl_cfg.N + 1)]
-        [self.ocp_solver.set(i, "u", np.zeros((13, 1))) for i in range(self.ctrl_cfg.N)]
+        for i in range(self.ctrl_cfg.N + 1):
+            curr_vel = (0.05 - v_init) * i / self.ctrl_cfg.N + v_init
+            distance_on_track += curr_vel * Ts
+
+            point = self.planner.trajectory.get_intermediate_reference(
+                distance_on_track
+            )
+
+            x_guess[0:13, 0] = env.get_obs(v_frame="body")
+            x_guess[0:3, 0] = point.position
+            x_guess[3:7, 0] = point.attitude
+            x_guess[7, 0] = -curr_vel
+            x_guess[-1] = distance_on_track
+
+            u_guess[-1] = (0.05 - v_init) / self.ctrl_cfg.N
+
+            self.ocp_solver.set(i, "x", x_guess)
+
+            if i < self.ctrl_cfg.N:
+                self.ocp_solver.set(i, "u", u_guess)
 
     def get_control_input(self, env: BaseEnv) -> np.ndarray:
         """
@@ -345,10 +367,10 @@ class NominalMPCCController(BaseMPCController):
             self._initialize_solver(env)
 
         # Set parameters
-        self._set_params()
+        self._set_params(env.get_obs(v_frame="body"))
 
         # Solve for the first control input in receding horizon fashion
-        xinit = np.append(env.get_obs(v_frame="inertial"), self.theta_prev[1])
+        xinit = np.append(env.get_obs(v_frame="body"), self.theta_prev[1])
         u0 = self.ocp_solver.solve_for_x0(
             xinit, print_stats_on_failure=True, fail_on_nonzero_status=False
         )
@@ -371,7 +393,7 @@ class NominalMPCCController(BaseMPCController):
 
         return u0[0:12]
 
-    def _set_params(self) -> None:
+    def _set_params(self, obs: np.ndarray) -> None:
         """
         Sets the parameters of the solver at runtime
         """
@@ -402,7 +424,7 @@ class NominalMPCCController(BaseMPCController):
         """
         if self.has_logger:
             obs_gt = env.get_obs(
-                v_frame="inertial"
+                v_frame="body"
             )  # TODO: Change this to get GT obs, once MR has been merged
 
             # Tracking error

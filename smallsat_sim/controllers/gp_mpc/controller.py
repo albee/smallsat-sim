@@ -178,7 +178,7 @@ class GPMPC(BaseMPCController):
 
         # Initialize some hyperparameters for GP
         # TODO: Move to configuration file
-        self.M = 100  # number of points in list
+        self.M = 200  # number of points in list
         self.gp_update_counter = 0  # Keep track how many times dict has been updated
         self.gp_initialized = False  # Keep track if GP is already initialized
 

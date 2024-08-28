@@ -17,6 +17,10 @@ from zero_order_gpmpc.models.gpytorch_models.gpytorch_residual_model import (
     FeatureSelector,
 )
 
+from smallsat_sim.external.zero_order_gp_mpc_package.external.gpytorch_utils.gp_hyperparam_training import (
+    train_gp_model,
+)
+
 
 class SlidingWindow(OnlineLearningStrategy):
     """
@@ -31,6 +35,9 @@ class SlidingWindow(OnlineLearningStrategy):
         # Initialize SlidingWindow-specific variables
         self.timestamps = []
 
+        # How many times called process
+        self.counter = 0
+
     def process(
         self,
         gp_model: ExactGP,
@@ -39,6 +46,9 @@ class SlidingWindow(OnlineLearningStrategy):
         gp_feature_selector: FeatureSelector,
         timestamp: float,
     ) -> ExactGP | None:
+
+        self.counter += 1
+
         # Convert to tensor
         if not torch.is_tensor(x_input):
             x_input = to_tensor(arr=x_input, device=self.device)
@@ -71,7 +81,7 @@ class SlidingWindow(OnlineLearningStrategy):
             self.timestamps.append(timestamp)
 
             return
-        
+
         # Check if GP is already full
         if gp_model.train_inputs[0].shape[-2] >= self.max_num_points:
             with torch.no_grad():
@@ -93,7 +103,10 @@ class SlidingWindow(OnlineLearningStrategy):
                 self.timestamps.pop(drop_idx)
                 self.timestamps.append(timestamp)
 
-                return fantasy_model
+            # Check for training
+            fantasy_model = self._check_training(fantasy_model)
+
+            return fantasy_model
 
         with torch.no_grad():
             # Add observation and return updated model
@@ -104,4 +117,27 @@ class SlidingWindow(OnlineLearningStrategy):
             # Record datapoint in timestamps
             self.timestamps.append(timestamp)
 
+            return fantasy_model
+
+    def _check_training(self, fantasy_model: ExactGP) -> ExactGP:
+
+        if self.counter % self.max_num_points == 0 and False:
+            # Before training
+            for name, param in fantasy_model.named_parameters():
+                print(f"Parameter {name} has shape {param.shape} and values:")
+                print(param)
+
+            fantasy_model, _ = train_gp_model(
+                fantasy_model,
+                torch_seed=456,
+                training_iterations=300,
+            )
+
+            # After training
+            for name, param in fantasy_model.named_parameters():
+                print(f"Parameter {name} has shape {param.shape} and values:")
+                print(param)
+
+            return fantasy_model
+        else:
             return fantasy_model
