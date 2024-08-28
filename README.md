@@ -1,23 +1,18 @@
 # smallsat-sim
 
-Simulation environment for SmallSat Steward. The simulation environment provides capabilities for:
+The future home of SmallSatSim, a MuJoCo-based simulation environment for microgravity robotics research. SmallSatSim is easily repurposable to other robotics research scenarios including, notably, maritime robotics. SmallSatSim provides:
 
-- Satellite dynamics modeling
-  - From a physics simulation engine (MuJoCo)
-  - From differentiable custom set of dynamics (CasADi)
-- Disturbance/degradation modeling 
-- Collision modeling for realstic collision volumes
-- Visualization
+- easy parallelization for reinforcement learning
+- system dynamics modification for model perturbations and disturbances
+- built-in environments for some common microgravity research scenarios
+- interfacing with MuJoCo's high-fidelity dynamics and visualization utilities
+- differentiable custom dynamics for some scenarios, such as the free-flyer dynamics using CasADi
 
-ROS2 integration is not currently implemented, but may be supported in future updates.
-
+SmallSatSim is a part of the SmallSat Steward project, a collaboration between researchers at Caltech's Jet Propulsion Laboratory and the University of Michigan's Space Systems Laboratory. This project is open-sourced under an Apache 2.0 license.
 
 ## Dependencies
 
-Python dependencies are specified in `requirements.text` and are installed in the steps below.
-
-*A future update to this repo will likely Docker-ize the project!*
-
+Python dependencies are specified in `requirements.txt` and are installed in the steps below.
 
 ## Installation
 First, create a virtual environment with Python 3.10.11. This can be done with Visual Studio's extension *Python Environment Manager* or `pyenv`, outlined [here](https://robiokidenis.medium.com/how-to-install-multiple-python-on-your-mac-d20713740a2d).
@@ -27,7 +22,7 @@ pyenv install 3.10.11
 pyenv global 3.10.11  # to globally switch for your user account
 ```
 
-Next, create a virtual environment in `<smallsat-sim`:
+Next, create a virtual environment in `smallsat-sim`:
 
 ```bash
 python -m venv .venv
@@ -78,10 +73,15 @@ TODO
 
 ## Development Practices
 
-We will be using a "git flow" style and branching off of main for feature adds.
+The project uses a [git flow](https://www.atlassian.com/git/tutorials/comparing-workflows/gitflow-workflow) style branching off of main for feature adds.
 
 Please develop significant features on separate branches named `feature/FEATURE_NAME`, branching off of `main`. For small changes, committing directly to `main` is fine; for larger changes merqe requests are encouraged.
 
 
 ## License
-TODO
+
+Copyright (c) 2024, Jet Propulsion Laboratory, California Institute of Technology. All rights reserved. JPL NTR 53088.
+
+This software is licensed under the Apache License, version 2.0 (the "License"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0.
+
+Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
