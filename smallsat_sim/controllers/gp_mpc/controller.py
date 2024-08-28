@@ -110,7 +110,7 @@ class GPMPC(BaseMPCController):
         self._create_zoro_description(env)
 
         # Setup Gaussian Process
-        self._setup_gp(obs=env.get_obs(v_frame="body"))
+        self._setup_gp(obs=env.get_obs())
 
         # Miscellaneous
         self.last_solution = {
@@ -479,10 +479,10 @@ class GPMPC(BaseMPCController):
         ocp.constraints.usbx[10:13] = -0.02
         ocp.constraints.idxsbx = np.arange(nx)
 
-        ocp.cost.Zl = 5e+02 * np.ones(ocp.dims.ns)
-        ocp.cost.Zu = 5e+02 * np.ones(ocp.dims.ns)
-        ocp.cost.zl = 5e+03 * np.ones(ocp.dims.ns)
-        ocp.cost.zu = 5e+03 * np.ones(ocp.dims.ns)
+        ocp.cost.Zl = 5e02 * np.ones(ocp.dims.ns)
+        ocp.cost.Zu = 5e02 * np.ones(ocp.dims.ns)
+        ocp.cost.zl = 5e03 * np.ones(ocp.dims.ns)
+        ocp.cost.zu = 5e03 * np.ones(ocp.dims.ns)
 
         # Define input constraints
         # Fetch thurster limits from the model configuration
@@ -491,7 +491,7 @@ class GPMPC(BaseMPCController):
         ]
         ocp.constraints.lbu = np.array([forces[0] for forces in thruster_forces])
         ocp.constraints.ubu = np.array([forces[1] for forces in thruster_forces])
-        
+
         # Attach dtheta constraints
         ocp.constraints.lbu = np.append(ocp.constraints.lbu, 0.0)
         ocp.constraints.ubu = np.append(ocp.constraints.ubu, 0.2)
@@ -604,7 +604,7 @@ class GPMPC(BaseMPCController):
         """
         Calculate the control input based on current observation
         """
-        obs = env.get_obs(v_frame="body")
+        obs = env.get_obs()
 
         # Check if new observation shall be added to dictionary
         res_output = self._compute_residual(obs)
@@ -640,7 +640,7 @@ class GPMPC(BaseMPCController):
             self.gp_mpc.ocp_solver.set(i, "u", self.last_solution["inputs"][i_next])
 
         # Set initial condition
-        xinit = np.append(env.get_obs(v_frame="body"), self.theta_prev[1])
+        xinit = np.append(env.get_obs(), self.theta_prev[1])
         self.gp_mpc.ocp_solver.set(0, "lbx", xinit)
         self.gp_mpc.ocp_solver.set(0, "ubx", xinit)
 
@@ -721,6 +721,16 @@ class GPMPC(BaseMPCController):
 
         x_train = np.hstack((self.x_past, self.u_past))
 
+        if self.has_logger:
+            # Calculate the predicted residual
+            with torch.no_grad():
+                likelihood = self.gp_mpc.residual_model.gp_model.likelihood
+                observed_pred = likelihood(self.gp_mpc.residual_model.gp_model(x_train))
+
+            # Get mean and confidence intervals
+            mean = observed_pred.mean.numpy()
+            lower, upper = observed_pred.confidence_region()
+
         return residual, x_train
 
     def _calc_prediction_errors(self, env: BaseEnv) -> None:
@@ -734,7 +744,7 @@ class GPMPC(BaseMPCController):
             and self.gp_mpc.residual_model.gp_model.train_inputs is not None
         ):
             # Retrieve obs (NOTE: Use GT obs here?)
-            obs = env.get_obs(v_frame="body")
+            obs = env.get_obs()
 
             # Calculate nominal prediction error
             e_nom = calc_model_error(
@@ -745,20 +755,23 @@ class GPMPC(BaseMPCController):
             )
 
             # Calculate GP prediction error
-            x_test = torch.from_numpy(np.hstack((self.x_past, self.u_past))).unsqueeze(0)
+            x_test = torch.from_numpy(np.hstack((self.x_past, self.u_past))).unsqueeze(
+                0
+            )
             with torch.no_grad():
                 z_test = self.input_selection(x_test)
                 predicted_residual = self.gp_mpc.residual_model.gp_model(z_test)
-            e_gp = e_nom - torch.matmul(self.B_d[:-1,:], predicted_residual.mean.T)
+            e_gp = e_nom - torch.matmul(self.B_d[:-1, :], predicted_residual.mean.T)
 
             # L2 norm of both
             e_gp = torch.norm(e_gp, 2).item()
             e_nom = torch.norm(e_nom, 2).item()
 
             # Log quantities
-            self.logger.log(
-                run_id=env.run_id, timestamp=env.data.time, e_gp=e_gp, e_nom=e_nom
-            )
+            if self.has_logger:
+                self.logger.log(
+                    run_id=env.run_id, timestamp=env.data.time, e_gp=e_gp, e_nom=e_nom
+                )
 
     def _train_gp(self) -> None:
         """
@@ -809,7 +822,7 @@ class GPMPC(BaseMPCController):
         """
         if self.has_logger:
             obs_gt = (
-                env.get_obs(v_frame="body")
+                env.get_obs()
             )  # TODO: Change this to get GT obs, once MR has been merged
 
             # Tracking error

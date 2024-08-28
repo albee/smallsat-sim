@@ -18,6 +18,8 @@ class BaseEnvConfig:
             sigma_q = 1e-3
             sigma_v = 1e-3
             sigma_w = 1e-3
+        class obs:
+            v_frame = "body" # can alternatively be switched to "inertial"
 
     class renderer:
         start_recording = 0.0 # Start time of the recorded window

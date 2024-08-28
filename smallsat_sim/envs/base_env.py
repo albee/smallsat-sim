@@ -33,7 +33,7 @@ class BaseEnv(object):
         self.perturbations_keycodes = PerturbationList([]).keycode_dict.keys()
 
         # Initialize observations
-        self.set_obs()
+        self.set_obs(v_frame=self.env_cfg.sim.obs.v_frame)
 
         # Initialize arguments
         self.args = args
@@ -74,7 +74,7 @@ class BaseEnv(object):
         # Execute post physics steps
         self._post_physics_step()
 
-    def get_obs(self, v_frame: str = "body") -> np.ndarray:
+    def set_obs(self, v_frame: str = "body") -> np.ndarray:
         """
         Return all states
 
@@ -354,7 +354,7 @@ class BaseEnv(object):
         Executes actions after stepping simulation
         """
         # Fetch most recent observations
-        self.set_obs()
+        self.set_obs(v_frame=self.env_cfg.sim.obs.v_frame)
 
     def _key_callback(self, keycode) -> None:
         """

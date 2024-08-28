@@ -321,9 +321,7 @@ class NominalMPCCController(BaseMPCController):
         """
 
         # Retrieve closest point on track (relevant for theta)
-        _, theta_init = self.planner.closest_point_on_trajectory(
-            env.get_obs(v_frame="body")[0:3]
-        )
+        _, theta_init = self.planner.closest_point_on_trajectory(env.get_obs()[0:3])
 
         # Array to store previous theta
         self.theta_prev = [theta_init for i in range(self.ctrl_cfg.N + 1)]
@@ -344,7 +342,7 @@ class NominalMPCCController(BaseMPCController):
                 distance_on_track
             )
 
-            x_guess[0:13, 0] = env.get_obs(v_frame="body")
+            x_guess[0:13, 0] = env.get_obs()
             x_guess[0:3, 0] = point.position
             x_guess[3:7, 0] = point.attitude
             x_guess[7, 0] = -curr_vel
@@ -367,10 +365,10 @@ class NominalMPCCController(BaseMPCController):
             self._initialize_solver(env)
 
         # Set parameters
-        self._set_params(env.get_obs(v_frame="body"))
+        self._set_params(env.get_obs())
 
         # Solve for the first control input in receding horizon fashion
-        xinit = np.append(env.get_obs(v_frame="body"), self.theta_prev[1])
+        xinit = np.append(env.get_obs(), self.theta_prev[1])
         u0 = self.ocp_solver.solve_for_x0(
             xinit, print_stats_on_failure=True, fail_on_nonzero_status=False
         )
@@ -423,8 +421,8 @@ class NominalMPCCController(BaseMPCController):
         Logs desired quantities if flag is enabled
         """
         if self.has_logger:
-            obs_gt = env.get_obs(
-                v_frame="body"
+            obs_gt = (
+                env.get_obs()
             )  # TODO: Change this to get GT obs, once MR has been merged
 
             # Tracking error
