@@ -12,6 +12,12 @@ class BaseEnvConfig:
     class sim:
         dt = 1/500 # simulation runs @500Hz
         max_sim_time = 121 # max. simulation time
+        class noise:
+            add_obs_noise = False # add noise to ob of env
+            sigma_r = 1e-2
+            sigma_q = 1e-3
+            sigma_v = 1e-3
+            sigma_w = 1e-3
 
     class renderer:
         start_recording = 0.0 # Start time of the recorded window
