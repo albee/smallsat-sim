@@ -4,6 +4,8 @@ import mujoco
 import mujoco.viewer
 import cv2
 import os
+import jax
+import jax.numpy as jnp
 from datetime import datetime
 
 from smallsat_sim.envs.dynamics import SymbolicModel
@@ -32,7 +34,7 @@ class BaseEnv(object):
         self.perturbations_keycodes = PerturbationList([]).keycode_dict.keys()
 
         # Initialize observations
-        self.obs = self.get_obs()
+        self.set_obs()
 
         # Initialize arguments
         self.args = args
@@ -76,9 +78,10 @@ class BaseEnv(object):
         # Execute post physics steps
         self._post_physics_step()
 
-    def get_obs(self) -> np.array:
+    def set_obs(self) -> None:
         """
-        Return all states
+        Sets the (noisy) observations which can be fetched by
+        the get_obs() method.
         """
         # obs = [r (3),
         #        q (4),
@@ -94,7 +97,83 @@ class BaseEnv(object):
         # Create array of observations
         obs = np.concatenate((self.data.qpos, vel_body, self.data.qvel[3:]))
 
-        return obs
+        # Save ground truth observations
+        self.obs_gt = obs
+
+        # Apply noise to observations
+        self.obs = self._apply_obs_noise(obs)
+
+    def get_obs(self) -> np.ndarray | jnp.ndarray:
+        """
+        Returns the current (noisy) observations
+        """
+        return self.obs.copy()
+
+    def get_obs_gt(self) -> np.ndarray | jnp.ndarray:
+        """
+        Return the GT observations. Use this method for
+        visualization and for evaluations.
+        """
+        return self.obs_gt.copy()
+
+    def _apply_obs_noise(
+        self, obs: np.ndarray | jnp.ndarray
+    ) -> np.ndarray | jnp.ndarray:
+        """
+        Applies additive Gaussian noise on top of observations.
+        For MuJoCo: obs are of type np.ndarray
+        For MJX: obs are of type
+        """
+        if self.env_cfg.sim.noise.add_obs_noise:
+            # Single agent in MuJoCo
+            if isinstance(obs, np.ndarray):
+                # Calculate noise
+                noise_r = np.random.normal(0, self.env_cfg.sim.noise.sigma_r, 3)
+                noise_q = np.random.normal(0, self.env_cfg.sim.noise.sigma_q, 4)
+                noise_v = np.random.normal(0, self.env_cfg.sim.noise.sigma_v, 3)
+                noise_w = np.random.normal(0, self.env_cfg.sim.noise.sigma_w, 3)
+
+                # Concatenate noise
+                noise = np.concatenate((noise_r, noise_q, noise_v, noise_w))
+
+                # Add noise to observations and return
+                return obs + noise
+
+            # Multiple agents in MJX
+            else:
+                # Fix a random seed for the PRNG key and set the key
+                random_seed = np.random.randint(0, high=9999, size=4)
+
+                # Calculate noise for each environment
+                num_envs = obs.shape[0]
+                noise_r = jax.random.multivariate_normal(
+                    jax.random.PRNGKey(random_seed[0]),
+                    jnp.zeros((num_envs, 3)),
+                    self.env_cfg.sim.noise.sigma_r * jnp.identity(3),
+                )
+                noise_q = jax.random.multivariate_normal(
+                    jax.random.PRNGKey(random_seed[0]),
+                    jnp.zeros((num_envs, 4)),
+                    self.env_cfg.sim.noise.sigma_q * jnp.identity(4),
+                )
+                noise_v = jax.random.multivariate_normal(
+                    jax.random.PRNGKey(random_seed[0]),
+                    jnp.zeros((num_envs, 3)),
+                    self.env_cfg.sim.noise.sigma_v * jnp.identity(3),
+                )
+                noise_w = jax.random.multivariate_normal(
+                    jax.random.PRNGKey(random_seed[0]),
+                    jnp.zeros((num_envs, 3)),
+                    self.env_cfg.sim.noise.sigma_w * jnp.identity(3),
+                )
+
+                # Concatenate noise along the second dimension
+                noise = jnp.concatenate((noise_r, noise_q, noise_v, noise_w), axis=1)
+
+                # Add noise to observations and return
+                return obs + noise
+        else:
+            return obs
 
     def get_sim_rendering(self, output_filename: str) -> None:
         """
@@ -189,7 +268,7 @@ class BaseEnv(object):
 
         return env_cfg, model_cfg
 
-    def _setup_sim(self, args: Namespace):
+    def _setup_sim(self, args: Namespace) -> None:
         """
         Prepares simulation according to args.
         Creates a viewer depending on headless flag.
@@ -217,13 +296,13 @@ class BaseEnv(object):
             self.renderer = None
             self._update_renderer = lambda *args, **kwargs: None
 
-    def _update_viewer(self):
+    def _update_viewer(self) -> None:
         """
         Updates the viewer
         """
         self.viewer.sync()
 
-    def _update_renderer(self):
+    def _update_renderer(self) -> None:
         """
         Updates the renderer.
         """
@@ -258,7 +337,7 @@ class BaseEnv(object):
         Executes actions after stepping simulation
         """
         # Fetch most recent observations
-        self.obs = self.get_obs()
+        self.set_obs()
 
     def _key_callback(self, keycode) -> None:
         """

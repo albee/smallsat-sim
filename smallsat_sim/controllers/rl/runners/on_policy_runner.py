@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 import optax
-import orbax.checkpoint as ocp
+import pickle
 
 from smallsat_sim.envs.vec_env import VecEnv
 from smallsat_sim.planners.base_planner import BasePlanner
@@ -26,8 +26,9 @@ class OnPolicyRunner(object):
         self.reference_point = planner.reference_points[0]
         self._load_rl_hyperparams()
 
-        # Checkpointer to save the trained modules
-        self.checkpointer = ocp.StandardCheckpointer()
+        # Path to save the checkpoints
+        self.ckpt_path = "smallsat_sim/controllers/rl/checkpoints/"
+        self.ckpt_filename = "vpg_training_state.pkl"
 
     def learn(self):
         """
@@ -155,7 +156,7 @@ class OnPolicyRunner(object):
         print("Evaluating agent...")
 
         # Check if trained actor and critic modules are available and load them
-        ckpt_dir = os.listdir("smallsat_sim/controllers/rl/checkpoints/vpg_training/")
+        ckpt_dir = os.listdir(self.ckpt_path)
 
         if len(ckpt_dir) == 0:
             raise Exception("No training has been done yet.")
@@ -187,7 +188,7 @@ class OnPolicyRunner(object):
         Control the agent using the previously trained RL controller.
         """
         # Check if trained actor and critic modules are available and load them
-        ckpt_dir = os.listdir("smallsat_sim/controllers/rl/checkpoints/vpg_training/")
+        ckpt_dir = os.listdir(self.ckpt_path)
         if len(ckpt_dir) == 0:
             raise Exception("No training has been done yet.")
         else:
@@ -224,28 +225,21 @@ class OnPolicyRunner(object):
         """
         Save the actor and critic network params.
         """
-        ckpt_path = ocp.test_utils.erase_and_create_empty(
-            Path.home()
-            / epath.Path("smallsat-sim/smallsat_sim/controllers/rl/checkpoints")
-        )
-        ckpt = {
+        training_state = {
             "actor_model": nnx.state(self.agent.actor),
             "critic_model": nnx.state(self.agent.critic),
         }
-        self.checkpointer.save(ckpt_path / "vpg_training/", ckpt)
+        with open(self.ckpt_path + self.ckpt_filename, 'wb') as file:
+            pickle.dump(training_state, file)
+        print(f"Checkpoint saved to {self.ckpt_filename}")
 
     def _load_trained_modules(self) -> None:
         """
         Load the actor and critic network params.
         """
-        ckpt = {
-            "actor_model": nnx.state(self.agent.actor),
-            "critic_model": nnx.state(self.agent.critic),
-        }
-        abstract_ckpt = jax.tree_util.tree_map(ocp.utils.to_shape_dtype_struct, ckpt)
-        restored_state = self.checkpointer.restore(
-            "/tmp/checkpoints/vpg_training/",
-            args=ocp.args.StandardRestore(abstract_ckpt),
-        )
+        with open(self.ckpt_path + self.ckpt_filename, 'rb') as file:
+            restored_state = pickle.load(file)
+        print(f"Checkpoint loaded from {self.ckpt_filename}")
+            
         nnx.update(self.agent.actor.mu_net, restored_state["actor_model"].mu_net)
         nnx.update(self.agent.critic.v_net, restored_state["critic_model"].v_net)
