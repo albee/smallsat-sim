@@ -37,10 +37,10 @@ class EnvConfig(BaseEnvConfig):
             control_decimation = 25
 
             # Number of environments
-            num_envs = 32
+            num_envs = 2048
 
             # Hyperparams for the learning loop
-            steps_per_epoch = 3000
+            steps_per_epoch = 1000
             epochs = 50
             max_epoch_len = 300
             gamma = 0.99

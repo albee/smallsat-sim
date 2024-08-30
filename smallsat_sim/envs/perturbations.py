@@ -8,6 +8,9 @@ import jax.numpy as jnp
 from smallsat_sim.envs.base_env_config import BaseEnvConfig
 from smallsat_sim.model.base_model_config import BaseModelConfig
 
+# Import for typing
+from smallsat_sim.model.base_model_config import BaseModelConfig
+
 
 class PerturbationStatus(Enum):
     """

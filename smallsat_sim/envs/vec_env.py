@@ -102,7 +102,11 @@ class VecEnv(BaseEnv):
         # Advance simulation
         for substep in range(self.env_cfg.control.control_decimation):
             # Update viewer
-            if substep % self.env_cfg.viewer.viewer_decimation == 0:
+            if (
+                substep % self.env_cfg.viewer.viewer_decimation == 0
+                and hasattr(self, "viewer")
+                and self.viewer is not None
+            ):
                 mjx.get_data_into(self.data_vec, self.model, self.mjx_batch)
                 self._update_viewer()
 
