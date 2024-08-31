@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 import optax
+import wandb
 import pickle
 
 from smallsat_sim.envs.vec_env import VecEnv
@@ -27,6 +28,24 @@ class OnPolicyRunner(object):
         # Path to save the checkpoints
         self.ckpt_path = "smallsat_sim/controllers/rl/checkpoints/"
         self.ckpt_filename = "vpg_training_state.pkl"
+
+        # Use Weights and Biases for logging
+        wandb.login()
+        wandb.init(
+            project="Astrobee-training",
+            config={
+                "num_envs": self.env.num_envs,
+                "steps_per_epoch": self.steps_per_epoch,
+                "epochs": self.epochs,
+                "max_epoch_len": self.max_epoch_len,
+                "gamma": self.gamma,
+                "lam": self.lam,
+                "actor_lr": self.actor_lr,
+                "critic_lr": self.critic_lr,
+                "episode_len": self.episode_len,
+                "n_evals": self.n_evals,
+            },
+        )
 
     def learn(self):
         """
@@ -132,17 +151,31 @@ class OnPolicyRunner(object):
             returns = data["ret"]
 
             # Policy gradient update
-            loss, grads = nnx.value_and_grad(actor_loss_fn)(self.agent.actor, tdres)
-            print(f"{loss = }")
+            actor_loss, grads = nnx.value_and_grad(actor_loss_fn)(
+                self.agent.actor, tdres
+            )
+            print(f"{actor_loss = }")
             actor_optimizer.update(grads)
 
             # Value function updates
             for _ in range(100):
-                loss, grads = nnx.value_and_grad(critic_loss_fn)(
+                critic_loss, grads = nnx.value_and_grad(critic_loss_fn)(
                     self.agent.critic, returns
                 )
-                print(f"{loss = }")
+                print(f"{critic_loss = }")
                 critic_optimizer.update(grads)
+
+            mean_dist2goal = jnp.sqrt(
+                states[:, 0] ** 2 + states[:, 1] ** 2 + states[:, 2] ** 2
+            )
+            wandb.log(
+                {
+                    "mean_return": mean_return,
+                    "actor_loss": actor_loss,
+                    "critic_loss": critic_loss,
+                    "mean_dist2goal": mean_dist2goal,
+                }
+            )
 
         # Save the trained actor and critic network weights
         self._save_trained_modules()
@@ -227,7 +260,7 @@ class OnPolicyRunner(object):
             "actor_model": nnx.state(self.agent.actor),
             "critic_model": nnx.state(self.agent.critic),
         }
-        with open(self.ckpt_path + self.ckpt_filename, 'wb') as file:
+        with open(self.ckpt_path + self.ckpt_filename, "wb") as file:
             pickle.dump(training_state, file)
         print(f"Checkpoint saved to {self.ckpt_filename}")
 
@@ -235,9 +268,9 @@ class OnPolicyRunner(object):
         """
         Load the actor and critic network params.
         """
-        with open(self.ckpt_path + self.ckpt_filename, 'rb') as file:
+        with open(self.ckpt_path + self.ckpt_filename, "rb") as file:
             restored_state = pickle.load(file)
         print(f"Checkpoint loaded from {self.ckpt_filename}")
-            
+
         nnx.update(self.agent.actor.mu_net, restored_state["actor_model"].mu_net)
         nnx.update(self.agent.critic.v_net, restored_state["critic_model"].v_net)

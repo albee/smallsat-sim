@@ -26,3 +26,4 @@ videos/
 # logs
 *.pkl
 logs/
+wandb/
