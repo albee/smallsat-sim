@@ -13,6 +13,7 @@ from memory_profiler import profile
 
 # General libraries
 import gpytorch
+from gpytorch.constraints.constraints import Positive
 import os
 import numpy as np
 import torch
@@ -178,7 +179,7 @@ class GPMPC(BaseMPCController):
 
         # Initialize some hyperparameters for GP
         # TODO: Move to configuration file
-        self.M = 200  # number of points in list
+        self.M = 500  # number of points in list
         self.gp_update_counter = 0  # Keep track how many times dict has been updated
         self.gp_initialized = False  # Keep track if GP is already initialized
 
@@ -191,12 +192,12 @@ class GPMPC(BaseMPCController):
             0,
             0,
             0,
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
             0,
             1,
             1,
@@ -217,7 +218,15 @@ class GPMPC(BaseMPCController):
         )
 
         # Initialize GP itself
-        likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=6)
+        likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=6,
+                                                                      noise_constraint=Positive())
+        noise_likelihood = torch.tensor([0])
+        noise_raw_task_noises = torch.tensor([-30., -30., -30., -30., -30., -30.])
+        noise_raw_noise = torch.tensor([-30.])
+        with torch.no_grad():
+            likelihood.raw_task_noises.data = noise_raw_task_noises
+            likelihood.noise.data = noise_likelihood
+            likelihood.raw_noise.data = noise_raw_noise
         gp_model = BatchIndependentMultitaskGPModel(
             train_x=None,
             train_y=None,
@@ -226,6 +235,21 @@ class GPMPC(BaseMPCController):
             input_dimension=sum(input_feature_selection),
             use_ard=True,
         )
+
+        for name, param in gp_model.named_parameters():
+                print(f"Parameter {name} has shape {param.shape} and values:")
+                print(param)
+
+        # Manually setting raw_outputscale
+        #new_raw_outputscale = torch.tensor([10, 10, 10, 10, 10, 10])
+        new_variance = torch.tensor([1e-10])
+        new_raw_variance = torch.tensor([-15.0, -15.0, -15.0, -15.0, -15.0, -15.0]).view(6,1,1)
+
+        with torch.no_grad():
+            gp_model.covar_module.variance.data = new_variance
+            gp_model.covar_module.raw_variance.data = new_raw_variance
+            #gp_model.covar_module.outputscale.data = new_raw_outputscale
+            #gp_model.covar_module.base_kernel.raw_variance.data = new_raw_variance
 
         # Train the GP offline
         # self._train_gp()
@@ -239,7 +263,7 @@ class GPMPC(BaseMPCController):
             data_processing_strategy=SlidingWindow(
                 max_num_points=self.M, device=next(gp_model.parameters()).device.type
             ),
-            verbose=True,
+            verbose=False,
         )
 
         # File naming stuff
@@ -549,12 +573,12 @@ class GPMPC(BaseMPCController):
 
         Sigma_W = np.diag(
             [
-                0.0001,
-                0.0001,
-                0.0001,
-                0.0001,
-                0.0001,
-                0.0001,
+                0.00001,
+                0.00001,
+                0.00001,
+                0.00001,
+                0.00001,
+                0.00001,
             ]
         )
 
@@ -604,7 +628,10 @@ class GPMPC(BaseMPCController):
         """
         Calculate the control input based on current observation
         """
+        # Retrieve some data which are used in multiple functions
         obs = env.get_obs()
+        self.run_id = env.run_id
+        self.timestamp = env.data.time
 
         # Check if new observation shall be added to dictionary
         res_output = self._compute_residual(obs)
@@ -723,13 +750,34 @@ class GPMPC(BaseMPCController):
 
         if self.has_logger:
             # Calculate the predicted residual
-            with torch.no_grad():
-                likelihood = self.gp_mpc.residual_model.gp_model.likelihood
-                observed_pred = likelihood(self.gp_mpc.residual_model.gp_model(x_train))
+            with torch.no_grad(), gpytorch.settings.fast_pred_var():
+                x_star = torch.atleast_2d(
+                    self.input_selection(torch.from_numpy(x_train))
+                )
+                observed_pred = (self.gp_mpc.residual_model.gp_model(x_star))
 
             # Get mean and confidence intervals
-            mean = observed_pred.mean.numpy()
+            mean = observed_pred.mean
             lower, upper = observed_pred.confidence_region()
+
+            # Log quantities
+            self.logger.log(
+                run_id=self.run_id,
+                timestamp=self.timestamp,
+                gp_GT=residual.squeeze(0).cpu().numpy(),
+                gp_pred=mean.squeeze(0).cpu().numpy(),
+                gp_lower=lower.squeeze(0).cpu().numpy(),
+                gp_upper=upper.squeeze(0).cpu().numpy(),
+            )
+
+            # Check if we want to log training data too
+            if np.abs(self.timestamp - 50) < 0.06:
+                self.logger.log(
+                    run_id=self.run_id,
+                    timestamp=self.timestamp,
+                    x_train = self.gp_mpc.residual_model.gp_model.train_inputs[0],
+                    y_train = self.gp_mpc.residual_model.gp_model.train_targets
+                )
 
         return residual, x_train
 

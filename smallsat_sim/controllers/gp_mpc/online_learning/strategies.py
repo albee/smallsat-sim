@@ -36,7 +36,7 @@ class SlidingWindow(OnlineLearningStrategy):
         self.timestamps = []
 
         # How many times called process
-        self.counter = 0
+        self.counter = -1
 
     def process(
         self,
@@ -137,6 +137,9 @@ class SlidingWindow(OnlineLearningStrategy):
             for name, param in fantasy_model.named_parameters():
                 print(f"Parameter {name} has shape {param.shape} and values:")
                 print(param)
+
+            # print(fantasy_model.covar_module.base_kernel.variance.data)
+            # print(fantasy_model.likelihood.noise.data)
 
             return fantasy_model
         else:
