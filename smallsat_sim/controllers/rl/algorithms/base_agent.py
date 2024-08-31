@@ -1,3 +1,4 @@
+from abc import ABC, abstractmethod
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -8,9 +9,9 @@ from smallsat_sim.controllers.rl.modules.base_network import Critic
 from smallsat_sim.controllers.rl.modules.base_policy import Actor
 
 
-class VPGAgent(BaseController):
+class BaseAgent(BaseController):
     """
-    Base agent (Vanilla Policy Gradient with Generalized Advantage Estimation).
+    Base implementation for actor-critic agents.
     """
 
     def __init__(self, env, planner, activation=nnx.tanh) -> None:
@@ -30,7 +31,6 @@ class VPGAgent(BaseController):
         """
         Return actions, value functions, and log-likelihood of chosen actions for given states.
         """
-        # TODO: disable gradient computation with states = jax.lax.stop_gradient(states)?
         pi, _ = self.actor.forward(states)
         key = jax.random.PRNGKey(42)
         actions = pi.sample(seed=key)
@@ -44,6 +44,28 @@ class VPGAgent(BaseController):
         Calculate the control input based on current observations for each environment.
         """
         return self.act(obs)[0]
+
+    @abstractmethod
+    def update_policy_gradient(
+        self,
+        actor_lr: float,
+        obs: jnp.ndarray,
+        actions: jnp.ndarray,
+        tdres: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """
+        Update the policy gradient. Return the actor loss.
+        """
+        pass
+
+    @abstractmethod
+    def update_value_function(
+        self, critic_lr: float, obs: jnp.ndarray, returns: jnp.ndarray
+    ) -> jnp.ndarray:
+        """
+        Update the value function. Return the critic loss.
+        """
+        pass
 
     def _log(self, run_id: int, timestamp: float, env: BaseEnv) -> None:
         """

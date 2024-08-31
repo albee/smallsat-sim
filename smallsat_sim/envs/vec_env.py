@@ -19,6 +19,9 @@ class VecEnv(BaseEnv):
         # Flag to know whether VecEnv is being used
         self.using_rl = True
 
+        # Flag to know whether Weights a& Biases should be used
+        self.use_wandb = args.wandb
+
         # Number of environments running in parallel
         self.num_envs = self.env_cfg.control.RL.num_envs
 
@@ -69,8 +72,6 @@ class VecEnv(BaseEnv):
         Apply input action on the environment. Returns the rewards and wether the terminal state has been reached.
         """
         self.step(input=actions)
-
-        # TODO: implement reward shaping for the case when the agent is out-of-bounds (collision corridor)
 
         # Penalize Euclidean distance from set point
         rewards = jnp.zeros(self.num_envs)

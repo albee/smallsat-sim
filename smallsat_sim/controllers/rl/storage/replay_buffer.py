@@ -3,9 +3,9 @@ import jax.numpy as jnp
 from smallsat_sim.utils.helpers import discount_cumsum, combined_shape
 
 
-class VPGBuffer(object):
+class ReplayBuffer(object):
     """
-    Vanilla Policy Gradient buffer to store trajectories. Inspired from https://spinningup.openai.com/en/latest/algorithms/vpg.html.
+    Replay buffer to store trajectories. Inspired from https://spinningup.openai.com/en/latest/algorithms/vpg.html.
     """
 
     def __init__(self, num_envs, obs_dim, act_dim, size, gamma, lam) -> None:

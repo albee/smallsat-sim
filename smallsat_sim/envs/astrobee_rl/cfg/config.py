@@ -37,20 +37,21 @@ class EnvConfig(BaseEnvConfig):
             control_decimation = 25
 
             # Number of environments
-            num_envs = 2048
+            num_envs = 1
 
             # Hyperparams for the learning loop
-            steps_per_epoch = 1000
-            epochs = 50
-            max_epoch_len = 300
-            gamma = 0.99
-            lam = 0.97
-            actor_lr = 3e-3
-            critic_lr = 1e-3
+            class VPG:
+                steps_per_epoch = 2
+                epochs = 1
+                max_epoch_len = 300
+                gamma = 0.99
+                lam = 0.97
+                actor_lr = 3e-3
+                critic_lr = 1e-3
 
             # Hyperparams for the evaluation loop
-            episode_len = 300
-            n_evals = 100
+            episode_len = 2
+            n_evals = 1
 
     class planner:
         resolution = 1  # Resolution of the grid

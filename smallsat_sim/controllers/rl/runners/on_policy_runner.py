@@ -3,14 +3,14 @@ import time
 import jax
 import jax.numpy as jnp
 from flax import nnx
-import optax
 import wandb
 import pickle
 
 from smallsat_sim.envs.vec_env import VecEnv
 from smallsat_sim.planners.base_planner import BasePlanner
-from smallsat_sim.controllers.rl.algorithms.vpg import VPGAgent
-from smallsat_sim.controllers.rl.storage.vpg_buffer import VPGBuffer
+from smallsat_sim.controllers.rl.algorithms.vpg_agent import VPGAgent
+from smallsat_sim.controllers.rl.algorithms.ppo_agent import PPOAgent
+from smallsat_sim.controllers.rl.storage.replay_buffer import ReplayBuffer
 
 
 class OnPolicyRunner(object):
@@ -21,31 +21,32 @@ class OnPolicyRunner(object):
     def __init__(self, env: VecEnv, planner: BasePlanner) -> None:
         # Initialize the environment and agent
         self.env = env
-        self.agent = VPGAgent(self.env, planner)
+        self.agent = PPOAgent(self.env, planner)
         self.reference_point = planner.reference_points[0]
         self._load_rl_hyperparams()
 
         # Path to save the checkpoints
         self.ckpt_path = "smallsat_sim/controllers/rl/checkpoints/"
-        self.ckpt_filename = "vpg_training_state.pkl"
+        self.ckpt_filename = "training_state.pkl"
 
         # Use Weights and Biases for logging
-        wandb.login()
-        wandb.init(
-            project="Astrobee-training",
-            config={
-                "num_envs": self.env.num_envs,
-                "steps_per_epoch": self.steps_per_epoch,
-                "epochs": self.epochs,
-                "max_epoch_len": self.max_epoch_len,
-                "gamma": self.gamma,
-                "lam": self.lam,
-                "actor_lr": self.actor_lr,
-                "critic_lr": self.critic_lr,
-                "episode_len": self.episode_len,
-                "n_evals": self.n_evals,
-            },
-        )
+        if self.env.use_wandb:
+            wandb.login()
+            wandb.init(
+                project="Astrobee-training",
+                config={
+                    "num_envs": self.env.num_envs,
+                    "steps_per_epoch": self.steps_per_epoch,
+                    "epochs": self.epochs,
+                    "max_epoch_len": self.max_epoch_len,
+                    "gamma": self.gamma,
+                    "lam": self.lam,
+                    "actor_lr": self.actor_lr,
+                    "critic_lr": self.critic_lr,
+                    "episode_len": self.episode_len,
+                    "n_evals": self.n_evals,
+                },
+            )
 
     def learn(self):
         """
@@ -53,33 +54,14 @@ class OnPolicyRunner(object):
         """
         print("Training agent...")
 
-        # Define the actor and critic loss
-        @nnx.jit
-        def actor_loss_fn(actor_model, tdres: jnp.ndarray):
-            _, logp_a = actor_model.forward(obs, actions)
-            return -jnp.sum(tdres * logp_a)
-
-        @nnx.jit
-        def critic_loss_fn(critic_model, returns: jnp.ndarray):
-            values = critic_model.forward(obs)
-            return jnp.mean((values - returns) ** 2)  # MSE loss
-
         # Set up buffer
-        buffer = VPGBuffer(
+        buffer = ReplayBuffer(
             self.env.num_envs,
             self.env.obs_dim,
             self.env.act_dim,
             self.steps_per_epoch,
             self.gamma,
             self.lam,
-        )
-
-        # Initialize ADAM optimizers for the actor and critic networks
-        actor_optimizer = nnx.Optimizer(
-            self.agent.actor, optax.adam(learning_rate=self.actor_lr)
-        )
-        critic_optimizer = nnx.Optimizer(
-            self.agent.critic, optax.adam(learning_rate=self.critic_lr)
         )
 
         # Initialize the environment
@@ -151,31 +133,25 @@ class OnPolicyRunner(object):
             returns = data["ret"]
 
             # Policy gradient update
-            actor_loss, grads = nnx.value_and_grad(actor_loss_fn)(
-                self.agent.actor, tdres
+            actor_loss = self.agent.update_policy_gradient(
+                self.actor_lr, obs, actions, tdres
             )
-            print(f"{actor_loss = }")
-            actor_optimizer.update(grads)
 
             # Value function updates
-            for _ in range(100):
-                critic_loss, grads = nnx.value_and_grad(critic_loss_fn)(
-                    self.agent.critic, returns
-                )
-                print(f"{critic_loss = }")
-                critic_optimizer.update(grads)
+            critic_loss = self.agent.update_value_function(self.critic_lr, obs, returns)
 
             mean_dist2goal = jnp.sqrt(
                 states[:, 0] ** 2 + states[:, 1] ** 2 + states[:, 2] ** 2
             )
-            wandb.log(
-                {
-                    "mean_return": mean_return,
-                    "actor_loss": actor_loss,
-                    "critic_loss": critic_loss,
-                    "mean_dist2goal": mean_dist2goal,
-                }
-            )
+            if self.env.use_wandb:
+                wandb.log(
+                    {
+                        "mean_return": mean_return,
+                        "actor_loss": actor_loss,
+                        "critic_loss": critic_loss,
+                        "mean_dist2goal": mean_dist2goal,
+                    }
+                )
 
         # Save the trained actor and critic network weights
         self._save_trained_modules()
@@ -242,13 +218,16 @@ class OnPolicyRunner(object):
         """
         Load the relevant hyperparams from the config file.
         """
-        self.steps_per_epoch = self.env.env_cfg.control.RL.steps_per_epoch
-        self.epochs = self.env.env_cfg.control.RL.epochs
-        self.max_epoch_len = self.env.env_cfg.control.RL.max_epoch_len
-        self.gamma = self.env.env_cfg.control.RL.gamma
-        self.lam = self.env.env_cfg.control.RL.lam
-        self.actor_lr = self.env.env_cfg.control.RL.actor_lr
-        self.critic_lr = self.env.env_cfg.control.RL.critic_lr
+        if isinstance(self.agent, VPGAgent):
+            self.steps_per_epoch = self.env.env_cfg.control.RL.VPG.steps_per_epoch
+            self.epochs = self.env.env_cfg.control.RL.VPG.epochs
+            self.max_epoch_len = self.env.env_cfg.control.RL.VPG.max_epoch_len
+            self.gamma = self.env.env_cfg.control.RL.VPG.gamma
+            self.lam = self.env.env_cfg.control.RL.VPG.lam
+            self.actor_lr = self.env.env_cfg.control.RL.VPG.actor_lr
+            self.critic_lr = self.env.env_cfg.control.RL.VPG.critic_lr
+        else:
+            raise Exception("Agent has not been implemented.")
         self.episode_len = self.env.env_cfg.control.RL.episode_len
         self.n_evals = self.env.env_cfg.control.RL.n_evals
 
