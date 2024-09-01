@@ -52,6 +52,7 @@ class BaseAgent(BaseController):
         obs: jnp.ndarray,
         actions: jnp.ndarray,
         tdres: jnp.ndarray,
+        logp: jnp.ndarray,
     ) -> jnp.ndarray:
         """
         Update the policy gradient. Return the actor loss.

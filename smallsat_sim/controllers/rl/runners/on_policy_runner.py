@@ -8,8 +8,8 @@ import pickle
 
 from smallsat_sim.envs.vec_env import VecEnv
 from smallsat_sim.planners.base_planner import BasePlanner
-from smallsat_sim.controllers.rl.algorithms.vpg_agent import VPGAgent
-from smallsat_sim.controllers.rl.algorithms.ppo_agent import PPOAgent
+from smallsat_sim.controllers.rl.algorithms.vpg import VPG
+from smallsat_sim.controllers.rl.algorithms.ppo import PPO
 from smallsat_sim.controllers.rl.storage.replay_buffer import ReplayBuffer
 
 
@@ -21,7 +21,7 @@ class OnPolicyRunner(object):
     def __init__(self, env: VecEnv, planner: BasePlanner) -> None:
         # Initialize the environment and agent
         self.env = env
-        self.agent = PPOAgent(self.env, planner)
+        self.agent = PPO(self.env, planner)
         self.reference_point = planner.reference_points[0]
         self._load_rl_hyperparams()
 
@@ -93,7 +93,7 @@ class OnPolicyRunner(object):
                 epoch_ended = t == self.steps_per_epoch - 1
 
                 # N. B.: could also have a different ep_len for each env and consider timeout and terminal conditions
-                # for each env individually, but this is not really necessary with the "carrot on a stick" approach
+                # for each env individually
                 if terminal.all() or timeout or epoch_ended:
                     # If the trajectory didn't reach terminal state, bootstrap value target
                     if epoch_ended:
@@ -131,10 +131,15 @@ class OnPolicyRunner(object):
             actions = data["act"]
             tdres = data["tdres"]
             returns = data["ret"]
+            logp = data["logp"]
 
             # Policy gradient update
             actor_loss = self.agent.update_policy_gradient(
-                self.actor_lr, obs, actions, tdres
+                self.actor_lr,
+                obs,
+                actions,
+                tdres,
+                logp,
             )
 
             # Value function updates
@@ -218,7 +223,7 @@ class OnPolicyRunner(object):
         """
         Load the relevant hyperparams from the config file.
         """
-        if isinstance(self.agent, VPGAgent):
+        if isinstance(self.agent, VPG):
             self.steps_per_epoch = self.env.env_cfg.control.RL.VPG.steps_per_epoch
             self.epochs = self.env.env_cfg.control.RL.VPG.epochs
             self.max_epoch_len = self.env.env_cfg.control.RL.VPG.max_epoch_len
@@ -226,6 +231,15 @@ class OnPolicyRunner(object):
             self.lam = self.env.env_cfg.control.RL.VPG.lam
             self.actor_lr = self.env.env_cfg.control.RL.VPG.actor_lr
             self.critic_lr = self.env.env_cfg.control.RL.VPG.critic_lr
+        elif isinstance(self.agent, PPO):
+            self.steps_per_epoch = self.env.env_cfg.control.RL.PPO.steps_per_epoch
+            self.epochs = self.env.env_cfg.control.RL.PPO.epochs
+            self.max_epoch_len = self.env.env_cfg.control.RL.PPO.max_epoch_len
+            self.gamma = self.env.env_cfg.control.RL.PPO.gamma
+            self.lam = self.env.env_cfg.control.RL.PPO.lam
+            self.actor_lr = self.env.env_cfg.control.RL.PPO.actor_lr
+            self.critic_lr = self.env.env_cfg.control.RL.PPO.critic_lr
+            self.clip_ratio = self.env.env_cfg.control.RL.PPO.clip_ratio
         else:
             raise Exception("Agent has not been implemented.")
         self.episode_len = self.env.env_cfg.control.RL.episode_len

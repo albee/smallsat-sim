@@ -7,9 +7,9 @@ from smallsat_sim.envs.base_env import BaseEnv
 from smallsat_sim.controllers.rl.algorithms.base_agent import BaseAgent
 
 
-class VPGAgent(BaseAgent):
+class VPG(BaseAgent):
     """
-    Base implementation for actor-critic agents.
+    Vanilla Policy Gradient (with Generalized Advantage Estimation) agent.
     """
 
     def update_policy_gradient(
@@ -18,6 +18,7 @@ class VPGAgent(BaseAgent):
         obs: jnp.ndarray,
         actions: jnp.ndarray,
         tdres: jnp.ndarray,
+        logp: jnp.ndarray,
     ) -> jnp.ndarray:
         """
         Update the policy gradient.

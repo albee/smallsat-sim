@@ -7,9 +7,9 @@ from smallsat_sim.envs.base_env import BaseEnv
 from smallsat_sim.controllers.rl.algorithms.base_agent import BaseAgent
 
 
-class PPOAgent(BaseAgent):
+class PPO(BaseAgent):
     """
-    Base implementation for actor-critic agents.
+    Proximal Policy Optimization (PPO) agent.
     """
 
     def update_policy_gradient(
@@ -18,26 +18,41 @@ class PPOAgent(BaseAgent):
         obs: jnp.ndarray,
         actions: jnp.ndarray,
         tdres: jnp.ndarray,
+        logp: jnp.ndarray,
     ) -> jnp.ndarray:
         """
         Update the policy gradient.
         """
 
+        # Set the clip ratio and the target kl divergence
+        clip_ratio = 0.2
+        target_kl = 0.01
+
         # Define the actor loss
-        @nnx.jit
+        # @nnx.jit
         def actor_loss_fn(actor_model, tdres: jnp.ndarray):
             _, logp_a = actor_model.forward(obs, actions)
-            return -jnp.sum(tdres * logp_a)
+            ratio = jnp.exp(logp_a - logp)
+            clip_adv = jax.lax.clamp(1 - clip_ratio, ratio, 1 + clip_ratio)
+            return -jax.lax.min(ratio * tdres, clip_adv).mean()
 
         # Initialize an ADAM optimizers for the actor network
         actor_optimizer = nnx.Optimizer(self.actor, optax.adam(learning_rate=actor_lr))
 
         # Compute the actor loss
-        actor_loss, grads = nnx.value_and_grad(actor_loss_fn)(self.actor, tdres)
-        print(f"{actor_loss = }")
+        for i in range(100):
+            actor_loss, grads = nnx.value_and_grad(actor_loss_fn)(self.actor, tdres)
+            print(f"{actor_loss = }")
 
-        # Update the gradients
-        actor_optimizer.update(grads)
+            _, logp_a = self.actor.forward(obs, actions)
+
+            kl = (logp - logp_a).mean()
+            if kl > 1.5 * target_kl:
+                print("Early stopping at step %d due to reaching max kl" % i)
+                break
+
+            # Update the gradients
+            actor_optimizer.update(grads)
 
     def update_value_function(
         self, critic_lr: float, obs: jnp.ndarray, returns: jnp.ndarray
