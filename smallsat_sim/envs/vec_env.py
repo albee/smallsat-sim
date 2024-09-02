@@ -19,6 +19,9 @@ class VecEnv(BaseEnv):
         # Flag to know whether VecEnv is being used
         self.using_rl = True
 
+        # Flag to know whether Weights a& Biases should be used
+        self.use_wandb = args.wandb
+
         # Number of environments running in parallel
         self.num_envs = self.env_cfg.control.RL.num_envs
 
@@ -53,7 +56,7 @@ class VecEnv(BaseEnv):
                     [
                         self.mjx_data.qpos[0:3]
                         + jax.random.uniform(rng, (3,), minval=-1.0, maxval=1.0),
-                        self._get_random_quaternion(rng),
+                        self._get_random_quaternion(rng)
                     ]
                 )
             )
@@ -69,8 +72,6 @@ class VecEnv(BaseEnv):
         """
         self.step(input=actions)
 
-        # TODO: implement reward shaping for the case when the agent is out-of-bounds (collision corridor)
-
         # Penalize Euclidean distance from set point
         rewards = jnp.zeros(self.num_envs)
         shaping = -100 * jnp.sqrt(
@@ -78,12 +79,6 @@ class VecEnv(BaseEnv):
         ) - 20 * jnp.sqrt(
             (states[:, 3]) ** 2 + (states[:, 4]) ** 2 + (states[:, 5]) ** 2
         )
-        # print(-100 * jnp.sqrt(
-        #     (states[:, 0]) ** 2 + (states[:, 1]) ** 2 + (states[:, 2]) ** 2
-        # ))
-        # print(- 20 * jnp.sqrt(
-        #     (states[:, 3]) ** 2 + (states[:, 4]) ** 2 + (states[:, 5]) ** 2
-        # ))
         if self.prev_shaping is not None:
             rewards = shaping - self.prev_shaping
         self.prev_shaping = shaping
@@ -183,6 +178,7 @@ class VecEnv(BaseEnv):
         states = jnp.concatenate(
             (delta_pos, delta_att, vel_body, self.mjx_batch.qvel[:, 3:]), axis=1
         )
+
 
         return states
 
