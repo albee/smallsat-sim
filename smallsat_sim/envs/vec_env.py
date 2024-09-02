@@ -1,4 +1,5 @@
 from argparse import Namespace
+from typing import Optional
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -45,6 +46,7 @@ class VecEnv(BaseEnv):
         Reset the agent in all the environment instances, while randomizing the initial position.
         """
         self.prev_shaping = None
+        self.prev_euclid_dist2goal = None
 
         # Updating only qpos and qvel, not resetting all of mj_data
         self.mjx_data = self.mjx_data.replace(qpos=self.init_qpos[0])
@@ -57,7 +59,7 @@ class VecEnv(BaseEnv):
                         self.mjx_data.qpos[0:2]
                         + jax.random.uniform(rng, (2,), minval=-1.0, maxval=1.0),
                         self.mjx_data.qpos[2].reshape(-1),
-                        self._get_random_quaternion(rng)
+                        self._get_random_quaternion(rng),
                     ]
                 )
             )
@@ -66,20 +68,44 @@ class VecEnv(BaseEnv):
         self.mjx_batch = self.jit_forward(self.mjx_model, self.mjx_batch)
 
     def transition(
-        self, actions: jnp.ndarray, states: jnp.ndarray
+        self,
+        actions: jnp.ndarray,
+        states: jnp.ndarray,
+        iter: Optional[int] = None,
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """
         Apply input action on the environment. Returns the rewards and wether the terminal state has been reached.
         """
         self.step(input=actions)
 
-        # Penalize Euclidean distance from set point
+        # Reward shaping
         rewards = jnp.zeros(self.num_envs)
-        shaping = -100 * jnp.sqrt(
-            (states[:, 0]) ** 2 + (states[:, 1]) ** 2
-        ) - 20 * jnp.sqrt(
-            (states[:, 3]) ** 2
-        )
+        euclid_dist2goal = jnp.sqrt((states[:, 0]) ** 2 + (states[:, 1]) ** 2)
+        manhattan_dist2goal = jnp.abs(states[:, 0]) + jnp.abs(states[:, 1])
+        if self.prev_euclid_dist2goal is not None:
+            progress = self.prev_euclid_dist2goal - euclid_dist2goal
+        else:
+            progress = 0
+        self.prev_euclid_dist2goal = euclid_dist2goal
+        euclid_attitude_dev = jnp.sqrt((states[:, 3]) ** 2)
+        control_effort = jnp.sum(actions)
+        # Curriculum-based training
+        if iter is not None and iter < 10:  # Assumption: train for more than 10 epochs
+            shaping = (
+                - 300 * euclid_dist2goal
+                - 200 * manhattan_dist2goal
+                - 5000 * progress
+                - 100 * euclid_attitude_dev
+                - 1 * control_effort
+            )
+        else:
+            shaping = (
+                - 250 * euclid_dist2goal
+                - 150 * manhattan_dist2goal
+                - 4000 * progress
+                - 200 * euclid_attitude_dev
+                - 2 * control_effort
+            )
         if self.prev_shaping is not None:
             rewards = shaping - self.prev_shaping
         self.prev_shaping = shaping
@@ -176,7 +202,13 @@ class VecEnv(BaseEnv):
 
         # Create array of observations
         states = jnp.concatenate(
-            (delta_pos[:, 0:2], delta_orientation.reshape(-1, 1), vel_body[:, 0:2], self.mjx_batch.qvel[:, 5].reshape(-1, 1)), axis=1
+            (
+                delta_pos[:, 0:2],
+                delta_orientation.reshape(-1, 1),
+                vel_body[:, 0:2],
+                self.mjx_batch.qvel[:, 5].reshape(-1, 1),
+            ),
+            axis=1,
         )
 
         return states

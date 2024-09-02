@@ -59,8 +59,8 @@ class EnvConfig(BaseEnvConfig):
                 critic_lr = 1e-3
 
             # Hyperparams for the evaluation loop
-            episode_len = 2
-            n_evals = 1
+            episode_len = 300
+            n_evals = 100
 
     class planner:
         resolution = 1  # Resolution of the grid

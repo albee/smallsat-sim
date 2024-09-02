@@ -78,7 +78,7 @@ class OnPolicyRunner(object):
             for t in range(self.steps_per_epoch):
                 a, v, logp = self.agent.act(states)
 
-                r, terminal = self.agent.env.transition(a, states)
+                r, terminal = self.agent.env.transition(a, states, epoch)
                 ep_ret += r
                 ep_len += 1
 
@@ -239,7 +239,6 @@ class OnPolicyRunner(object):
             self.lam = self.env.env_cfg.control.RL.PPO.lam
             self.actor_lr = self.env.env_cfg.control.RL.PPO.actor_lr
             self.critic_lr = self.env.env_cfg.control.RL.PPO.critic_lr
-            self.clip_ratio = self.env.env_cfg.control.RL.PPO.clip_ratio
         else:
             raise Exception("Agent has not been implemented.")
         self.episode_len = self.env.env_cfg.control.RL.episode_len
