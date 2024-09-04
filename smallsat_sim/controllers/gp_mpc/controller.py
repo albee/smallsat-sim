@@ -9,7 +9,10 @@ from smallsat_sim.utils.helpers import (
     calc_lateral_tracking_error,
 )
 from smallsat_sim.utils.logger import Logger
-from memory_profiler import profile
+from smallsat_sim.controllers.gp_mpc.online_learning.utils import (
+    ScaleFeatureSelector,
+    ResidualScaler,
+)
 
 # General libraries
 import gpytorch
@@ -70,7 +73,10 @@ from zero_order_gpmpc.models.gpytorch_models.gpytorch_gp import (
 )
 
 # Import DataProcessing strategies from SmallSatSim
-from smallsat_sim.controllers.gp_mpc.online_learning.strategies import SlidingWindow
+from smallsat_sim.controllers.gp_mpc.online_learning.strategies import (
+    SlidingWindow,
+    SlidingWindowPlus,
+)
 
 
 # Set default torch dtype
@@ -184,49 +190,53 @@ class GPMPC(BaseMPCController):
         self.gp_initialized = False  # Keep track if GP is already initialized
 
         # Setup residual model with trained GP
-        input_feature_selection = [
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
-            0,
-        ]
-        self.input_selection = zero_order_gpmpc.models.gpytorch_models.FeatureSelector(
-            input_feature_selection
+        input_feature_selection = np.array(
+            [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+            ]
         )
+        self.input_selection = ScaleFeatureSelector(input_feature_selection)
+        self.residual_scaler = ResidualScaler(scale=1)
 
-        # Initialize GP itself
-        likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=6,
-                                                                      noise_constraint=Positive())
+        # Initialize likelihood and overwrite default values
+        likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(
+            num_tasks=6, noise_constraint=Positive()
+        )
         noise_likelihood = torch.tensor([0])
-        noise_raw_task_noises = torch.tensor([-30., -30., -30., -30., -30., -30.])
-        noise_raw_noise = torch.tensor([-30.])
+        noise_raw_task_noises = torch.tensor([-30.0, -30.0, -30.0, -30.0, -30.0, -30.0])
+        noise_raw_noise = torch.tensor([-30.0])
         with torch.no_grad():
             likelihood.raw_task_noises.data = noise_raw_task_noises
             likelihood.noise.data = noise_likelihood
             likelihood.raw_noise.data = noise_raw_noise
+
+        # Initialize GP model and overwrite default values
         gp_model = BatchIndependentMultitaskGPModel(
             train_x=None,
             train_y=None,
@@ -237,22 +247,22 @@ class GPMPC(BaseMPCController):
         )
 
         for name, param in gp_model.named_parameters():
-                print(f"Parameter {name} has shape {param.shape} and values:")
-                print(param)
+            print(f"Parameter {name} has shape {param.shape} and values:")
+            print(param)
 
         # Manually setting raw_outputscale
-        #new_raw_outputscale = torch.tensor([10, 10, 10, 10, 10, 10])
+        # new_raw_outputscale = torch.tensor([10, 10, 10, 10, 10, 10])
         new_variance = torch.tensor([1e-10])
-        new_raw_variance = torch.tensor([-15.0, -15.0, -15.0, -15.0, -15.0, -15.0]).view(6,1,1)
+        new_raw_variance = torch.tensor(
+            [-15.0, -15.0, -15.0, -15.0, -15.0, -15.0]
+        ).view(6, 1, 1)
 
         with torch.no_grad():
             gp_model.covar_module.variance.data = new_variance
             gp_model.covar_module.raw_variance.data = new_raw_variance
-            #gp_model.covar_module.outputscale.data = new_raw_outputscale
-            #gp_model.covar_module.base_kernel.raw_variance.data = new_raw_variance
+            # gp_model.covar_module.outputscale.data = new_raw_outputscale
+            # gp_model.covar_module.base_kernel.raw_variance.data = new_raw_variance
 
-        # Train the GP offline
-        # self._train_gp()
         gp_model.eval()
         likelihood.eval()
 
@@ -260,7 +270,8 @@ class GPMPC(BaseMPCController):
         residual_model = GPyTorchResidualLearningModel(
             gp_model=gp_model,
             gp_feature_selector=self.input_selection,
-            data_processing_strategy=SlidingWindow(
+            residual_scaler=self.residual_scaler,
+            data_processing_strategy=SlidingWindowPlus(
                 max_num_points=self.M, device=next(gp_model.parameters()).device.type
             ),
             verbose=False,
@@ -643,6 +654,7 @@ class GPMPC(BaseMPCController):
 
         if res_output is not None:
             residual, x_train = res_output
+            residual = self.residual_scaler(residual)
             start_time = time.perf_counter()
             self.gp_mpc.residual_model.record_datapoint(
                 x_input=x_train, y_target=residual, timestamp=env.data.time
@@ -754,7 +766,10 @@ class GPMPC(BaseMPCController):
                 x_star = torch.atleast_2d(
                     self.input_selection(torch.from_numpy(x_train))
                 )
-                observed_pred = (self.gp_mpc.residual_model.gp_model(x_star))
+                observed_pred = self.gp_mpc.residual_model.gp_model(x_star)
+
+            # Scale residual
+            observed_pred = self.residual_scaler(observed_pred)
 
             # Get mean and confidence intervals
             mean = observed_pred.mean
@@ -775,8 +790,8 @@ class GPMPC(BaseMPCController):
                 self.logger.log(
                     run_id=self.run_id,
                     timestamp=self.timestamp,
-                    x_train = self.gp_mpc.residual_model.gp_model.train_inputs[0],
-                    y_train = self.gp_mpc.residual_model.gp_model.train_targets
+                    x_train=self.gp_mpc.residual_model.gp_model.train_inputs[0],
+                    y_train=self.gp_mpc.residual_model.gp_model.train_targets,
                 )
 
         return residual, x_train
@@ -809,6 +824,7 @@ class GPMPC(BaseMPCController):
             with torch.no_grad():
                 z_test = self.input_selection(x_test)
                 predicted_residual = self.gp_mpc.residual_model.gp_model(z_test)
+                predicted_residual = self.residual_scaler(predicted_residual)
             e_gp = e_nom - torch.matmul(self.B_d[:-1, :], predicted_residual.mean.T)
 
             # L2 norm of both
