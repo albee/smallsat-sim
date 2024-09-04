@@ -289,6 +289,7 @@ class Trajectory:
         """
         Returns the corresponding segment index wrt. the arc length
         """
+        arc_length = arc_length % self.length
         segment_index = 0
         for i, end_arc_length in enumerate(self.intervals):
             if arc_length <= end_arc_length:
