@@ -6,6 +6,7 @@ from flax import nnx
 import wandb
 import pickle
 
+from smallsat_sim.utils.logger import Logger
 from smallsat_sim.envs.vec_env import VecEnv
 from smallsat_sim.planners.base_planner import BasePlanner
 from smallsat_sim.controllers.rl.algorithms.vpg import VPG
@@ -76,7 +77,7 @@ class OnPolicyRunner(object):
         for epoch in range(self.epochs):
             ep_returns = jnp.zeros((self.env.num_envs, self.steps_per_epoch))
             for t in range(self.steps_per_epoch):
-                a, v, logp = self.agent.act(states)
+                a, v, logp = self.agent.act(states, epoch)
 
                 r, terminal = self.agent.env.transition(a, states, epoch)
                 ep_ret += r
@@ -97,7 +98,7 @@ class OnPolicyRunner(object):
                 if terminal.all() or timeout or epoch_ended:
                     # If the trajectory didn't reach terminal state, bootstrap value target
                     if epoch_ended:
-                        _, v, _ = self.agent.act(states)
+                        _, v, _ = self.agent.act(states, epoch)
                     else:
                         v = jnp.zeros(self.env.num_envs)
 
@@ -109,6 +110,8 @@ class OnPolicyRunner(object):
                         ep_returns = ep_returns.at[terminal_env_indices, t].set(
                             ep_ret[terminal_env_indices]
                         )
+
+                    # print("Terminal at end of episode?", terminal)
 
                     buffer.end_traj(v)
 
@@ -145,21 +148,38 @@ class OnPolicyRunner(object):
             # Value function updates
             critic_loss = self.agent.update_value_function(self.critic_lr, obs, returns)
 
-            mean_dist2goal = jnp.sqrt(
-                states[:, 0] ** 2 + states[:, 1] ** 2 + states[:, 2] ** 2
-            )
+            # mean_dist2goal = jnp.sqrt(
+            #     states[:, 0] ** 2 + states[:, 1] ** 2
+            # ).mean()
+
+            # Monitor key RL metrics during training using Weights & Biases
             if self.env.use_wandb:
                 wandb.log(
                     {
                         "mean_return": mean_return,
                         "actor_loss": actor_loss,
                         "critic_loss": critic_loss,
-                        "mean_dist2goal": mean_dist2goal,
+                        "mean_dist2goal": jnp.sqrt(
+                            states[:, 0] ** 2 + states[:, 1] ** 2
+                        ).mean(),
+                        "num_terminal": jnp.sum(terminal),
                     }
                 )
 
-        # Save the trained actor and critic network weights
-        self._save_trained_modules()
+            # Log key RL metrics
+            if self.agent.has_logger:
+                self.env.logger.log(
+                    run_id=self.env.run_id,
+                    timestamp=float(self.env.mjx_batch.time[0]),
+                    mean_return=mean_return,
+                    actor_loss=actor_loss,
+                    critic_loss=critic_loss,
+                    obs=obs,
+                    num_terminal=jnp.sum(terminal)
+                )
+
+            # Save the trained actor and critic network weights
+            self._save_trained_modules()
 
     def evaluate(self) -> None:
         """
@@ -190,6 +210,14 @@ class OnPolicyRunner(object):
                 cum_returns += rewards
                 if terminal.all():  # Abort if all environments terminated
                     break
+                # Log key RL metrics
+                if self.agent.has_logger:
+                    self.env.logger.log(
+                        run_id=self.env.run_id,
+                        timestamp=float(self.env.mjx_batch.time[0]),
+                        states=states,
+                        num_terminal=jnp.sum(terminal)
+                    )
             returns = returns.at[:, eval].set(cum_returns)
         print(f"Average return over all envs: {jnp.mean(cum_returns)}")
 
@@ -212,7 +240,7 @@ class OnPolicyRunner(object):
         self.env.reset()
         while True:
             real_time = time.time() - start_time
-            sim_time = self.env.data.time
+            sim_time = self.env.mjx_batch.time[0]
             actions = self.agent.get_control_input(states)
             states = self.env.get_states(self.reference_point)
             _, terminal = self.env.transition(actions, states)

@@ -32,12 +32,24 @@ class EnvConfig(BaseEnvConfig):
     # Holds all information for the controller in use
     class control:
 
+        # PD controller parameters
+        class PD:
+            # Decimate the controller frequency such that it doesn't
+            # run equally fast to the simulation discretization
+            control_decimation = 10
+
+            class gains:
+                Kp_x = 0.2
+                Kd_x = 1.0
+                Kp_q = 3.0
+                Kd_q = 5.0
+
         # RL controller params
         class RL:
             control_decimation = 25
 
             # Number of environments
-            num_envs = 1
+            num_envs = 1024
 
             # Hyperparams for the learning loop
             class VPG:
@@ -46,21 +58,21 @@ class EnvConfig(BaseEnvConfig):
                 max_epoch_len = 300
                 gamma = 0.99
                 lam = 0.97
-                actor_lr = 3e-3
+                actor_lr = 3e-4
                 critic_lr = 1e-3
 
             class PPO:
-                steps_per_epoch = 3000
+                steps_per_epoch = 5000
                 epochs = 50
-                max_epoch_len = 300
+                max_epoch_len = 1000
                 gamma = 0.99
                 lam = 0.97
-                actor_lr = 3e-3
+                actor_lr = 3e-4
                 critic_lr = 1e-3
 
             # Hyperparams for the evaluation loop
-            episode_len = 300
-            n_evals = 100
+            episode_len = 700
+            n_evals = 10
 
     class planner:
         resolution = 1  # Resolution of the grid

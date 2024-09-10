@@ -20,7 +20,7 @@ class VecEnv(BaseEnv):
         # Flag to know whether VecEnv is being used
         self.using_rl = True
 
-        # Flag to know whether Weights a& Biases should be used
+        # Flag to know whether Weights & Biases should be used
         self.use_wandb = args.wandb
 
         # Number of environments running in parallel
@@ -46,24 +46,25 @@ class VecEnv(BaseEnv):
         Reset the agent in all the environment instances, while randomizing the initial position.
         """
         self.prev_shaping = None
-        self.prev_euclid_dist2goal = None
+        # self.prev_euclid_dist2goal = None
 
         # Updating only qpos and qvel, not resetting all of mj_data
         self.mjx_data = self.mjx_data.replace(qpos=self.init_qpos[0])
         rng = jax.random.PRNGKey(np.random.randint(0, 9999))
         rng = jax.random.split(rng, self.num_envs)
-        self.mjx_batch = jax.vmap(
+        tmp_batch = jax.vmap(
             lambda rng: self.mjx_data.replace(
                 qpos=jnp.concatenate(
                     [
                         self.mjx_data.qpos[0:2]
-                        + jax.random.uniform(rng, (2,), minval=-1.0, maxval=1.0),
+                        + jax.random.uniform(rng, (2,), minval=-2.0, maxval=2.0),
                         self.mjx_data.qpos[2].reshape(-1),
                         self._get_random_quaternion(rng),
                     ]
                 )
             )
         )(rng)
+        self.mjx_batch = self.mjx_batch.replace(qpos=tmp_batch.qpos)
         self.mjx_batch = self.mjx_batch.replace(qvel=self.init_qvel)
         self.mjx_batch = self.jit_forward(self.mjx_model, self.mjx_batch)
 
@@ -82,29 +83,29 @@ class VecEnv(BaseEnv):
         rewards = jnp.zeros(self.num_envs)
         euclid_dist2goal = jnp.sqrt((states[:, 0]) ** 2 + (states[:, 1]) ** 2)
         manhattan_dist2goal = jnp.abs(states[:, 0]) + jnp.abs(states[:, 1])
-        if self.prev_euclid_dist2goal is not None:
-            progress = self.prev_euclid_dist2goal - euclid_dist2goal
-        else:
-            progress = 0
-        self.prev_euclid_dist2goal = euclid_dist2goal
+        # if self.prev_euclid_dist2goal is not None:
+        #     progress = self.prev_euclid_dist2goal - euclid_dist2goal
+        # else:
+        #     progress = 0
+        # self.prev_euclid_dist2goal = euclid_dist2goal
         euclid_attitude_dev = jnp.sqrt((states[:, 3]) ** 2)
         control_effort = jnp.sum(actions)
         # Curriculum-based training
-        if iter is not None and iter < 10:  # Assumption: train for more than 10 epochs
+        if (
+            iter is not None and iter < 10
+        ):  # Assumption: train for more than this many epochs
             shaping = (
-                - 300 * euclid_dist2goal
-                - 200 * manhattan_dist2goal
-                - 5000 * progress
-                - 100 * euclid_attitude_dev
-                - 1 * control_effort
+                - 30 * euclid_dist2goal
+                - 10 * manhattan_dist2goal
+                - 10 * euclid_attitude_dev
+                - 0.1 * control_effort
             )
         else:
             shaping = (
-                - 250 * euclid_dist2goal
-                - 150 * manhattan_dist2goal
-                - 4000 * progress
-                - 200 * euclid_attitude_dev
-                - 2 * control_effort
+                - 25 * euclid_dist2goal
+                - 5 * manhattan_dist2goal
+                - 15 * euclid_attitude_dev
+                - 0.2 * control_effort
             )
         if self.prev_shaping is not None:
             rewards = shaping - self.prev_shaping
@@ -114,8 +115,13 @@ class VecEnv(BaseEnv):
         is_terminal = jax.vmap(self._in_terminal_set)
         terminal = is_terminal(states)
 
+        # if terminal.any():
+        #     print(terminal)
+
         # Reward the agent for reaching the goal
-        rewards += jnp.where(terminal, 1000, 0)
+        # rewards += jnp.where(terminal, 1000, 0)
+
+        # print("Rewards: ", rewards)
 
         return rewards, terminal
 
@@ -138,6 +144,8 @@ class VecEnv(BaseEnv):
                 self._update_viewer()
 
             self.mjx_batch = self.jit_step(self.mjx_model, self.mjx_batch)
+
+            b = 1
 
         # Execute post physics steps
         self._post_physics_step()
@@ -197,7 +205,7 @@ class VecEnv(BaseEnv):
         )
 
         # Compute the attitude error
-        ref_orientation = jnp.full(self.num_envs, jnp.pi / 2)
+        ref_orientation = jnp.full(self.num_envs, 0)
         delta_orientation = ref_orientation - rot_angle
 
         # Create array of observations
@@ -293,13 +301,13 @@ class VecEnv(BaseEnv):
         # External disturbances
         if self.disturbances:
             self.mjx_batch = self.mjx_batch.replace(
-                qfrc_applied=self.disturbances.apply(self.data.time)
+                qfrc_applied=self.disturbances.apply(self.mjx_batch.time[0])
             )
 
         # Perturbations
         if self.perturbations:
             self.mjx_batch = self.mjx_batch.replace(
-                ctrl=self.perturbations.apply(input, self.data.time)
+                ctrl=self.perturbations.apply(input, self.mjx_batch.time[0])
             )
         else:
             self.mjx_batch = self.mjx_batch.replace(ctrl=input)
@@ -309,9 +317,7 @@ class VecEnv(BaseEnv):
         Returns one if in terminal set, zero otherwise.
         """
         # return jnp.all(jnp.abs(delta_pos) <= 0.5)
-        return (
-            jnp.sqrt(delta_pos[0] ** 2 + delta_pos[1] ** 2 + delta_pos[2] ** 2) <= 0.25
-        )
+        return jnp.sqrt(delta_pos[0] ** 2 + delta_pos[1] ** 2) <= 0.25
 
     def _get_error_quaternion(self, q: jnp.ndarray, q_des: jnp.ndarray) -> jnp.ndarray:
         """

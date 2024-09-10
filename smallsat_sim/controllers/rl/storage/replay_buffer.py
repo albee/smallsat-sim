@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 
-from smallsat_sim.utils.helpers import discount_cumsum, combined_shape
+from smallsat_sim.utils.helpers_rl import discount_cumsum, combined_shape
 
 
 class ReplayBuffer(object):
