@@ -29,6 +29,10 @@ planner = OraclePlanner(env)
 # Create runner
 runner = OnPolicyRunner(env, planner)
 
+# Pretraining
+runner._generate_experience()
+runner.pretrain()
+
 # Learning
 runner.learn()
 

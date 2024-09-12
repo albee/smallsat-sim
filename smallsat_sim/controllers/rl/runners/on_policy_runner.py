@@ -1,17 +1,25 @@
 import os
 import time
 import jax
+import numpy as np
 import jax.numpy as jnp
 from flax import nnx
+import optax
 import wandb
 import pickle
 
-from smallsat_sim.utils.logger import Logger
 from smallsat_sim.envs.vec_env import VecEnv
 from smallsat_sim.planners.base_planner import BasePlanner
+from smallsat_sim.controllers.pd.vectorized_controller import VectorizedPDController
 from smallsat_sim.controllers.rl.algorithms.vpg import VPG
 from smallsat_sim.controllers.rl.algorithms.ppo import PPO
 from smallsat_sim.controllers.rl.storage.replay_buffer import ReplayBuffer
+from smallsat_sim.controllers.rl.runners.runner_utils import (
+    save_training_data,
+    save_trained_modules,
+    load_training_data,
+    load_trained_modules,
+)
 
 
 class OnPolicyRunner(object):
@@ -24,11 +32,11 @@ class OnPolicyRunner(object):
         self.env = env
         self.agent = PPO(self.env, planner)
         self.reference_point = planner.reference_points[0]
+        self.pd_ctrl = VectorizedPDController(env, planner)
         self._load_rl_hyperparams()
 
         # Path to save the checkpoints
         self.ckpt_path = "smallsat_sim/controllers/rl/checkpoints/"
-        self.ckpt_filename = "training_state.pkl"
 
         # Use Weights and Biases for logging
         if self.env.use_wandb:
@@ -49,7 +57,67 @@ class OnPolicyRunner(object):
                 },
             )
 
-    def learn(self):
+    def pretrain(self) -> None:
+        """
+        Pretain the actor (and critic) network(s).
+        """
+        print("Pretraining modules...")
+
+        # Check if data is available and load it
+        ckpt_dir = os.listdir(self.ckpt_path)
+
+        if len(ckpt_dir) == 0:
+            raise Exception("No experiences have been generated yet.")
+        else:
+            pretraining_data = load_training_data(
+                self.ckpt_path, "pretraining_data.pkl"
+            )
+
+        # Pretrain the policy network
+        obs = pretraining_data["obs"].reshape(-1, self.env.obs_dim)
+        act = pretraining_data["act"].reshape(-1, self.env.act_dim)
+
+        idx = int(obs.shape[0] * 0.8)
+        X_train, y_train = obs[:idx, :], act[:idx, :]
+        X_val, y_val = obs[idx:, :], act[idx:, :]
+
+        optimizer = nnx.Optimizer(
+            self.agent.actor, optax.adam(learning_rate=1e-3)
+        )
+
+        # Define the loss function
+        def mse_loss_fn(model, X: jnp.ndarray, y: jnp.ndarray):
+            y_pred_dist, _ = model.forward(X)
+            y_pred = y_pred_dist.sample(
+                seed=jax.random.PRNGKey(np.random.randint(0, 9999))
+            )
+            return jnp.mean((y_pred - y) ** 2)
+
+        losses = []
+        val_losses = []
+
+        for epoch in range(100):
+            # Train network
+            loss, grads = nnx.value_and_grad(mse_loss_fn)(
+                self.agent.actor, X_train, y_train
+            )
+            losses.append(loss)
+            optimizer.update(grads)
+            print(f"Epoch: {epoch+1:2} avg. training loss: {sum(losses)/len(losses)}")
+
+            # Validate
+            val_loss, _ = nnx.value_and_grad(mse_loss_fn)(
+                self.agent.actor, X_val, y_val
+            )
+            val_losses.append(val_loss)
+            print(
+                f"Epoch: {epoch+1:2} avg. evaluation loss: {sum(val_losses)/len(val_losses)}"
+            )
+
+        # Pretrain the base network
+        # TODO
+
+    def learn(self) -> None:
         """
         Main training loop.
         """
@@ -111,8 +179,6 @@ class OnPolicyRunner(object):
                             ep_ret[terminal_env_indices]
                         )
 
-                    # print("Terminal at end of episode?", terminal)
-
                     buffer.end_traj(v)
 
                     self.env.reset()
@@ -127,8 +193,9 @@ class OnPolicyRunner(object):
                 f"Epoch: {epoch+1}/{self.epochs}, mean return across all envs {mean_return}"
             )
 
-            # Get the data from the training loop
+            # Get the data from the training loop and save it
             data = buffer.get()
+            save_training_data(self.ckpt_path, "training_data.pkl", data)
 
             obs = data["obs"]
             actions = data["act"]
@@ -147,10 +214,6 @@ class OnPolicyRunner(object):
 
             # Value function updates
             critic_loss = self.agent.update_value_function(self.critic_lr, obs, returns)
-
-            # mean_dist2goal = jnp.sqrt(
-            #     states[:, 0] ** 2 + states[:, 1] ** 2
-            # ).mean()
 
             # Monitor key RL metrics during training using Weights & Biases
             if self.env.use_wandb:
@@ -175,11 +238,11 @@ class OnPolicyRunner(object):
                     actor_loss=actor_loss,
                     critic_loss=critic_loss,
                     obs=obs,
-                    num_terminal=jnp.sum(terminal)
+                    num_terminal=jnp.sum(terminal),
                 )
 
             # Save the trained actor and critic network weights
-            self._save_trained_modules()
+            save_trained_modules(self.agent, self.ckpt_path, "training_state.pkl")
 
     def evaluate(self) -> None:
         """
@@ -193,7 +256,9 @@ class OnPolicyRunner(object):
         if len(ckpt_dir) == 0:
             raise Exception("No training has been done yet.")
         else:
-            self._load_trained_modules()
+            restored_state = load_trained_modules(self.ckpt_path, "training_state.pkl")
+            nnx.update(self.agent.actor.mu_net, restored_state["actor_model"].mu_net)
+            nnx.update(self.agent.critic.v_net, restored_state["critic_model"].v_net)
 
         returns = jnp.zeros((self.env.num_envs, self.n_evals))
 
@@ -216,36 +281,87 @@ class OnPolicyRunner(object):
                         run_id=self.env.run_id,
                         timestamp=float(self.env.mjx_batch.time[0]),
                         states=states,
-                        num_terminal=jnp.sum(terminal)
+                        num_terminal=jnp.sum(terminal),
                     )
             returns = returns.at[:, eval].set(cum_returns)
         print(f"Average return over all envs: {jnp.mean(cum_returns)}")
 
-    def control(
-        self,
-    ) -> None:
+    def _generate_experience(self) -> None:
         """
-        Control the agent using the previously trained RL controller.
+        Roll out an episode where the actions are computed from a PD controller that serves as training data.
         """
-        # Check if trained actor and critic modules are available and load them
-        ckpt_dir = os.listdir(self.ckpt_path)
-        if len(ckpt_dir) == 0:
-            raise Exception("No training has been done yet.")
-        else:
-            self._load_trained_modules()
+        print("Gather training data using the PD controller...")
 
-        start_time = time.time()
-        states = self.env.get_states(self.reference_point)
-        terminal = jnp.zeros(self.env.num_envs, dtype=bool)
+        # Set up buffer
+        buffer = ReplayBuffer(
+            self.env.num_envs,
+            self.env.obs_dim,
+            self.env.act_dim,
+            self.steps_per_epoch,
+            self.gamma,
+            self.lam,
+        )
+
+        # Initialize the environment
         self.env.reset()
-        while True:
-            real_time = time.time() - start_time
-            sim_time = self.env.mjx_batch.time[0]
-            actions = self.agent.get_control_input(states)
+        states, ep_ret, ep_len = (
+            self.env.get_states(self.reference_point),
+            jnp.zeros(self.env.num_envs),
+            0,
+        )
+
+        # Main training loop
+        ep_returns = jnp.zeros((self.env.num_envs, self.steps_per_epoch))
+        for t in range(self.steps_per_epoch):
+            _, v, logp = self.agent.act(states)
+            self.env.obs = self.env.get_obs()
+            ctrl_input = self.pd_ctrl.get_control_input(self.env)
+            a = jnp.asarray(ctrl_input)
+
+            r, terminal = self.agent.env.transition(a, states)
+            ep_ret += r
+            ep_len += 1
+
+            # Log transition
+            buffer.store(states, a, r, v, logp)
+
+            # Update state
             states = self.env.get_states(self.reference_point)
-            _, terminal = self.env.transition(actions, states)
-            if terminal.all():
-                break
+
+            # Check if a timeout is appropriate
+            timeout = ep_len == self.max_epoch_len
+            epoch_ended = t == self.steps_per_epoch - 1
+
+            # N. B.: could also have a different ep_len for each env and consider timeout and terminal conditions
+            # for each env individually
+            if terminal.all() or timeout or epoch_ended:
+                # If the trajectory didn't reach terminal state, bootstrap value target
+                if epoch_ended:
+                    _, v, _ = self.agent.act(states)
+                else:
+                    v = jnp.zeros(self.env.num_envs)
+
+                if timeout:
+                    ep_returns = ep_returns.at[:, t].set(ep_ret)
+
+                if terminal.all():
+                    terminal_env_indices = jnp.nonzero(terminal)
+                    ep_returns = ep_returns.at[terminal_env_indices, t].set(
+                        ep_ret[terminal_env_indices]
+                    )
+
+                buffer.end_traj(v)
+
+                self.env.reset()
+                states, ep_ret, ep_len = (
+                    self.env.get_states(self.reference_point),
+                    jnp.zeros(self.env.num_envs),
+                    0,
+                )
+
+        # Get the data from the training loop and save it
+        data = buffer.get()
+        save_training_data(self.ckpt_path, "pretraining_data.pkl", data)
 
     def _load_rl_hyperparams(self) -> None:
         """
@@ -271,26 +387,3 @@ class OnPolicyRunner(object):
             raise Exception("Agent has not been implemented.")
         self.episode_len = self.env.env_cfg.control.RL.episode_len
         self.n_evals = self.env.env_cfg.control.RL.n_evals
-
-    def _save_trained_modules(self) -> None:
-        """
-        Save the actor and critic network params.
-        """
-        training_state = {
-            "actor_model": nnx.state(self.agent.actor),
-            "critic_model": nnx.state(self.agent.critic),
-        }
-        with open(self.ckpt_path + self.ckpt_filename, "wb") as file:
-            pickle.dump(training_state, file)
-        print(f"Checkpoint saved to {self.ckpt_filename}")
-
-    def _load_trained_modules(self) -> None:
-        """
-        Load the actor and critic network params.
-        """
-        with open(self.ckpt_path + self.ckpt_filename, "rb") as file:
-            restored_state = pickle.load(file)
-        print(f"Checkpoint loaded from {self.ckpt_filename}")
-
-        nnx.update(self.agent.actor.mu_net, restored_state["actor_model"].mu_net)
-        nnx.update(self.agent.critic.v_net, restored_state["critic_model"].v_net)

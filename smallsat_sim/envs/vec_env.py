@@ -6,6 +6,7 @@ import jax.numpy as jnp
 import mujoco
 import mujoco.viewer
 from mujoco import mjx
+import wandb
 
 from smallsat_sim.envs.base_env import BaseEnv
 from smallsat_sim.utils import xml_parser_rl
@@ -46,7 +47,6 @@ class VecEnv(BaseEnv):
         Reset the agent in all the environment instances, while randomizing the initial position.
         """
         self.prev_shaping = None
-        # self.prev_euclid_dist2goal = None
 
         # Updating only qpos and qvel, not resetting all of mj_data
         self.mjx_data = self.mjx_data.replace(qpos=self.init_qpos[0])
@@ -81,30 +81,33 @@ class VecEnv(BaseEnv):
 
         # Reward shaping
         rewards = jnp.zeros(self.num_envs)
-        euclid_dist2goal = jnp.sqrt((states[:, 0]) ** 2 + (states[:, 1]) ** 2)
+        squared_euclid_dist2goal = states[:, 0] ** 2 + states[:, 1] ** 2
         manhattan_dist2goal = jnp.abs(states[:, 0]) + jnp.abs(states[:, 1])
-        # if self.prev_euclid_dist2goal is not None:
-        #     progress = self.prev_euclid_dist2goal - euclid_dist2goal
-        # else:
-        #     progress = 0
-        # self.prev_euclid_dist2goal = euclid_dist2goal
-        euclid_attitude_dev = jnp.sqrt((states[:, 3]) ** 2)
+        squared_euclid_attitude_dev = (states[:, 3]) ** 2
         control_effort = jnp.sum(actions)
+        # wandb.log(
+        #     {
+        #         "squared_euclid_dist2goal": 2 * squared_euclid_dist2goal,
+        #         "manhattan_dist2goal": manhattan_dist2goal,
+        #         "squared_euclid_attitude_dev": 50 * squared_euclid_attitude_dev,
+        #         "control_effort": 0.1 * control_effort,
+        #     }
+        # )
         # Curriculum-based training
         if (
-            iter is not None and iter < 10
+            iter is not None and iter < 25
         ):  # Assumption: train for more than this many epochs
             shaping = (
-                - 30 * euclid_dist2goal
-                - 10 * manhattan_dist2goal
-                - 10 * euclid_attitude_dev
+                -2 * squared_euclid_dist2goal
+                - 1 * manhattan_dist2goal
+                - 50 * squared_euclid_attitude_dev
                 - 0.1 * control_effort
             )
         else:
             shaping = (
-                - 25 * euclid_dist2goal
-                - 5 * manhattan_dist2goal
-                - 15 * euclid_attitude_dev
+                -1 * squared_euclid_dist2goal
+                - 0.5 * manhattan_dist2goal
+                - 50 * squared_euclid_attitude_dev
                 - 0.2 * control_effort
             )
         if self.prev_shaping is not None:
@@ -115,13 +118,8 @@ class VecEnv(BaseEnv):
         is_terminal = jax.vmap(self._in_terminal_set)
         terminal = is_terminal(states)
 
-        # if terminal.any():
-        #     print(terminal)
-
         # Reward the agent for reaching the goal
         # rewards += jnp.where(terminal, 1000, 0)
-
-        # print("Rewards: ", rewards)
 
         return rewards, terminal
 

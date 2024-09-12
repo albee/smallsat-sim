@@ -23,16 +23,16 @@ class PPO(BaseAgent):
         clip_ratio: float,
     ):
         _, logp_a = actor_model.forward(obs, actions)
-        ratio = jnp.exp(logp_a - logp)
+        ratio = jnp.exp(logp_a - logp.reshape(-1))
         clip_adv = jax.lax.clamp(1 - clip_ratio, ratio, 1 + clip_ratio)
-        return -jax.lax.min(ratio * tdres, clip_adv).mean()
+        return -jax.lax.min(ratio * tdres.reshape(-1), clip_adv).mean()
 
     jitted_actor_loss_fn = nnx.jit(actor_loss_fn, static_argnums=(0,))
 
     # Define the critic loss
     def critic_loss_fn(self, critic_model, returns: jnp.ndarray, obs: jnp.ndarray):
         values = critic_model.forward(obs)
-        return jnp.mean((values - returns) ** 2)  # MSE loss
+        return jnp.mean((values - returns.reshape(-1)) ** 2)  # MSE loss
 
     jitted_critic_loss_fn = nnx.jit(critic_loss_fn, static_argnums=(0,))
 
@@ -64,7 +64,7 @@ class PPO(BaseAgent):
 
             _, logp_a = self.actor.forward(obs, actions)
 
-            kl = (logp - logp_a).mean()
+            kl = (logp.reshape(-1) - logp_a).mean()
             if kl > 1.5 * target_kl:
                 print("Early stopping at step %d due to reaching max kl" % i)
                 break

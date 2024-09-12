@@ -2,7 +2,7 @@ import time
 import os
 
 from smallsat_sim.utils.helpers import get_args
-from smallsat_sim.controllers.rl.runners.on_policy_runner import OnPolicyRunner
+from smallsat_sim.controllers.rl.controller import RLController
 from smallsat_sim.envs.astrobee_rl.env import AstrobeeEnvVectorized
 from smallsat_sim.planners.oracle.oracle import OraclePlanner
 from smallsat_sim.planners.mission.mission import MissionPlanner
@@ -27,10 +27,10 @@ env = AstrobeeEnvVectorized(args=args)
 planner = OraclePlanner(env)
 
 # Create runner
-runner = OnPolicyRunner(env, planner)
+ctrl = RLController(env, planner)
 
 # Simulation loop
-runner.control()
+ctrl.control()
 
 # Create simulation video if desired
 env.get_sim_rendering(env.env_name)

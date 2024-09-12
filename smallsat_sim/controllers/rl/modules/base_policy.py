@@ -11,6 +11,8 @@ class Actor(nnx.Module):
     """
     def __init__(self, obs_dim: int, act_dim: int, hidden_sizes: int, activation) -> None:
         super().__init__()
+        self.obs_dim = obs_dim
+        self.act_dim = act_dim
         log_std = -0.5 * jnp.ones(act_dim)
         self.log_std = nnx.Param(log_std)
         self.mu_net = mlp([obs_dim] + list(hidden_sizes) + [act_dim], activation)
@@ -19,7 +21,7 @@ class Actor(nnx.Module):
         """
         Return a Gaussian distribution over actions given observations.
         """
-        mu = self.mu_net(obs)
+        mu = self.mu_net(obs.reshape(-1, self.obs_dim))
         std = jnp.exp(self.log_std.value)
         return distrax.MultivariateNormalDiag(mu, std)
     
@@ -27,7 +29,7 @@ class Actor(nnx.Module):
         """
         Return the log-probability of actions under the action distribution.
         """
-        return pi.log_prob(actions)
+        return pi.log_prob(actions.reshape(-1, self.act_dim))
 
     def forward(self, obs: jnp.ndarray, actions=None):
         """
