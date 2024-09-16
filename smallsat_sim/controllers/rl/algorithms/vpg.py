@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 import optax
+from functools import partial
 
 from smallsat_sim.envs.base_env import BaseEnv
 from smallsat_sim.controllers.rl.algorithms.base_agent import BaseAgent
@@ -13,20 +14,18 @@ class VPG(BaseAgent):
     """
 
     # Define the actor loss
-    def actor_loss_fn(
+    @partial(nnx.jit, static_argnums=(0,))
+    def jit_actor_loss_fn(
         self, actor_model, tdres: jnp.ndarray, obs: jnp.ndarray, actions: jnp.ndarray
     ):
         _, logp_a = actor_model.forward(obs, actions)
         return -jnp.sum(tdres.reshape(-1) * logp_a)
 
-    jitted_actor_loss_fn = nnx.jit(actor_loss_fn, static_argnums=(0,))
-
     # Define the critic loss
-    def critic_loss_fn(self, critic_model, returns: jnp.ndarray, obs: jnp.ndarray):
+    @partial(nnx.jit, static_argnums=(0,))
+    def jit_critic_loss_fn(self, critic_model, returns: jnp.ndarray, obs: jnp.ndarray):
         values = critic_model.forward(obs)
         return jnp.mean((values - returns.reshape(-1)) ** 2)  # MSE loss
-
-    jitted_critic_loss_fn = nnx.jit(critic_loss_fn, static_argnums=(0,))
 
     def update_policy_gradient(
         self,
@@ -44,7 +43,7 @@ class VPG(BaseAgent):
         actor_optimizer = nnx.Optimizer(self.actor, optax.adam(learning_rate=actor_lr))
 
         # Compute the actor loss
-        actor_loss, grads = nnx.value_and_grad(self.jitted_actor_loss_fn)(
+        actor_loss, grads = nnx.value_and_grad(self.jit_actor_loss_fn)(
             self.actor, tdres
         )
         print(f"{actor_loss = }")
@@ -68,7 +67,7 @@ class VPG(BaseAgent):
 
         for _ in range(100):
             # Compute the critic loss
-            critic_loss, grads = nnx.value_and_grad(self.jitted_critic_loss_fn)(
+            critic_loss, grads = nnx.value_and_grad(self.jit_critic_loss_fn)(
                 self.critic, returns
             )
             print(f"{critic_loss = }")
