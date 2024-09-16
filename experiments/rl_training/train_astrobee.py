@@ -5,6 +5,7 @@ from smallsat_sim.utils.helpers import get_args
 from smallsat_sim.controllers.rl.runners.on_policy_runner import OnPolicyRunner
 from smallsat_sim.envs.astrobee_rl.env import AstrobeeEnvVectorized
 from smallsat_sim.planners.oracle.oracle import OraclePlanner
+from smallsat_sim.planners.oracle.oracle_rl import OraclePlannerRL
 from smallsat_sim.planners.mission.mission import MissionPlanner
 
 
@@ -30,8 +31,7 @@ planner = OraclePlanner(env)
 runner = OnPolicyRunner(env, planner)
 
 # Pretraining
-# runner._generate_experience()
-# runner.pretrain()
+runner.pretrain()
 
 # Learning
 runner.learn()

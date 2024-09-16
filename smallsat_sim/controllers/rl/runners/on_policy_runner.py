@@ -7,6 +7,7 @@ from flax import nnx
 import optax
 import wandb
 import pickle
+from typing import Optional
 
 from smallsat_sim.envs.vec_env import VecEnv
 from smallsat_sim.planners.base_planner import BasePlanner
@@ -42,7 +43,7 @@ class OnPolicyRunner(object):
         self._load_rl_hyperparams()
 
         # Path to save the checkpoints
-        self.ckpt_path = "smallsat_sim/controllers/rl/checkpoints/"
+        self.ckpt_dir = "smallsat_sim/controllers/rl/checkpoints/"
 
         # Use Weights and Biases for logging
         if self.env.use_wandb:
@@ -63,91 +64,103 @@ class OnPolicyRunner(object):
                 },
             )
 
-    def pretrain(self) -> None:
+    def pretrain(self, strategy: Optional[str] = "supervised_learning") -> None:
         """
-        Pretain the actor (and critic) network(s).
+        Pretrain the actor and critic networks.
         """
+        file_path = os.path.join(self.ckpt_dir, "pretraining_state.pkl")
+        if os.path.isfile(file_path):
+            return
+
         print("Pretraining modules...")
 
-        # Check if data is available and load it
-        ckpt_dir = os.listdir(self.ckpt_path)
-
-        if len(ckpt_dir) == 0:
-            raise Exception("No experiences have been generated yet.")
-        else:
-            pretraining_data = load_training_data(
-                self.ckpt_path, "pretraining_data.pkl"
-            )
-
-        # Optimizer to pretrain the policy network
-        optimizer = nnx.Optimizer(self.agent.actor, optax.adam(learning_rate=1e-2))
+        # Generate experience if necessary and load the pretraining data
+        self._generate_experience()
+        pretraining_data = load_training_data(self.ckpt_dir, "pretraining_data.pkl")
 
         # Load the data (discard the first 100 steps because of the PD controller performance)
         obs = pretraining_data["obs"].reshape(-1, self.env.obs_dim)
         act = pretraining_data["act"].reshape(-1, self.env.act_dim)
+        ret = pretraining_data["ret"]
+        tdres = pretraining_data["tdres"]
+        logp = pretraining_data["logp"]
 
-        # Standardize the observations
-        # obs_scaled = standardize(obs)
+        # Pretrain the policy network
+        if strategy == "supervised_learning":
+            # Clip the actions to the highest upper bound on the force range of the thrusters
+            act_clipped = jnp.where(act > 0.6, 0.6, act)
 
-        # Clip the actions to the highest upper bound on the force range of the thrusters
-        act_clipped = jnp.where(act > 0.6, 0.6, act)
-
-        # Split into training and validation sets
-        X_train, y_train, X_val, y_val = train_val_split(obs, act_clipped)
-
-        losses = []
-        val_losses = []
-        num_epochs = 50
-        batch_size = 8192
-        num_train_samples = X_train.shape[0]
-        num_val_samples = X_val.shape[0]
-
-        # Training loop
-        for epoch in range(num_epochs):
-            # Shuffle the training data
-            key = jax.random.PRNGKey(np.random.randint(9999))
-            permutation = jax.random.permutation(key, num_train_samples)
-            X_train = X_train[permutation]
-            y_train = y_train[permutation]
-
-            for i in range(0, num_train_samples, batch_size):
-                batch_X = X_train[i : i + batch_size]
-                batch_y = y_train[i : i + batch_size]
-
-                # Train network
-                loss, grads = nnx.value_and_grad(mae_loss_fn)(
-                    self.agent.actor, batch_X, batch_y
-                )
-                losses.append(loss)
-                optimizer.update(grads)
-            print(f"Epoch: {epoch+1:2} avg. training loss: {sum(losses)/len(losses)}")
-
-            for i in range(0, num_val_samples, batch_size):
-                batch_X_val = X_val[i : i + batch_size]
-                batch_y_val = y_val[i : i + batch_size]
-
-                # Validate
-                val_loss, _ = nnx.value_and_grad(mae_loss_fn)(
-                    self.agent.actor, batch_X_val, batch_y_val
-                )
-                val_losses.append(val_loss)
-            print(
-                f"Epoch: {epoch+1:2} avg. evaluation loss: {sum(val_losses)/len(val_losses)}"
+            # Optimizer to pretrain the policy network
+            actor_optimizer = nnx.Optimizer(
+                self.agent.actor, optax.adam(learning_rate=1e-2)
             )
 
-            if self.env.use_wandb:
-                wandb.log(
-                    {
-                        "training_loss": sum(losses) / len(losses),
-                        "validation_loss": sum(val_losses) / len(val_losses),
-                    }
+            # Split into training and validation sets
+            X_train, y_train, X_val, y_val = train_val_split(obs, act_clipped)
+
+            actor_losses = []
+            actor_val_losses = []
+            num_epochs = 50
+            batch_size = 8192
+            num_train_samples = X_train.shape[0]
+            num_val_samples = X_val.shape[0]
+
+            # Training loop
+            for epoch in range(num_epochs):
+                # Shuffle the training data
+                key = jax.random.PRNGKey(np.random.randint(9999))
+                permutation = jax.random.permutation(key, num_train_samples)
+                X_train = X_train[permutation]
+                y_train = y_train[permutation]
+
+                for i in range(0, num_train_samples, batch_size):
+                    batch_X = X_train[i : i + batch_size]
+                    batch_y = y_train[i : i + batch_size]
+
+                    # Train network
+                    actor_loss, grads = nnx.value_and_grad(mae_loss_fn)(
+                        self.agent.actor, batch_X, batch_y
+                    )
+                    actor_losses.append(actor_loss)
+                    actor_optimizer.update(grads)
+                print(
+                    f"Epoch: {epoch+1:2} avg. actor training loss: {sum(actor_losses)/len(actor_losses)}"
                 )
 
+                for i in range(0, num_val_samples, batch_size):
+                    batch_X_val = X_val[i : i + batch_size]
+                    batch_y_val = y_val[i : i + batch_size]
+
+                    # Validate
+                    actor_val_loss, _ = nnx.value_and_grad(mae_loss_fn)(
+                        self.agent.actor, batch_X_val, batch_y_val
+                    )
+                    actor_val_losses.append(actor_val_loss)
+                print(
+                    f"Epoch: {epoch+1:2} avg. actor evaluation loss: {sum(actor_val_losses)/len(actor_val_losses)}"
+                )
+                if self.env.use_wandb:
+                    wandb.log(
+                        {
+                            "training_loss": sum(actor_losses) / len(actor_losses),
+                            "validation_loss": sum(actor_val_losses)
+                            / len(actor_val_losses),
+                        }
+                    )
+        elif strategy == "rl":
+            self.agent.update_policy_gradient(
+                self.actor_lr, obs, act_clipped, tdres, logp
+            )
+        else:
+            raise Exception(
+                "This strategy does not exist. Options are [supervised_learning] and [rl]."
+            )
+
         # Pretrain the base network
-        # TODO
+        self.agent.update_value_function(self.critic_lr, obs, ret)
 
         # Save the trained actor and critic network weights
-        save_trained_modules(self.agent, self.ckpt_path, "pretraining_state.pkl")
+        save_trained_modules(self.agent, self.ckpt_dir, "pretraining_state.pkl")
 
     def learn(self) -> None:
         """
@@ -227,7 +240,7 @@ class OnPolicyRunner(object):
 
             # Get the data from the training loop and save it
             data = buffer.get()
-            save_training_data(self.ckpt_path, "training_data.pkl", data)
+            save_training_data(self.ckpt_dir, "training_data.pkl", data)
 
             obs = data["obs"]
             actions = data["act"]
@@ -274,7 +287,7 @@ class OnPolicyRunner(object):
                 )
 
             # Save the trained actor and critic network weights
-            save_trained_modules(self.agent, self.ckpt_path, "training_state.pkl")
+            save_trained_modules(self.agent, self.ckpt_dir, "training_state.pkl")
 
     def evaluate(self) -> None:
         """
@@ -283,14 +296,13 @@ class OnPolicyRunner(object):
         print("Evaluating agent...")
 
         # Check if trained actor and critic modules are available and load them
-        ckpt_dir = os.listdir(self.ckpt_path)
-
-        if len(ckpt_dir) == 0:
-            raise Exception("No training has been done yet.")
-        else:
-            restored_state = load_trained_modules(self.ckpt_path, "training_state.pkl")
+        file_path = os.path.join(self.ckpt_dir, "training_state.pkl")
+        if os.path.isfile(file_path):
+            restored_state = load_trained_modules(self.ckpt_dir, "training_state.pkl")
             nnx.update(self.agent.actor.mu_net, restored_state["actor_model"].mu_net)
             nnx.update(self.agent.critic.v_net, restored_state["critic_model"].v_net)
+        else:
+            raise Exception("No training has been done yet.")
 
         returns = jnp.zeros((self.env.num_envs, self.n_evals))
 
@@ -322,6 +334,10 @@ class OnPolicyRunner(object):
         """
         Roll out an episode where the actions are computed from a PD controller that serves as training data.
         """
+        file_path = os.path.join(self.ckpt_dir, "pretraining_data.pkl")
+        if os.path.isfile(file_path):
+            return
+
         print("Gather training data using the PD controller...")
 
         # Set up buffer
@@ -393,7 +409,7 @@ class OnPolicyRunner(object):
 
         # Get the data from the training loop and save it
         data = buffer.get()
-        save_training_data(self.ckpt_path, "pretraining_data.pkl", data)
+        save_training_data(self.ckpt_dir, "pretraining_data.pkl", data)
 
     def _load_rl_hyperparams(self) -> None:
         """

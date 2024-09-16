@@ -236,6 +236,23 @@ class VecEnv(BaseEnv):
         self.viewer.cam.azimuth = 10.0
         self.viewer.cam.type = 1
 
+    def _create_renderer(self) -> None:
+        """
+        Creates a renderer to visualize the experiments (to later save them to a video).
+        """
+        # Create instance of MuJoCo renderer
+        self.renderer = mujoco.Renderer(self.model, width=self.env_cfg.renderer.width, height=1440)
+
+        # Set up the scene and the default camera options
+        self.cam = mujoco.MjvCamera()
+        self.cam.distance = 5.0
+        self.cam.trackbodyid = 1  # tracks smallsat
+        self.cam.azimuth = 10.0
+        self.cam.type = 1
+
+        # Save frames to create the video
+        self.frames = []
+
     def _setup_sim(self, args: Namespace):
         """
         Prepares simulation according to args.

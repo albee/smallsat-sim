@@ -58,9 +58,7 @@ class ReplayBuffer(object):
         run_len = self.ptr - self.path_start_idx
 
         # TD residual calculation
-        deltas = (
-            rews[:-1] - vals[:-1] + self.gamma * jnp.concatenate([vals[1:-1], vals[-1].reshape(1, -1)])
-        )
+        deltas = rews[:-1] - vals[:-1] + self.gamma * vals[1:]
         self.tdres_buf = self.tdres_buf.at[path_slice].set(
             jnp.array(
                 [
