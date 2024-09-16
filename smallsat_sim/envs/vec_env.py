@@ -83,7 +83,8 @@ class VecEnv(BaseEnv):
         rewards = jnp.zeros(self.num_envs)
         squared_euclid_dist2goal = states[:, 0] ** 2 + states[:, 1] ** 2
         manhattan_dist2goal = jnp.abs(states[:, 0]) + jnp.abs(states[:, 1])
-        squared_euclid_attitude_dev = (states[:, 3]) ** 2
+        squared_euclid_attitude_dev = states[:, 2] ** 2
+        squared_vel = states[:, 3] ** 2 + states[:, 4] ** 2
         control_effort = jnp.sum(actions)
         # wandb.log(
         #     {
@@ -110,16 +111,17 @@ class VecEnv(BaseEnv):
                 - 50 * squared_euclid_attitude_dev
                 - 0.2 * control_effort
             )
-        if self.prev_shaping is not None:
-            rewards = shaping - self.prev_shaping
-        self.prev_shaping = shaping
 
         # Check if the agent is out-of-bounds or has reached the goal
         is_terminal = jax.vmap(self._in_terminal_set)
         terminal = is_terminal(states)
 
-        # Reward the agent for reaching the goal
-        # rewards += jnp.where(terminal, 1000, 0)
+        # If the agent is in the terminal set, they should stop
+        shaping += jnp.where(terminal, squared_vel, 0)
+        
+        if self.prev_shaping is not None:
+            rewards = shaping - self.prev_shaping
+        self.prev_shaping = shaping
 
         return rewards, terminal
 
@@ -195,7 +197,7 @@ class VecEnv(BaseEnv):
         vel_body = multiply_transpose_velocity(R, self.mjx_batch.qvel[:, :3])
 
         # Compute rotation angle
-        rot_angle = jnp.arctan2(R[:, 2, 1], R[:, 1, 1])
+        rot_angle = jnp.arctan2(R[:, 1, 0], R[:, 0, 0])
 
         # Compute the distance on each axis to the reference point
         delta_pos = self.mjx_batch.qpos[:, 0:3] - jnp.full(
@@ -204,7 +206,7 @@ class VecEnv(BaseEnv):
 
         # Compute the attitude error
         ref_orientation = jnp.full(self.num_envs, 0)
-        delta_orientation = ref_orientation - rot_angle
+        delta_orientation = rot_angle - ref_orientation
 
         # Create array of observations
         states = jnp.concatenate(

@@ -18,7 +18,7 @@ def mlp(sizes, activation, output_activation=identity):
 
     for i in range(len(sizes) - 1):
         if i >= len(sizes) - 2:
-            activation_function = output_activation
+            activation_function = output_activation # nnx.relu for pretraining
         else:
             activation_function = activation
         modules += [

@@ -20,6 +20,12 @@ from smallsat_sim.controllers.rl.runners.runner_utils import (
     load_training_data,
     load_trained_modules,
 )
+from smallsat_sim.utils.helpers_rl import (
+    train_val_split,
+    standardize,
+    mse_loss_fn,
+    mae_loss_fn,
+)
 
 
 class OnPolicyRunner(object):
@@ -73,49 +79,75 @@ class OnPolicyRunner(object):
                 self.ckpt_path, "pretraining_data.pkl"
             )
 
-        # Pretrain the policy network
+        # Optimizer to pretrain the policy network
+        optimizer = nnx.Optimizer(self.agent.actor, optax.adam(learning_rate=1e-2))
+
+        # Load the data (discard the first 100 steps because of the PD controller performance)
         obs = pretraining_data["obs"].reshape(-1, self.env.obs_dim)
         act = pretraining_data["act"].reshape(-1, self.env.act_dim)
 
-        idx = int(obs.shape[0] * 0.8)
-        X_train, y_train = obs[:idx, :], act[:idx, :]
-        X_val, y_val = obs[idx:, :], act[idx:, :]
+        # Standardize the observations
+        # obs_scaled = standardize(obs)
 
-        optimizer = nnx.Optimizer(
-            self.agent.actor, optax.adam(learning_rate=1e-3)
-        )
+        # Clip the actions to the highest upper bound on the force range of the thrusters
+        act_clipped = jnp.where(act > 0.6, 0.6, act)
 
-        # Define the loss function
-        def mse_loss_fn(model, X: jnp.ndarray, y: jnp.ndarray):
-            y_pred_dist, _ = model.forward(X)
-            y_pred = y_pred_dist.sample(
-                seed=jax.random.PRNGKey(np.random.randint(0, 9999))
-            )
-            return jnp.mean((y_pred - y) ** 2)
+        # Split into training and validation sets
+        X_train, y_train, X_val, y_val = train_val_split(obs, act_clipped)
 
         losses = []
         val_losses = []
+        num_epochs = 50
+        batch_size = 8192
+        num_train_samples = X_train.shape[0]
+        num_val_samples = X_val.shape[0]
 
-        for epoch in range(100):
-            # Train network
-            loss, grads = nnx.value_and_grad(mse_loss_fn)(
-                self.agent.actor, X_train, y_train
-            )
-            losses.append(loss)
-            optimizer.update(grads)
+        # Training loop
+        for epoch in range(num_epochs):
+            # Shuffle the training data
+            key = jax.random.PRNGKey(np.random.randint(9999))
+            permutation = jax.random.permutation(key, num_train_samples)
+            X_train = X_train[permutation]
+            y_train = y_train[permutation]
+
+            for i in range(0, num_train_samples, batch_size):
+                batch_X = X_train[i : i + batch_size]
+                batch_y = y_train[i : i + batch_size]
+
+                # Train network
+                loss, grads = nnx.value_and_grad(mae_loss_fn)(
+                    self.agent.actor, batch_X, batch_y
+                )
+                losses.append(loss)
+                optimizer.update(grads)
             print(f"Epoch: {epoch+1:2} avg. training loss: {sum(losses)/len(losses)}")
 
-            # Validate
-            val_loss, _ = nnx.value_and_grad(mse_loss_fn)(
-                self.agent.actor, X_val, y_val
-            )
-            val_losses.append(val_loss)
+            for i in range(0, num_val_samples, batch_size):
+                batch_X_val = X_val[i : i + batch_size]
+                batch_y_val = y_val[i : i + batch_size]
+
+                # Validate
+                val_loss, _ = nnx.value_and_grad(mae_loss_fn)(
+                    self.agent.actor, batch_X_val, batch_y_val
+                )
+                val_losses.append(val_loss)
             print(
                 f"Epoch: {epoch+1:2} avg. evaluation loss: {sum(val_losses)/len(val_losses)}"
             )
 
+            if self.env.use_wandb:
+                wandb.log(
+                    {
+                        "training_loss": sum(losses) / len(losses),
+                        "validation_loss": sum(val_losses) / len(val_losses),
+                    }
+                )
+
         # Pretrain the base network
         # TODO
+
+        # Save the trained actor and critic network weights
+        save_trained_modules(self.agent, self.ckpt_path, "pretraining_state.pkl")
 
     def learn(self) -> None:
         """

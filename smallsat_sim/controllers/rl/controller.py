@@ -8,11 +8,12 @@ from smallsat_sim.planners.base_planner import BasePlanner
 from smallsat_sim.controllers.rl.algorithms.vpg import VPG
 from smallsat_sim.controllers.rl.algorithms.ppo import PPO
 from smallsat_sim.controllers.rl.runners.runner_utils import load_trained_modules
+from smallsat_sim.utils.helpers_rl import standardize
 
 
 class RLController(object):
     """
-    RL controller that uses the save3d actor weights.
+    RL controller that uses the saved actor weights.
     """
 
     def __init__(self, env: VecEnv, planner: BasePlanner) -> None:
@@ -23,7 +24,7 @@ class RLController(object):
 
         # Path to save the checkpoints
         self.ckpt_path = "smallsat_sim/controllers/rl/checkpoints/"
-        self.ckpt_filename = "100_training_state.pkl"
+        self.ckpt_filename = "pretraining_state_relu.pkl"
 
     def control(
         self,
@@ -48,6 +49,7 @@ class RLController(object):
             real_time = time.time() - start_time
             sim_time = self.env.mjx_batch.time[0]
             actions = self.agent.get_control_input(states)
+            # actions = self.agent.actor.mu_net(states)
             states = self.env.get_states(self.reference_point)
             _, terminal = self.env.transition(actions, states)
             if terminal.all():

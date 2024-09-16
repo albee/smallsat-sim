@@ -5,7 +5,9 @@
 # Parsing
 import argparse
 import numpy as np
+import jax
 import jax.numpy as jnp
+from flax import nnx
 import scipy.signal
 
 
@@ -212,3 +214,52 @@ def calc_attitude_error(q_ref: np.ndarray, q: np.ndarray) -> float:
 
     # Extract the angle of the error quaternion
     return error_rotation.magnitude()
+
+
+def train_val_split(X, y, val_split=0.2, key=jax.random.PRNGKey(42)):
+    """
+    Split data into training and validation set.
+    """
+    num_samples = X.shape[0]
+    key, subkey = jax.random.split(key)
+    indices = jax.random.permutation(subkey, num_samples)
+
+    val_size = int(num_samples * val_split)
+    train_idx, val_idx = indices[val_size:], indices[:val_size]
+
+    X_train, y_train = X[train_idx], y[train_idx]
+    X_val, y_val = X[val_idx], y[val_idx]
+
+    return X_train, y_train, X_val, y_val
+
+
+def standardize(X) -> jnp.ndarray:
+    """
+    Standardize the observations.
+    """
+    mean = jnp.mean(X)
+    std = jnp.std(X)
+
+    return (X - mean) / std
+
+
+@nnx.jit
+def mse_loss_fn(model, X: jnp.ndarray, y: jnp.ndarray):
+    """
+    Mean squared error loss function.
+    """
+    y_pred_dist, _ = model.forward(X)
+    y_pred = y_pred_dist.sample(seed=jax.random.PRNGKey(np.random.randint(0, 9999)))
+
+    return jnp.mean((y_pred - y) ** 2)
+
+
+@nnx.jit
+def mae_loss_fn(model, X: jnp.ndarray, y: jnp.ndarray):
+    """
+    Mean squared error loss function.
+    """
+    y_pred_dist, _ = model.forward(X)
+    y_pred = y_pred_dist.sample(seed=jax.random.PRNGKey(np.random.randint(0, 9999)))
+
+    return jnp.mean(jnp.abs(y_pred - y))
