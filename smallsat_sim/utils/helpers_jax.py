@@ -244,22 +244,22 @@ def standardize(X) -> jnp.ndarray:
 
 
 @nnx.jit
-def mse_loss_fn(model, X: jnp.ndarray, y: jnp.ndarray):
+def mse_loss_fn(model, X: jnp.ndarray, y: jnp.ndarray, key):
     """
     Mean squared error loss function.
     """
     y_pred_dist, _ = model.forward(X)
-    y_pred = y_pred_dist.sample(seed=jax.random.PRNGKey(np.random.randint(0, 9999)))
+    y_pred = y_pred_dist.sample(seed=key)
 
     return jnp.mean((y_pred - y) ** 2)
 
 
 @nnx.jit
-def mae_loss_fn(model, X: jnp.ndarray, y: jnp.ndarray):
+def mae_loss_fn(model, X: jnp.ndarray, y: jnp.ndarray, key):
     """
     Mean squared error loss function.
     """
     y_pred_dist, _ = model.forward(X)
-    y_pred = y_pred_dist.sample(seed=jax.random.PRNGKey(np.random.randint(0, 9999)))
+    y_pred = y_pred_dist.sample(seed=key)
 
     return jnp.mean(jnp.abs(y_pred - y))

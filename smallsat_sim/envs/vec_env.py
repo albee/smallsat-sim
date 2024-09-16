@@ -9,7 +9,7 @@ from mujoco import mjx
 import wandb
 
 from smallsat_sim.envs.base_env import BaseEnv
-from smallsat_sim.utils import xml_parser_rl
+from smallsat_sim.utils import xml_parser_lightweight
 
 
 class VecEnv(BaseEnv):
@@ -50,7 +50,7 @@ class VecEnv(BaseEnv):
 
         # Updating only qpos and qvel, not resetting all of mj_data
         self.mjx_data = self.mjx_data.replace(qpos=self.init_qpos[0])
-        rng = jax.random.PRNGKey(np.random.randint(0, 9999))
+        rng = jax.random.PRNGKey(np.random.randint(0, 9999)) # Have a different config at every reset
         rng = jax.random.split(rng, self.num_envs)
         tmp_batch = jax.vmap(
             lambda rng: self.mjx_data.replace(
@@ -259,7 +259,7 @@ class VecEnv(BaseEnv):
         Creates a viewer depending on headless flag.
         """
         # Generate xml using env and model config files
-        xml = xml_parser_rl.generate_mujoco_xml(self.env_cfg, self.model_cfg)
+        xml = xml_parser_lightweight.generate_mujoco_xml(self.env_cfg, self.model_cfg)
 
         # Create model and data instances
         self.model = mujoco.MjModel.from_xml_string(xml)

@@ -1,7 +1,6 @@
 import os
 import time
 import jax
-import numpy as np
 import jax.numpy as jnp
 from flax import nnx
 import optax
@@ -21,7 +20,7 @@ from smallsat_sim.controllers.rl.runners.runner_utils import (
     load_training_data,
     load_trained_modules,
 )
-from smallsat_sim.utils.helpers_rl import (
+from smallsat_sim.utils.helpers_jax import (
     train_val_split,
     standardize,
     mse_loss_fn,
@@ -105,11 +104,14 @@ class OnPolicyRunner(object):
             num_train_samples = X_train.shape[0]
             num_val_samples = X_val.shape[0]
 
+            # Create PRNG keys
+            key = jax.random.PRNGKey(42)
+            keys = jax.random.split(key, num=num_epochs)
+
             # Training loop
             for epoch in range(num_epochs):
                 # Shuffle the training data
-                key = jax.random.PRNGKey(np.random.randint(9999))
-                permutation = jax.random.permutation(key, num_train_samples)
+                permutation = jax.random.permutation(keys[epoch], num_train_samples)
                 X_train = X_train[permutation]
                 y_train = y_train[permutation]
 
@@ -119,7 +121,7 @@ class OnPolicyRunner(object):
 
                     # Train network
                     actor_loss, grads = nnx.value_and_grad(mae_loss_fn)(
-                        self.agent.actor, batch_X, batch_y
+                        self.agent.actor, batch_X, batch_y, keys[epoch]
                     )
                     actor_losses.append(actor_loss)
                     actor_optimizer.update(grads)
@@ -133,7 +135,7 @@ class OnPolicyRunner(object):
 
                     # Validate
                     actor_val_loss, _ = nnx.value_and_grad(mae_loss_fn)(
-                        self.agent.actor, batch_X_val, batch_y_val
+                        self.agent.actor, batch_X_val, batch_y_val, keys[epoch]
                     )
                     actor_val_losses.append(actor_val_loss)
                 print(

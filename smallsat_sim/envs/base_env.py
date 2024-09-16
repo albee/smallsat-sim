@@ -141,28 +141,28 @@ class BaseEnv(object):
 
             # Multiple agents in MJX
             else:
-                # Fix a random seed for the PRNG key and set the key
-                random_seed = np.random.randint(0, high=9999, size=4)
+                # Set the PRNG keys
+                key = jax.random.PRNGKey(42)
 
                 # Calculate noise for each environment
                 num_envs = obs.shape[0]
                 noise_r = jax.random.multivariate_normal(
-                    jax.random.PRNGKey(random_seed[0]),
+                    key,
                     jnp.zeros((num_envs, 3)),
                     self.env_cfg.sim.noise.sigma_r * jnp.identity(3),
                 )
                 noise_q = jax.random.multivariate_normal(
-                    jax.random.PRNGKey(random_seed[0]),
+                    key,
                     jnp.zeros((num_envs, 4)),
                     self.env_cfg.sim.noise.sigma_q * jnp.identity(4),
                 )
                 noise_v = jax.random.multivariate_normal(
-                    jax.random.PRNGKey(random_seed[0]),
+                    key,
                     jnp.zeros((num_envs, 3)),
                     self.env_cfg.sim.noise.sigma_v * jnp.identity(3),
                 )
                 noise_w = jax.random.multivariate_normal(
-                    jax.random.PRNGKey(random_seed[0]),
+                    key,
                     jnp.zeros((num_envs, 3)),
                     self.env_cfg.sim.noise.sigma_w * jnp.identity(3),
                 )
@@ -236,7 +236,9 @@ class BaseEnv(object):
         Creates a renderer to visualize the experiments (to later save them to a video).
         """
         # Create instance of MuJoCo renderer
-        self.renderer = mujoco.Renderer(self.model, width=self.env_cfg.renderer.width, height=1440)
+        self.renderer = mujoco.Renderer(
+            self.model, width=self.env_cfg.renderer.width, height=1440
+        )
 
         # Set up the scene and the default camera options
         self.cam = mujoco.MjvCamera()

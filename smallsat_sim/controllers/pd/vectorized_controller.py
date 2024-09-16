@@ -17,7 +17,7 @@
 from smallsat_sim.controllers.base_controller import BaseController
 from smallsat_sim.planners.base_planner import BasePlanner
 from smallsat_sim.envs.base_env import BaseEnv
-from smallsat_sim.utils.helpers_rl import quat_multiply, quat_conjugate, Rquat, sgn_quat
+from smallsat_sim.utils.helpers_jax import quat_multiply, quat_conjugate, Rquat, sgn_quat
 
 import jax
 import jax.numpy as jnp

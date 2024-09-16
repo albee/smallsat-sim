@@ -8,7 +8,7 @@ from smallsat_sim.planners.base_planner import BasePlanner
 from smallsat_sim.controllers.rl.algorithms.vpg import VPG
 from smallsat_sim.controllers.rl.algorithms.ppo import PPO
 from smallsat_sim.controllers.rl.runners.runner_utils import load_trained_modules
-from smallsat_sim.utils.helpers_rl import standardize
+from smallsat_sim.utils.helpers_jax import standardize
 
 
 class RLController(object):
@@ -57,8 +57,6 @@ class RLController(object):
             _, terminal = self.env.transition(actions, states)
             if terminal.all():
                 if self.tracking_point_idx == (len(self.reference_points) - 1):
-                    break
-                elif self.tracking_point_idx == 10:
                     break
                 else:
                     self.tracking_point_idx += 1
