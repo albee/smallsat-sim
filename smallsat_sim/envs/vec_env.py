@@ -50,7 +50,9 @@ class VecEnv(BaseEnv):
 
         # Updating only qpos and qvel, not resetting all of mj_data
         self.mjx_data = self.mjx_data.replace(qpos=self.init_qpos[0])
-        rng = jax.random.PRNGKey(np.random.randint(0, 9999)) # Have a different config at every reset
+        rng = jax.random.PRNGKey(
+            np.random.randint(0, 9999)
+        )  # Have a different config at every reset
         rng = jax.random.split(rng, self.num_envs)
         tmp_batch = jax.vmap(
             lambda rng: self.mjx_data.replace(
@@ -83,45 +85,62 @@ class VecEnv(BaseEnv):
         rewards = jnp.zeros(self.num_envs)
         squared_euclid_dist2goal = states[:, 0] ** 2 + states[:, 1] ** 2
         manhattan_dist2goal = jnp.abs(states[:, 0]) + jnp.abs(states[:, 1])
-        squared_euclid_attitude_dev = states[:, 2] ** 2
+        attitude_dev = jnp.exp(-1.0 * states[:, 2] ** 2)  # Reward the attitude in 6 DOF
+        squared_attitude_dev = states[:, 2] ** 2
         squared_vel = states[:, 3] ** 2 + states[:, 4] ** 2
-        control_effort = jnp.sum(actions)
-        # wandb.log(
-        #     {
-        #         "squared_euclid_dist2goal": 2 * squared_euclid_dist2goal,
-        #         "manhattan_dist2goal": manhattan_dist2goal,
-        #         "squared_euclid_attitude_dev": 50 * squared_euclid_attitude_dev,
-        #         "control_effort": 0.1 * control_effort,
-        #     }
-        # )
-        # Curriculum-based training
+        squared_angvel = states[:, 5] ** 2
+        control_effort = jnp.sum(actions**2)  # No reward yet
+        wandb.log(
+            {
+                "squared_euclid_dist2goal": squared_euclid_dist2goal,
+                "manhattan_dist2goal": manhattan_dist2goal,
+                "squared_euclid_attitude_dev": squared_attitude_dev,
+                "control_effort": control_effort,
+                "squared_vel": squared_vel,
+                "squared_angvel": squared_angvel,
+                "attitude_dev": attitude_dev
+            }
+        )
+        # Curriculum-based training # TODO: tune weights
         if (
             iter is not None and iter < 25
         ):  # Assumption: train for more than this many epochs
             shaping = (
-                -2 * squared_euclid_dist2goal
-                - 1 * manhattan_dist2goal
-                - 50 * squared_euclid_attitude_dev
-                - 0.1 * control_effort
+                -3 * squared_euclid_dist2goal
+                - 2 * manhattan_dist2goal
+                - 1 * squared_angvel
+                + 0.1 * attitude_dev
+                - 0.01 * control_effort
             )
         else:
             shaping = (
-                -1 * squared_euclid_dist2goal
-                - 0.5 * manhattan_dist2goal
-                - 50 * squared_euclid_attitude_dev
-                - 0.2 * control_effort
+                -3 * squared_euclid_dist2goal
+                - 2 * manhattan_dist2goal
+                - 1 * squared_angvel
+                + 0.1 * attitude_dev
+                - 0.01 * control_effort
             )
+
+        # Penalize control actions outside of the bounds (approximate upper bound by largest possible value)
+        lb_input = 0
+        lb_mask = actions < lb_input
+        shaping += 0.02 * jnp.sum((actions - lb_input) * lb_mask, axis=1)
+        ub_input = 0.6
+        ub_mask = actions > ub_input
+        shaping -= 0.02 * jnp.sum((actions - ub_input) * ub_mask, axis=1)
 
         # Check if the agent is out-of-bounds or has reached the goal
         is_terminal = jax.vmap(self._in_terminal_set)
         terminal = is_terminal(states)
 
         # If the agent is in the terminal set, they should stop
-        shaping += jnp.where(terminal, squared_vel, 0)
-        
+        shaping += jnp.where(terminal, 0.1 * squared_vel, 0)
+
         if self.prev_shaping is not None:
             rewards = shaping - self.prev_shaping
         self.prev_shaping = shaping
+
+        wandb.log({"rewards": rewards})
 
         return rewards, terminal
 
@@ -241,7 +260,9 @@ class VecEnv(BaseEnv):
         Creates a renderer to visualize the experiments (to later save them to a video).
         """
         # Create instance of MuJoCo renderer
-        self.renderer = mujoco.Renderer(self.model, width=self.env_cfg.renderer.width, height=1440)
+        self.renderer = mujoco.Renderer(
+            self.model, width=self.env_cfg.renderer.width, height=1440
+        )
 
         # Set up the scene and the default camera options
         self.cam = mujoco.MjvCamera()
@@ -333,8 +354,7 @@ class VecEnv(BaseEnv):
         """
         Returns one if in terminal set, zero otherwise.
         """
-        # return jnp.all(jnp.abs(delta_pos) <= 0.5)
-        return jnp.sqrt(delta_pos[0] ** 2 + delta_pos[1] ** 2) <= 0.25
+        return jnp.sqrt(delta_pos[0] ** 2 + delta_pos[1] ** 2) <= 0.2
 
     def _get_error_quaternion(self, q: jnp.ndarray, q_des: jnp.ndarray) -> jnp.ndarray:
         """
