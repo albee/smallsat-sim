@@ -90,17 +90,7 @@ class VecEnv(BaseEnv):
         squared_vel = states[:, 3] ** 2 + states[:, 4] ** 2
         squared_angvel = states[:, 5] ** 2
         control_effort = jnp.sum(actions**2)  # No reward yet
-        wandb.log(
-            {
-                "squared_euclid_dist2goal": squared_euclid_dist2goal,
-                "manhattan_dist2goal": manhattan_dist2goal,
-                "squared_euclid_attitude_dev": squared_attitude_dev,
-                "control_effort": control_effort,
-                "squared_vel": squared_vel,
-                "squared_angvel": squared_angvel,
-                "attitude_dev": attitude_dev
-            }
-        )
+
         # Curriculum-based training # TODO: tune weights
         if (
             iter is not None and iter < 25
@@ -139,8 +129,6 @@ class VecEnv(BaseEnv):
         if self.prev_shaping is not None:
             rewards = shaping - self.prev_shaping
         self.prev_shaping = shaping
-
-        wandb.log({"rewards": rewards})
 
         return rewards, terminal
 

@@ -1,4 +1,5 @@
 import jax
+import numpy as np
 import jax.numpy as jnp
 from flax import nnx
 import optax
@@ -12,6 +13,62 @@ class PPO(BaseAgent):
     """
     Proximal Policy Optimization (PPO) agent.
     """
+
+    def __init__(self, env, planner, activation=nnx.tanh) -> None:
+        super().__init__(env, planner, activation)
+
+        # Load hyperparams
+        self._load_ppo_hyperparams()
+
+        # Set the number of training epochs
+        self.actor_training_epochs = 100
+        self.critic_training_epochs = 100
+
+        # Compute the total number of steps
+        actor_total_steps = int(
+            self.actor_training_epochs
+            * self.epochs
+            * self.env.num_envs
+            * self.steps_per_epoch
+            / 16
+        )  # Upper bound because of early stopping
+        critic_total_steps = int(
+            self.critic_training_epochs
+            * self.epochs
+            * self.env.num_envs
+            * self.steps_per_epoch
+            / 16
+        )
+
+        # Initialize an ADAM optimizers for the actor and critic networks with linear lr decay
+        self.actor_optimizer = nnx.Optimizer(
+            self.actor,
+            optax.adam(
+                learning_rate=optax.schedules.linear_schedule(
+                    self.actor_lr, 0, actor_total_steps
+                ),
+                eps=1e-5,
+            ),
+        )
+        self.critic_optimizer = nnx.Optimizer(
+            self.critic,
+            optax.adam(
+                learning_rate=optax.schedules.linear_schedule(
+                    self.critic_lr, 0, critic_total_steps
+                ),
+                eps=1e-5,
+            ),
+        )
+
+        # Set the clip ratio and the target kl divergence
+        self.clip_ratio = 0.2
+        self.target_kl = 0.01
+
+        # Total batch size
+        self.batch_size = self.env.num_envs * self.steps_per_epoch
+
+        # Define the size of each mini-batch
+        self.minibatch_size = int(self.batch_size / 16)
 
     # Define the actor loss
     @partial(nnx.jit, static_argnums=(0,))
@@ -37,7 +94,7 @@ class PPO(BaseAgent):
 
     def update_policy_gradient(
         self,
-        actor_lr: float,
+        key,
         obs: jnp.ndarray,
         actions: jnp.ndarray,
         tdres: jnp.ndarray,
@@ -47,55 +104,80 @@ class PPO(BaseAgent):
         Update the policy gradient.
         """
 
-        # Set the clip ratio and the target kl divergence
-        clip_ratio = 0.2
-        target_kl = 0.01
-
-        # Initialize an ADAM optimizers for the actor network
-        actor_optimizer = nnx.Optimizer(self.actor, optax.adam(learning_rate=actor_lr))
+        # Create PRNG keys
+        keys = jax.random.split(key, num=self.actor_training_epochs)
 
         # Compute the actor loss
-        for i in range(100):
-            actor_loss, grads = nnx.value_and_grad(self.jit_actor_loss_fn)(
-                self.actor, tdres, obs, actions, logp, clip_ratio
-            )
-            print(f"{actor_loss = }")
+        for i in range(self.actor_training_epochs):
+            # Shuffle the indices
+            indices = jax.random.permutation(keys[i], jnp.arange(self.batch_size))
 
-            _, logp_a = self.actor.forward(obs, actions)
+            for start in range(0, self.batch_size, self.minibatch_size):
+                end = start + self.minibatch_size
+                mb_indices = indices[start:end]
 
-            kl = (logp.reshape(-1) - logp_a).mean()
-            if kl > 1.5 * target_kl:
-                print("Early stopping at step %d due to reaching max kl" % i)
-                break
+                actor_loss, grads = nnx.value_and_grad(self.jit_actor_loss_fn)(
+                    self.actor,
+                    tdres[mb_indices],
+                    obs[mb_indices],
+                    actions[mb_indices],
+                    logp[mb_indices],
+                    self.clip_ratio[mb_indices],
+                )
+                print(f"{actor_loss = }")
 
-            # Update the gradients
-            actor_optimizer.update(grads)
+                _, logp_a = self.actor.forward(obs[mb_indices], actions[mb_indices])
+
+                kl = (logp[mb_indices].reshape(-1) - logp_a).mean()
+                if kl > 1.5 * self.target_kl:
+                    print("Early stopping at step %d due to reaching max kl" % i)
+                    break
+
+                # Update the gradients
+                self.actor_optimizer.update(grads)
 
         return actor_loss
 
     def update_value_function(
-        self, critic_lr: float, obs: jnp.ndarray, returns: jnp.ndarray
+        self, key, obs: jnp.ndarray, returns: jnp.ndarray
     ) -> jnp.ndarray:
         """
         Update the value function.
         """
 
-        # Initialize an ADAM optimizer for the critic network
-        critic_optimizer = nnx.Optimizer(
-            self.critic, optax.adam(learning_rate=critic_lr)
-        )
+        # Create PRNG keys
+        keys = jax.random.split(key, num=self.critic_training_epochs)
 
-        for _ in range(100):
-            # Compute the critic loss
-            critic_loss, grads = nnx.value_and_grad(self.jit_critic_loss_fn)(
-                self.critic, returns, obs
-            )
-            print(f"{critic_loss = }")
+        for i in range(self.critic_training_epochs):
+            # Shuffle the indices
+            indices = jax.random.permutation(keys[i], jnp.arange(self.batch_size))
 
-            # Update the gradients
-            critic_optimizer.update(grads)
+            for start in range(0, self.batch_size, self.minibatch_size):
+                end = start + self.minibatch_size
+                mb_indices = indices[start:end]
+
+                # Compute the critic loss
+                critic_loss, grads = nnx.value_and_grad(self.jit_critic_loss_fn)(
+                    self.critic, returns[mb_indices], obs[mb_indices]
+                )
+                print(f"{critic_loss = }")
+
+                # Update the gradients
+                self.critic_optimizer.update(grads)
 
         return critic_loss
+
+    def _load_ppo_hyperparams(self) -> None:
+        """
+        Load PPO-specific hyperparams.
+        """
+        self.steps_per_epoch = self.env.env_cfg.control.RL.PPO.steps_per_epoch
+        self.epochs = self.env.env_cfg.control.RL.PPO.epochs
+        self.max_epoch_len = self.env.env_cfg.control.RL.PPO.max_epoch_len
+        self.gamma = self.env.env_cfg.control.RL.PPO.gamma
+        self.lam = self.env.env_cfg.control.RL.PPO.lam
+        self.actor_lr = self.env.env_cfg.control.RL.PPO.actor_lr
+        self.critic_lr = self.env.env_cfg.control.RL.PPO.critic_lr
 
     def _log(self, run_id: int, timestamp: float, env: BaseEnv) -> None:
         """

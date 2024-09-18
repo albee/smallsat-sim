@@ -51,7 +51,7 @@ class BaseAgent(BaseController):
     @abstractmethod
     def update_policy_gradient(
         self,
-        actor_lr: float,
+        key,
         obs: jnp.ndarray,
         actions: jnp.ndarray,
         tdres: jnp.ndarray,
@@ -64,7 +64,7 @@ class BaseAgent(BaseController):
 
     @abstractmethod
     def update_value_function(
-        self, critic_lr: float, obs: jnp.ndarray, returns: jnp.ndarray
+        self, key, obs: jnp.ndarray, returns: jnp.ndarray
     ) -> jnp.ndarray:
         """
         Update the value function. Return the critic loss.

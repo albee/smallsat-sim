@@ -13,6 +13,20 @@ class VPG(BaseAgent):
     Vanilla Policy Gradient (with Generalized Advantage Estimation) agent.
     """
 
+    def __init__(self, env, planner, activation=nnx.tanh) -> None:
+        super().__init__(env, planner, activation)
+
+        # Load the hyperparams
+        self._load_vpg_hyperparams()
+
+        # Initialize an ADAM optimizers for the actor and critic networks
+        self.actor_optimizer = nnx.Optimizer(
+            self.actor, optax.adam(learning_rate=self.actor_lr, eps=1e-5)
+        )
+        self.critic_optimizer = nnx.Optimizer(
+            self.critic, optax.adam(learning_rate=self.critic_lr, eps=1e-5)
+        )
+
     # Define the actor loss
     @partial(nnx.jit, static_argnums=(0,))
     def jit_actor_loss_fn(
@@ -29,7 +43,7 @@ class VPG(BaseAgent):
 
     def update_policy_gradient(
         self,
-        actor_lr: float,
+        key,
         obs: jnp.ndarray,
         actions: jnp.ndarray,
         tdres: jnp.ndarray,
@@ -39,9 +53,6 @@ class VPG(BaseAgent):
         Update the policy gradient.
         """
 
-        # Initialize an ADAM optimizers for the actor network
-        actor_optimizer = nnx.Optimizer(self.actor, optax.adam(learning_rate=actor_lr))
-
         # Compute the actor loss
         actor_loss, grads = nnx.value_and_grad(self.jit_actor_loss_fn)(
             self.actor, tdres
@@ -49,21 +60,16 @@ class VPG(BaseAgent):
         print(f"{actor_loss = }")
 
         # Update the gradients
-        actor_optimizer.update(grads)
+        self.actor_optimizer.update(grads)
 
         return actor_loss
 
     def update_value_function(
-        self, critic_lr: float, obs: jnp.ndarray, returns: jnp.ndarray
+        self, key, obs: jnp.ndarray, returns: jnp.ndarray
     ) -> jnp.ndarray:
         """
         Update the value function.
         """
-
-        # Initialize an ADAM optimizer for the critic network
-        critic_optimizer = nnx.Optimizer(
-            self.critic, optax.adam(learning_rate=critic_lr)
-        )
 
         for _ in range(100):
             # Compute the critic loss
@@ -73,9 +79,21 @@ class VPG(BaseAgent):
             print(f"{critic_loss = }")
 
             # Update the gradients
-            critic_optimizer.update(grads)
+            self.critic_optimizer.update(grads)
 
         return critic_loss
+    
+    def _load_vpg_hyperparams(self) -> None:
+        """
+        Load VPG-specific hyperparams.
+        """
+        self.steps_per_epoch = self.env.env_cfg.control.RL.VPG.steps_per_epoch
+        self.epochs = self.env.env_cfg.control.RL.VPG.epochs
+        self.max_epoch_len = self.env.env_cfg.control.RL.VPG.max_epoch_len
+        self.gamma = self.env.env_cfg.control.RL.VPG.gamma
+        self.lam = self.env.env_cfg.control.RL.VPG.lam
+        self.actor_lr = self.env.env_cfg.control.RL.VPG.actor_lr
+        self.critic_lr = self.env.env_cfg.control.RL.VPG.critic_lr
 
     def _log(self, run_id: int, timestamp: float, env: BaseEnv) -> None:
         """

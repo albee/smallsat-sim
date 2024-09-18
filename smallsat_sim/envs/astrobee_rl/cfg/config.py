@@ -53,20 +53,20 @@ class EnvConfig(BaseEnvConfig):
 
             # Hyperparams for the learning loop
             class VPG:
-                steps_per_epoch = 3000
+                steps_per_epoch = 4096
                 epochs = 50
-                max_epoch_len = 300
+                max_epoch_len = 1024
                 gamma = 0.99
                 lam = 0.97
                 actor_lr = 3e-4
                 critic_lr = 1e-3
 
             class PPO:
-                steps_per_epoch = 5000
+                steps_per_epoch = 4096
                 epochs = 50
-                max_epoch_len = 1000
+                max_epoch_len = 1024
                 gamma = 0.99
-                lam = 0.97
+                lam = 0.95
                 actor_lr = 3e-4
                 critic_lr = 1e-3
 

@@ -91,7 +91,7 @@ class OnPolicyRunner(object):
 
             # Optimizer to pretrain the policy network
             actor_optimizer = nnx.Optimizer(
-                self.agent.actor, optax.adam(learning_rate=1e-2)
+                self.agent.actor, optax.adam(learning_rate=1e-2, eps=1e-5)
             )
 
             # Split into training and validation sets
@@ -188,6 +188,10 @@ class OnPolicyRunner(object):
             0,
         )
 
+        # Create PRNG keys
+        key = jax.random.PRNGKey(42)
+        keys = jax.random.split(key, num=self.epochs)
+
         # Main training loop
         for epoch in range(self.epochs):
             ep_returns = jnp.zeros((self.env.num_envs, self.steps_per_epoch))
@@ -252,7 +256,7 @@ class OnPolicyRunner(object):
 
             # Policy gradient update
             actor_loss = self.agent.update_policy_gradient(
-                self.actor_lr,
+                keys[epoch],
                 obs,
                 actions,
                 tdres,
@@ -260,7 +264,7 @@ class OnPolicyRunner(object):
             )
 
             # Value function updates
-            critic_loss = self.agent.update_value_function(self.critic_lr, obs, returns)
+            critic_loss = self.agent.update_value_function(keys[epoch], obs, returns)
 
             # Monitor key RL metrics during training using Weights & Biases
             if self.env.use_wandb:
@@ -418,21 +422,9 @@ class OnPolicyRunner(object):
         Load the relevant hyperparams from the config file.
         """
         if isinstance(self.agent, VPG):
-            self.steps_per_epoch = self.env.env_cfg.control.RL.VPG.steps_per_epoch
-            self.epochs = self.env.env_cfg.control.RL.VPG.epochs
-            self.max_epoch_len = self.env.env_cfg.control.RL.VPG.max_epoch_len
-            self.gamma = self.env.env_cfg.control.RL.VPG.gamma
-            self.lam = self.env.env_cfg.control.RL.VPG.lam
-            self.actor_lr = self.env.env_cfg.control.RL.VPG.actor_lr
-            self.critic_lr = self.env.env_cfg.control.RL.VPG.critic_lr
+            VPG._load_vpg_hyperparams()
         elif isinstance(self.agent, PPO):
-            self.steps_per_epoch = self.env.env_cfg.control.RL.PPO.steps_per_epoch
-            self.epochs = self.env.env_cfg.control.RL.PPO.epochs
-            self.max_epoch_len = self.env.env_cfg.control.RL.PPO.max_epoch_len
-            self.gamma = self.env.env_cfg.control.RL.PPO.gamma
-            self.lam = self.env.env_cfg.control.RL.PPO.lam
-            self.actor_lr = self.env.env_cfg.control.RL.PPO.actor_lr
-            self.critic_lr = self.env.env_cfg.control.RL.PPO.critic_lr
+            PPO._load_ppo_hyperparams()
         else:
             raise Exception("Agent has not been implemented.")
         self.episode_len = self.env.env_cfg.control.RL.episode_len

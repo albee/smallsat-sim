@@ -26,7 +26,7 @@ class RLController(object):
 
         # Path to save the checkpoints
         self.ckpt_dir = "smallsat_sim/controllers/rl/checkpoints/"
-        self.ckpt_filename = "pretraining_state_l1.pkl"
+        self.ckpt_filename = "training_state.pkl"
 
     def control(
         self,
