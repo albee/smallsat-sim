@@ -85,11 +85,11 @@ class VecEnv(BaseEnv):
         rewards = jnp.zeros(self.num_envs)
         squared_euclid_dist2goal = states[:, 0] ** 2 + states[:, 1] ** 2
         manhattan_dist2goal = jnp.abs(states[:, 0]) + jnp.abs(states[:, 1])
-        attitude_dev = jnp.exp(-1.0 * states[:, 2] ** 2)  # Reward the attitude in 6 DOF
+        attitude_dev = jnp.exp(-1.0 * states[:, 2] ** 2)
         squared_attitude_dev = states[:, 2] ** 2
         squared_vel = states[:, 3] ** 2 + states[:, 4] ** 2
         squared_angvel = states[:, 5] ** 2
-        control_effort = jnp.sum(actions**2)  # No reward yet
+        control_effort = jnp.sum(actions ** 2)
 
         # Curriculum-based training # TODO: tune weights
         if (

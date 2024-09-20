@@ -4,6 +4,7 @@ import jax.numpy as jnp
 from flax import nnx
 import optax
 from functools import partial
+from typing import Optional
 
 from smallsat_sim.envs.base_env import BaseEnv
 from smallsat_sim.controllers.rl.algorithms.base_agent import BaseAgent
@@ -82,15 +83,15 @@ class PPO(BaseAgent):
         clip_ratio: float,
     ):
         _, logp_a = actor_model.forward(obs, actions)
-        ratio = jnp.exp(logp_a - logp.reshape(-1))
+        ratio = jnp.exp(logp_a - logp)
         clip_adv = jax.lax.clamp(1 - clip_ratio, ratio, 1 + clip_ratio)
-        return -jax.lax.min(ratio * tdres.reshape(-1), clip_adv).mean()
+        return -jax.lax.min(ratio * tdres, clip_adv).mean()
 
     # Define the critic loss
     @partial(nnx.jit, static_argnums=(0,))
     def jit_critic_loss_fn(self, critic_model, returns: jnp.ndarray, obs: jnp.ndarray):
         values = critic_model.forward(obs)
-        return jnp.mean((values - returns.reshape(-1)) ** 2)  # MSE loss
+        return jnp.mean((values - returns) ** 2)  # MSE loss
 
     def update_policy_gradient(
         self,
@@ -99,6 +100,7 @@ class PPO(BaseAgent):
         actions: jnp.ndarray,
         tdres: jnp.ndarray,
         logp: jnp.ndarray,
+        minibatch: Optional[bool] = True,
     ) -> jnp.ndarray:
         """
         Update the policy gradient.
@@ -109,26 +111,49 @@ class PPO(BaseAgent):
 
         # Compute the actor loss
         for i in range(self.actor_training_epochs):
-            # Shuffle the indices
-            indices = jax.random.permutation(keys[i], jnp.arange(self.batch_size))
+            shuffled_obs = jax.random.permutation(keys[i], obs)
+            shuffled_actions = jax.random.permutation(keys[i], actions)
+            shuffled_tdres = jax.random.permutation(keys[i], tdres)
+            shuffled_logp = jax.random.permutation(keys[i], logp)
 
-            for start in range(0, self.batch_size, self.minibatch_size):
-                end = start + self.minibatch_size
-                mb_indices = indices[start:end]
+            if minibatch:
+                for start in range(0, self.batch_size, self.minibatch_size):
+                    end = start + self.minibatch_size
 
+                    actor_loss, grads = nnx.value_and_grad(self.jit_actor_loss_fn)(
+                        self.actor,
+                        shuffled_tdres[start:end],
+                        shuffled_obs[start:end],
+                        shuffled_actions[start:end],
+                        shuffled_logp[start:end],
+                        self.clip_ratio,
+                    )
+                    print(f"{actor_loss = }")
+
+                    _, logp_a = self.actor.forward(shuffled_obs[start:end], shuffled_actions[start:end])
+
+                    kl = (shuffled_logp[start:end] - logp_a).mean()
+                    if kl > 1.5 * self.target_kl:
+                        print("Early stopping at step %d due to reaching max kl" % i)
+                        break
+
+                    # Update the gradients
+                    self.actor_optimizer.update(grads)
+
+            else:
                 actor_loss, grads = nnx.value_and_grad(self.jit_actor_loss_fn)(
                     self.actor,
-                    tdres[mb_indices],
-                    obs[mb_indices],
-                    actions[mb_indices],
-                    logp[mb_indices],
-                    self.clip_ratio[mb_indices],
+                    tdres,
+                    obs,
+                    actions,
+                    logp,
+                    self.clip_ratio,
                 )
                 print(f"{actor_loss = }")
 
-                _, logp_a = self.actor.forward(obs[mb_indices], actions[mb_indices])
+                _, logp_a = self.actor.forward(obs, actions)
 
-                kl = (logp[mb_indices].reshape(-1) - logp_a).mean()
+                kl = (logp - logp_a).mean()
                 if kl > 1.5 * self.target_kl:
                     print("Early stopping at step %d due to reaching max kl" % i)
                     break
@@ -139,7 +164,11 @@ class PPO(BaseAgent):
         return actor_loss
 
     def update_value_function(
-        self, key, obs: jnp.ndarray, returns: jnp.ndarray
+        self,
+        key,
+        obs: jnp.ndarray,
+        returns: jnp.ndarray,
+        minibatch: Optional[bool] = True,
     ) -> jnp.ndarray:
         """
         Update the value function.
@@ -150,15 +179,28 @@ class PPO(BaseAgent):
 
         for i in range(self.critic_training_epochs):
             # Shuffle the indices
-            indices = jax.random.permutation(keys[i], jnp.arange(self.batch_size))
+            shuffled_indices = jax.random.permutation(
+                keys[i], jnp.arange(self.batch_size)
+            )
 
-            for start in range(0, self.batch_size, self.minibatch_size):
-                end = start + self.minibatch_size
-                mb_indices = indices[start:end]
+            if minibatch:
+                for start in range(0, self.batch_size, self.minibatch_size):
+                    end = start + self.minibatch_size
+                    mb_indices = shuffled_indices[start:end]
 
+                    # Compute the critic loss
+                    critic_loss, grads = nnx.value_and_grad(self.jit_critic_loss_fn)(
+                        self.critic, returns[mb_indices], obs[mb_indices]
+                    )
+                    print(f"{critic_loss = }")
+
+                    # Update the gradients
+                    self.critic_optimizer.update(grads)
+
+            else:
                 # Compute the critic loss
                 critic_loss, grads = nnx.value_and_grad(self.jit_critic_loss_fn)(
-                    self.critic, returns[mb_indices], obs[mb_indices]
+                    self.critic, returns, obs
                 )
                 print(f"{critic_loss = }")
 

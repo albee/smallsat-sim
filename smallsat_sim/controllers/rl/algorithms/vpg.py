@@ -3,6 +3,7 @@ import jax.numpy as jnp
 from flax import nnx
 import optax
 from functools import partial
+from typing import Optional
 
 from smallsat_sim.envs.base_env import BaseEnv
 from smallsat_sim.controllers.rl.algorithms.base_agent import BaseAgent
@@ -33,13 +34,13 @@ class VPG(BaseAgent):
         self, actor_model, tdres: jnp.ndarray, obs: jnp.ndarray, actions: jnp.ndarray
     ):
         _, logp_a = actor_model.forward(obs, actions)
-        return -jnp.sum(tdres.reshape(-1) * logp_a)
+        return -jnp.sum(tdres * logp_a)
 
     # Define the critic loss
     @partial(nnx.jit, static_argnums=(0,))
     def jit_critic_loss_fn(self, critic_model, returns: jnp.ndarray, obs: jnp.ndarray):
         values = critic_model.forward(obs)
-        return jnp.mean((values - returns.reshape(-1)) ** 2)  # MSE loss
+        return jnp.mean((values - returns) ** 2)  # MSE loss
 
     def update_policy_gradient(
         self,
@@ -48,6 +49,7 @@ class VPG(BaseAgent):
         actions: jnp.ndarray,
         tdres: jnp.ndarray,
         logp: jnp.ndarray,
+        minibatch: Optional[bool] = True,
     ) -> jnp.ndarray:
         """
         Update the policy gradient.
@@ -65,7 +67,11 @@ class VPG(BaseAgent):
         return actor_loss
 
     def update_value_function(
-        self, key, obs: jnp.ndarray, returns: jnp.ndarray
+        self,
+        key,
+        obs: jnp.ndarray,
+        returns: jnp.ndarray,
+        minibatch: Optional[bool] = True,
     ) -> jnp.ndarray:
         """
         Update the value function.
@@ -82,7 +88,7 @@ class VPG(BaseAgent):
             self.critic_optimizer.update(grads)
 
         return critic_loss
-    
+
     def _load_vpg_hyperparams(self) -> None:
         """
         Load VPG-specific hyperparams.

@@ -20,4 +20,4 @@ class Critic(nnx.Module):
         """
         Return the value estimates for given observations.
         """
-        return jnp.squeeze(self.v_net(obs.reshape(-1, self.obs_dim)), -1)
+        return jnp.squeeze(self.v_net(obs), -1)

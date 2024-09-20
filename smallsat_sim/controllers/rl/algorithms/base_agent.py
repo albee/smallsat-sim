@@ -47,7 +47,7 @@ class BaseAgent(BaseController):
         Calculate the control input based on current observations for each environment.
         """
         return self.act(obs)[0]
-        
+
     @abstractmethod
     def update_policy_gradient(
         self,
@@ -56,6 +56,7 @@ class BaseAgent(BaseController):
         actions: jnp.ndarray,
         tdres: jnp.ndarray,
         logp: jnp.ndarray,
+        minibatch: Optional[bool] = True,
     ) -> jnp.ndarray:
         """
         Update the policy gradient. Return the actor loss.
@@ -64,7 +65,11 @@ class BaseAgent(BaseController):
 
     @abstractmethod
     def update_value_function(
-        self, key, obs: jnp.ndarray, returns: jnp.ndarray
+        self,
+        key,
+        obs: jnp.ndarray,
+        returns: jnp.ndarray,
+        minibatch: Optional[bool] = True,
     ) -> jnp.ndarray:
         """
         Update the value function. Return the critic loss.

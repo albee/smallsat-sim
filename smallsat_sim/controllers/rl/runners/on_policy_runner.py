@@ -80,9 +80,9 @@ class OnPolicyRunner(object):
         # Load the data (discard the first 100 steps because of the PD controller performance)
         obs = pretraining_data["obs"].reshape(-1, self.env.obs_dim)
         act = pretraining_data["act"].reshape(-1, self.env.act_dim)
-        ret = pretraining_data["ret"]
-        tdres = pretraining_data["tdres"]
-        logp = pretraining_data["logp"]
+        ret = pretraining_data["ret"].reshape(-1)
+        tdres = pretraining_data["tdres"].reshape(-1)
+        logp = pretraining_data["logp"].reshape(-1)
 
         # Pretrain the policy network
         if strategy == "supervised_learning":
@@ -151,7 +151,7 @@ class OnPolicyRunner(object):
                     )
         elif strategy == "rl":
             self.agent.update_policy_gradient(
-                self.actor_lr, obs, act_clipped, tdres, logp
+                jax.random.PRNGKey(42), obs, act_clipped, tdres, logp
             )
         else:
             raise Exception(
@@ -159,7 +159,7 @@ class OnPolicyRunner(object):
             )
 
         # Pretrain the base network
-        self.agent.update_value_function(self.critic_lr, obs, ret)
+        self.agent.update_value_function(jax.random.PRNGKey(42), obs, ret, minibatch=False)
 
         # Save the trained actor and critic network weights
         save_trained_modules(self.agent, self.ckpt_dir, "pretraining_state.pkl")
@@ -169,6 +169,15 @@ class OnPolicyRunner(object):
         Main training loop.
         """
         print("Training agent...")
+
+        # Check if pretrained actor and critic modules are available and load them
+        file_path = os.path.join(self.ckpt_dir, "pretraining_state.pkl")
+        if os.path.isfile(file_path):
+            restored_state = load_trained_modules(self.ckpt_dir, "pretraining_state.pkl")
+            nnx.update(self.agent.actor.mu_net, restored_state["actor_model"].mu_net)
+            nnx.update(self.agent.critic.v_net, restored_state["critic_model"].v_net)
+        else:
+            print("No pretrained modules available.")
 
         # Set up buffer
         buffer = ReplayBuffer(
@@ -248,11 +257,11 @@ class OnPolicyRunner(object):
             data = buffer.get()
             save_training_data(self.ckpt_dir, "training_data.pkl", data)
 
-            obs = data["obs"]
-            actions = data["act"]
-            tdres = data["tdres"]
-            returns = data["ret"]
-            logp = data["logp"]
+            obs = data["obs"].reshape(-1, self.env.obs_dim)
+            actions = data["act"].reshape(-1, self.env.act_dim)
+            tdres = data["tdres"].reshape(-1)
+            returns = data["ret"].reshape(-1)
+            logp = data["logp"].reshape(-1)
 
             # Policy gradient update
             actor_loss = self.agent.update_policy_gradient(
@@ -422,9 +431,9 @@ class OnPolicyRunner(object):
         Load the relevant hyperparams from the config file.
         """
         if isinstance(self.agent, VPG):
-            VPG._load_vpg_hyperparams()
+            VPG._load_vpg_hyperparams(self)
         elif isinstance(self.agent, PPO):
-            PPO._load_ppo_hyperparams()
+            PPO._load_ppo_hyperparams(self)
         else:
             raise Exception("Agent has not been implemented.")
         self.episode_len = self.env.env_cfg.control.RL.episode_len

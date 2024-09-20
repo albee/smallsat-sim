@@ -49,7 +49,7 @@ class EnvConfig(BaseEnvConfig):
             control_decimation = 25
 
             # Number of environments
-            num_envs = 1024
+            num_envs = 2
 
             # Hyperparams for the learning loop
             class VPG:
