@@ -33,10 +33,6 @@ class BasePlanner(ABC):
             self.data = env.data
             self.cam = env.cam
             self.env_cfg = env.env_cfg
-            if self.using_rl:
-                self.data_vec = env.data_vec
-                self.model = env.model
-                self.mjx_batch = env.mjx_batch
         else:
             self._visualize_renderer = lambda *args, **kwargs: None
 
@@ -93,11 +89,7 @@ class BasePlanner(ABC):
             self.renderer.scene.ngeom = 0
 
             # Update the renderer scene
-            if not self.using_rl:
-                self.renderer.update_scene(self.data, self.cam)
-            else:
-                mjx.get_data_into(self.data_vec, self.model, self.mjx_batch)
-                self.renderer.update_scene(self.data_vec[0], self.cam)
+            self.renderer.update_scene(self.data, self.cam)
 
             # Iterate over all points which need to be visualized in renderer
             for point in points:

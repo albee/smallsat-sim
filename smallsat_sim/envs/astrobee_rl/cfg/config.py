@@ -49,7 +49,7 @@ class EnvConfig(BaseEnvConfig):
             control_decimation = 25
 
             # Number of environments
-            num_envs = 2
+            num_envs = 1024
 
             # Hyperparams for the learning loop
             class VPG:
@@ -58,7 +58,7 @@ class EnvConfig(BaseEnvConfig):
                 max_epoch_len = 1024
                 gamma = 0.99
                 lam = 0.97
-                actor_lr = 3e-4
+                actor_lr = 1e-4
                 critic_lr = 1e-3
 
             class PPO:
@@ -67,8 +67,8 @@ class EnvConfig(BaseEnvConfig):
                 max_epoch_len = 1024
                 gamma = 0.99
                 lam = 0.95
-                actor_lr = 3e-4
-                critic_lr = 1e-3
+                actor_lr = 5e-4
+                critic_lr = 5e-3
 
             # Hyperparams for the evaluation loop
             episode_len = 700

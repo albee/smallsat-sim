@@ -16,7 +16,7 @@ class Actor(nnx.Module):
         super().__init__()
         self.obs_dim = obs_dim
         self.act_dim = act_dim
-        log_std = -0.5 * jnp.ones(act_dim)
+        log_std = -3.0 * jnp.ones(act_dim)
         self.log_std = nnx.Param(log_std)
         self.mu_net = mlp(
             [obs_dim] + list(hidden_sizes) + [act_dim], activation, last_layer_std=0.01

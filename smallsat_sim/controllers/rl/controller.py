@@ -50,9 +50,9 @@ class RLController(object):
         while True:
             real_time = time.time() - start_time
             sim_time = self.env.mjx_batch.time[0]
-            self.planner._visualize_renderer(self.reference_points)
-            actions = self.agent.get_control_input(states)
-            # actions = self.agent.actor.mu_net(states) # To test the pretrained network
+            if hasattr(self.env, "renderer") and self.env.renderer is not None:
+                self.env._visualize_renderer(self.reference_points)
+            actions = self.agent.actor.mu_net(states) # No sampling/exploration noise needed
             states = self.env.get_states(self.reference_points[self.tracking_point_idx])
             _, terminal = self.env.transition(actions, states)
             if terminal.all():

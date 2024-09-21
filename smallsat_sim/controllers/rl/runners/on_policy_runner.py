@@ -159,7 +159,9 @@ class OnPolicyRunner(object):
             )
 
         # Pretrain the base network
-        self.agent.update_value_function(jax.random.PRNGKey(42), obs, ret, minibatch=False)
+        self.agent.update_value_function(
+            jax.random.PRNGKey(42), obs, ret, minibatch=False
+        )
 
         # Save the trained actor and critic network weights
         save_trained_modules(self.agent, self.ckpt_dir, "pretraining_state.pkl")
@@ -173,7 +175,9 @@ class OnPolicyRunner(object):
         # Check if pretrained actor and critic modules are available and load them
         file_path = os.path.join(self.ckpt_dir, "pretraining_state.pkl")
         if os.path.isfile(file_path):
-            restored_state = load_trained_modules(self.ckpt_dir, "pretraining_state.pkl")
+            restored_state = load_trained_modules(
+                self.ckpt_dir, "pretraining_state.pkl"
+            )
             nnx.update(self.agent.actor.mu_net, restored_state["actor_model"].mu_net)
             nnx.update(self.agent.critic.v_net, restored_state["critic_model"].v_net)
         else:
@@ -286,6 +290,7 @@ class OnPolicyRunner(object):
                             states[:, 0] ** 2 + states[:, 1] ** 2
                         ).mean(),
                         "num_terminal": jnp.sum(terminal),
+                        "log_std": self.agent.actor.log_std.value,
                     }
                 )
 
@@ -299,6 +304,7 @@ class OnPolicyRunner(object):
                     critic_loss=critic_loss,
                     obs=obs,
                     num_terminal=jnp.sum(terminal),
+                    log_std=self.agent.actor.log_std.value,
                 )
 
             # Save the trained actor and critic network weights

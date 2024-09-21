@@ -25,20 +25,19 @@ class PPO(BaseAgent):
         self.actor_training_epochs = 100
         self.critic_training_epochs = 100
 
+        # Total batch size
+        self.batch_size = self.env.num_envs * self.steps_per_epoch
+
+        # Define the size of each mini-batch
+        self.num_minibatches = 16
+        self.minibatch_size = int(self.batch_size / self.num_minibatches)
+
         # Compute the total number of steps
         actor_total_steps = int(
-            self.actor_training_epochs
-            * self.epochs
-            * self.env.num_envs
-            * self.steps_per_epoch
-            / 16
+            self.epochs * self.actor_training_epochs * self.num_minibatches
         )  # Upper bound because of early stopping
         critic_total_steps = int(
-            self.critic_training_epochs
-            * self.epochs
-            * self.env.num_envs
-            * self.steps_per_epoch
-            / 16
+            self.epochs * self.critic_training_epochs * self.num_minibatches
         )
 
         # Initialize an ADAM optimizers for the actor and critic networks with linear lr decay
@@ -46,7 +45,7 @@ class PPO(BaseAgent):
             self.actor,
             optax.adam(
                 learning_rate=optax.schedules.linear_schedule(
-                    self.actor_lr, 0, actor_total_steps
+                    self.actor_lr, self.actor_lr * 100, actor_total_steps
                 ),
                 eps=1e-5,
             ),
@@ -55,7 +54,7 @@ class PPO(BaseAgent):
             self.critic,
             optax.adam(
                 learning_rate=optax.schedules.linear_schedule(
-                    self.critic_lr, 0, critic_total_steps
+                    self.critic_lr, self.critic_lr * 100, critic_total_steps
                 ),
                 eps=1e-5,
             ),
@@ -64,12 +63,6 @@ class PPO(BaseAgent):
         # Set the clip ratio and the target kl divergence
         self.clip_ratio = 0.2
         self.target_kl = 0.01
-
-        # Total batch size
-        self.batch_size = self.env.num_envs * self.steps_per_epoch
-
-        # Define the size of each mini-batch
-        self.minibatch_size = int(self.batch_size / 16)
 
     # Define the actor loss
     @partial(nnx.jit, static_argnums=(0,))
@@ -130,7 +123,9 @@ class PPO(BaseAgent):
                     )
                     print(f"{actor_loss = }")
 
-                    _, logp_a = self.actor.forward(shuffled_obs[start:end], shuffled_actions[start:end])
+                    _, logp_a = self.actor.forward(
+                        shuffled_obs[start:end], shuffled_actions[start:end]
+                    )
 
                     kl = (shuffled_logp[start:end] - logp_a).mean()
                     if kl > 1.5 * self.target_kl:

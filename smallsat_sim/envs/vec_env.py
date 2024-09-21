@@ -152,8 +152,6 @@ class VecEnv(BaseEnv):
 
             self.mjx_batch = self.jit_step(self.mjx_model, self.mjx_batch)
 
-            b = 1
-
         # Execute post physics steps
         self._post_physics_step()
 
@@ -315,6 +313,41 @@ class VecEnv(BaseEnv):
         self.renderer.update_scene(self.data_vec[0], self.cam)
         sim_img = self.renderer.render().copy()
         self.frames.append(sim_img)
+
+    def _visualize_renderer(
+        self, points: list[np.ndarray], color=[1, 0, 0, 2], size=[0.05, 0, 0]
+    ) -> None:
+        """
+        Visualizes reference points in the MuJoCo renderer.
+        """
+        if (
+            self.data.time >= self.env_cfg.renderer.start_recording
+            and self.data.time <= self.env_cfg.renderer.end_recording
+        ):
+            self.renderer.scene.ngeom = 0
+
+            # Update the renderer scene
+            mjx.get_data_into(self.data_vec, self.model, self.mjx_batch)
+            self.renderer.update_scene(self.data_vec[0], self.cam)
+
+            # Iterate over all points which need to be visualized in renderer
+            for point in points:
+                self.renderer.scene.ngeom += 1
+                x = point[0]
+                y = point[1]
+                z = point[2]
+                mujoco.mjv_initGeom(
+                    self.renderer.scene.geoms[self.renderer.scene.ngeom - 1],
+                    type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                    size=size,
+                    pos=np.array([x, y, z]),
+                    mat=np.eye(3).flatten(),
+                    rgba=np.array(color),
+                )
+
+            # Extract image from renderer and append it for post-processing
+            sim_img = self.renderer.render().copy()
+            self.frames.append(sim_img)
 
     def _pre_physics_step(self, input: jnp.ndarray) -> None:
         """
