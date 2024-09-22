@@ -45,7 +45,7 @@ class PPO(BaseAgent):
             self.actor,
             optax.adam(
                 learning_rate=optax.schedules.linear_schedule(
-                    self.actor_lr, self.actor_lr * 100, actor_total_steps
+                    self.actor_lr, self.actor_lr * 0.01, actor_total_steps
                 ),
                 eps=1e-5,
             ),
@@ -54,7 +54,7 @@ class PPO(BaseAgent):
             self.critic,
             optax.adam(
                 learning_rate=optax.schedules.linear_schedule(
-                    self.critic_lr, self.critic_lr * 100, critic_total_steps
+                    self.critic_lr, self.critic_lr * 0.01, critic_total_steps
                 ),
                 eps=1e-5,
             ),

@@ -89,7 +89,7 @@ class ReplayBuffer(object):
         assert self.ptr == self.max_size
         self.ptr, self.path_start_idx = 0, 0
 
-        # Normalize the TD residuals
+        # Normalize the TD residuals (could instead also normalize on minibatch-level)
         tdres_mean = jnp.mean(self.tdres_buf, axis=0)
         tdres_std = jnp.std(self.tdres_buf, axis=0)
         self.tdres_buf = (self.tdres_buf - tdres_mean) / tdres_std

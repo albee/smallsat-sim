@@ -286,11 +286,8 @@ class OnPolicyRunner(object):
                         "mean_return": mean_return,
                         "actor_loss": actor_loss,
                         "critic_loss": critic_loss,
-                        "mean_dist2goal": jnp.sqrt(
-                            states[:, 0] ** 2 + states[:, 1] ** 2
-                        ).mean(),
                         "num_terminal": jnp.sum(terminal),
-                        "log_std": self.agent.actor.log_std.value,
+                        "avg_log_std": self.agent.actor.log_std.value.mean(),
                     }
                 )
 
@@ -304,7 +301,7 @@ class OnPolicyRunner(object):
                     critic_loss=critic_loss,
                     obs=obs,
                     num_terminal=jnp.sum(terminal),
-                    log_std=self.agent.actor.log_std.value,
+                    avg_log_std=self.agent.actor.log_std.value.mean(),
                 )
 
             # Save the trained actor and critic network weights
