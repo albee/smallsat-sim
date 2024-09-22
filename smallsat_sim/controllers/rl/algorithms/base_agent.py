@@ -46,7 +46,7 @@ class BaseAgent(BaseController):
         """
         Calculate the control input based on current observations for each environment.
         """
-        return self.act(obs)[0]
+        return self.actor.mu_net(obs)
 
     @abstractmethod
     def update_policy_gradient(

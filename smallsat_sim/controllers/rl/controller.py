@@ -8,7 +8,7 @@ from smallsat_sim.planners.base_planner import BasePlanner
 from smallsat_sim.controllers.rl.algorithms.vpg import VPG
 from smallsat_sim.controllers.rl.algorithms.ppo import PPO
 from smallsat_sim.controllers.rl.runners.runner_utils import load_trained_modules
-from smallsat_sim.utils.helpers_jax import standardize
+from smallsat_sim.utils.helpers_jax import normalize_obs
 
 
 class RLController(object):
@@ -45,6 +45,7 @@ class RLController(object):
 
         start_time = time.time()
         states = self.env.get_states(self.reference_points[self.tracking_point_idx])
+        states_normalized = normalize_obs(states)
         terminal = jnp.zeros(self.env.num_envs, dtype=bool)
         self.env.reset()
         while True:
@@ -52,8 +53,11 @@ class RLController(object):
             sim_time = self.env.mjx_batch.time[0]
             if hasattr(self.env, "renderer") and self.env.renderer is not None:
                 self.env._visualize_renderer(self.reference_points)
-            actions = self.agent.actor.mu_net(states) # No sampling/exploration noise needed
+            actions = self.agent.get_control_input(
+                states_normalized
+            )  # No sampling/exploration noise needed
             states = self.env.get_states(self.reference_points[self.tracking_point_idx])
+            states_normalized = normalize_obs(states)
             _, terminal = self.env.transition(actions, states)
             if terminal.all():
                 if self.tracking_point_idx == (len(self.reference_points) - 1):

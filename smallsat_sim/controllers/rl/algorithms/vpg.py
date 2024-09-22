@@ -95,7 +95,7 @@ class VPG(BaseAgent):
         """
         self.steps_per_epoch = self.env.env_cfg.control.RL.VPG.steps_per_epoch
         self.epochs = self.env.env_cfg.control.RL.VPG.epochs
-        self.max_epoch_len = self.env.env_cfg.control.RL.VPG.max_epoch_len
+        self.max_ep_len = self.env.env_cfg.control.RL.VPG.max_ep_len
         self.gamma = self.env.env_cfg.control.RL.VPG.gamma
         self.lam = self.env.env_cfg.control.RL.VPG.lam
         self.actor_lr = self.env.env_cfg.control.RL.VPG.actor_lr

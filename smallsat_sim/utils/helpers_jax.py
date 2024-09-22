@@ -233,18 +233,8 @@ def train_val_split(X, y, val_split=0.2, key=jax.random.PRNGKey(42)):
     return X_train, y_train, X_val, y_val
 
 
-def standardize(X) -> jnp.ndarray:
-    """
-    Standardize the observations.
-    """
-    mean = jnp.mean(X)
-    std = jnp.std(X)
-
-    return (X - mean) / std
-
-
 @nnx.jit
-def mse_loss_fn(model, X: jnp.ndarray, y: jnp.ndarray, key):
+def mse_loss_fn(model, X: jnp.ndarray, y: jnp.ndarray, key) -> jnp.ndarray:
     """
     Mean squared error loss function.
     """
@@ -255,7 +245,7 @@ def mse_loss_fn(model, X: jnp.ndarray, y: jnp.ndarray, key):
 
 
 @nnx.jit
-def mae_loss_fn(model, X: jnp.ndarray, y: jnp.ndarray, key):
+def mae_loss_fn(model, X: jnp.ndarray, y: jnp.ndarray, key) -> jnp.ndarray:
     """
     Mean squared error loss function.
     """
@@ -263,3 +253,17 @@ def mae_loss_fn(model, X: jnp.ndarray, y: jnp.ndarray, key):
     y_pred = y_pred_dist.sample(seed=key)
 
     return jnp.mean(jnp.abs(y_pred - y))
+
+
+def normalize_obs(obs: jnp.ndarray) -> jnp.ndarray:
+    """
+    Normalize the observations.
+    """
+    raise NotImplementedError()
+
+
+def scale_rews(rews: jnp.ndarray, ep_rets: jnp.ndarray, step: int) -> jnp.ndarray:
+    """
+    Scale the rewards along a trajectory.
+    """
+    return rews / (ep_rets[:, :step+1].std(axis=1) + 1e-8)

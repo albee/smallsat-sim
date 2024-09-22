@@ -75,7 +75,7 @@ class VecEnv(BaseEnv):
         actions: jnp.ndarray,
         states: jnp.ndarray,
         iter: Optional[int] = None,
-    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
         """
         Apply input action on the environment. Returns the rewards and wether the terminal state has been reached.
         """

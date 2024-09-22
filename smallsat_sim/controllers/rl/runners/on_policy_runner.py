@@ -22,9 +22,10 @@ from smallsat_sim.controllers.rl.runners.runner_utils import (
 )
 from smallsat_sim.utils.helpers_jax import (
     train_val_split,
-    standardize,
     mse_loss_fn,
     mae_loss_fn,
+    normalize_obs,
+    scale_rews,
 )
 
 
@@ -53,7 +54,7 @@ class OnPolicyRunner(object):
                     "num_envs": self.env.num_envs,
                     "steps_per_epoch": self.steps_per_epoch,
                     "epochs": self.epochs,
-                    "max_epoch_len": self.max_epoch_len,
+                    "max_ep_len": self.max_ep_len,
                     "gamma": self.gamma,
                     "lam": self.lam,
                     "actor_lr": self.actor_lr,
@@ -200,6 +201,7 @@ class OnPolicyRunner(object):
             jnp.zeros(self.env.num_envs),
             0,
         )
+        states_normalized = normalize_obs(states)
 
         # Create PRNG keys
         key = jax.random.PRNGKey(42)
@@ -209,20 +211,25 @@ class OnPolicyRunner(object):
         for epoch in range(self.epochs):
             ep_returns = jnp.zeros((self.env.num_envs, self.steps_per_epoch))
             for t in range(self.steps_per_epoch):
-                a, v, logp = self.agent.act(states, epoch)
+                a, v, logp = self.agent.act(states_normalized, epoch)
 
                 r, terminal = self.agent.env.transition(a, states, epoch)
-                ep_ret += r
+                ep_returns = ep_returns.at[:, t].set(
+                    self.gamma * ep_returns[:, t - 1] + r
+                )
+                r_scaled = scale_rews(r, ep_returns, t)
+                ep_ret += r_scaled
                 ep_len += 1
 
                 # Log transition
-                buffer.store(states, a, r, v, logp)
+                buffer.store(states_normalized, a, r_scaled, v, logp)
 
                 # Update state
                 states = self.env.get_states(self.reference_point)
+                states_normalized = normalize_obs(states)
 
                 # Check if a timeout is appropriate
-                timeout = ep_len == self.max_epoch_len
+                timeout = ep_len == self.max_ep_len
                 epoch_ended = t == self.steps_per_epoch - 1
 
                 # N. B.: could also have a different ep_len for each env and consider timeout and terminal conditions
@@ -230,20 +237,25 @@ class OnPolicyRunner(object):
                 if terminal.all() or timeout or epoch_ended:
                     # If the trajectory didn't reach terminal state, bootstrap value target
                     if epoch_ended:
-                        _, v, _ = self.agent.act(states, epoch)
+                        _, v, _ = self.agent.act(states_normalized, epoch)
                     else:
                         v = jnp.zeros(self.env.num_envs)
 
-                    if timeout:
-                        ep_returns = ep_returns.at[:, t].set(ep_ret)
-
-                    if terminal.all():
-                        terminal_env_indices = jnp.nonzero(terminal)
-                        ep_returns = ep_returns.at[terminal_env_indices, t].set(
-                            ep_ret[terminal_env_indices]
-                        )
-
                     buffer.end_traj(v)
+
+                    # Log the mean scaled episodic returns
+                    if self.env.use_wandb:
+                        wandb.log(
+                            {
+                                "mean_scaled_episodic_returns": ep_ret.mean(),
+                            }
+                        )
+                    if self.agent.has_logger:
+                        self.env.logger.log(
+                            run_id=self.env.run_id,
+                            timestamp=float(self.env.mjx_batch.time[0]),
+                            mean_scaled_episodic_returns=ep_ret.mean(),
+                        )
 
                     self.env.reset()
                     states, ep_ret, ep_len = (
@@ -251,11 +263,7 @@ class OnPolicyRunner(object):
                         jnp.zeros(self.env.num_envs),
                         0,
                     )
-
-            mean_return = jnp.mean(ep_returns) if len(ep_returns) > 0 else jnp.nan
-            print(
-                f"Epoch: {epoch+1}/{self.epochs}, mean return across all envs {mean_return}"
-            )
+                    states_normalized = normalize_obs(states)
 
             # Get the data from the training loop and save it
             data = buffer.get()
@@ -263,6 +271,7 @@ class OnPolicyRunner(object):
 
             obs = data["obs"].reshape(-1, self.env.obs_dim)
             actions = data["act"].reshape(-1, self.env.act_dim)
+            rews = data["rews"].reshape(-1)
             tdres = data["tdres"].reshape(-1)
             returns = data["ret"].reshape(-1)
             logp = data["logp"].reshape(-1)
@@ -283,7 +292,7 @@ class OnPolicyRunner(object):
             if self.env.use_wandb:
                 wandb.log(
                     {
-                        "mean_return": mean_return,
+                        "mean_scaled_rewards": rews.mean(),
                         "actor_loss": actor_loss,
                         "critic_loss": critic_loss,
                         "num_terminal": jnp.sum(terminal),
@@ -296,10 +305,9 @@ class OnPolicyRunner(object):
                 self.env.logger.log(
                     run_id=self.env.run_id,
                     timestamp=float(self.env.mjx_batch.time[0]),
-                    mean_return=mean_return,
+                    mean_scaled_rewards=rews.mean(),
                     actor_loss=actor_loss,
                     critic_loss=critic_loss,
-                    obs=obs,
                     num_terminal=jnp.sum(terminal),
                     avg_log_std=self.agent.actor.log_std.value.mean(),
                 )
@@ -327,14 +335,21 @@ class OnPolicyRunner(object):
         for eval in range(self.n_evals):
             print(f"Testing policy: episode {eval+1}/{self.n_evals}")
             states = self.env.get_states(self.reference_point)
-            cum_returns = jnp.zeros(self.env.num_envs)
+            states_normalized = normalize_obs(states)
+            ep_ret = jnp.zeros(self.env.num_envs)
+            ep_returns = jnp.zeros((self.env.num_envs, self.episode_len))
             terminal = jnp.zeros(self.env.num_envs, dtype=bool)
             self.env.reset()
-            for _ in range(self.episode_len):
-                actions = self.agent.get_control_input(states)
+            for ep in range(self.episode_len):
+                actions = self.agent.get_control_input(states_normalized)
                 states = self.env.get_states(self.reference_point)
+                states_normalized = normalize_obs(states)
                 rewards, terminal = self.env.transition(actions, states)
-                cum_returns += rewards
+                ep_returns = ep_returns.at[:, ep].set(
+                    self.gamma * ep_returns[:, ep - 1] + rewards
+                )
+                rewards_scaled = scale_rews(rewards, ep_returns, ep)
+                ep_ret += rewards_scaled
                 if terminal.all():  # Abort if all environments terminated
                     break
                 # Log key RL metrics
@@ -345,8 +360,10 @@ class OnPolicyRunner(object):
                         states=states,
                         num_terminal=jnp.sum(terminal),
                     )
-            returns = returns.at[:, eval].set(cum_returns)
-        print(f"Average return over all envs: {jnp.mean(cum_returns)}")
+            returns = returns.at[:, eval].set(ep_ret)
+        print(
+            f"Average episodic return over all evals and all envs: {jnp.mean(returns)}"
+        )
 
     def _generate_experience(self) -> None:
         """
@@ -375,27 +392,31 @@ class OnPolicyRunner(object):
             jnp.zeros(self.env.num_envs),
             0,
         )
+        states_normalized = normalize_obs(states)
 
         # Main training loop
         ep_returns = jnp.zeros((self.env.num_envs, self.steps_per_epoch))
         for t in range(self.steps_per_epoch):
-            _, v, logp = self.agent.act(states)
+            _, v, logp = self.agent.act(states_normalized)
             self.env.obs = self.env.get_obs()
             ctrl_input = self.pd_ctrl.get_control_input(self.env)
             a = jnp.asarray(ctrl_input)
 
             r, terminal = self.agent.env.transition(a, states)
-            ep_ret += r
+            ep_returns = ep_returns.at[:, t].set(self.gamma * ep_returns[:, t - 1] + r)
+            r_scaled = scale_rews(r, ep_returns, t)
+            ep_ret += r_scaled
             ep_len += 1
 
             # Log transition
-            buffer.store(states, a, r, v, logp)
+            buffer.store(states_normalized, a, r_scaled, v, logp)
 
             # Update state
             states = self.env.get_states(self.reference_point)
+            states_normalized = normalize_obs(states)
 
             # Check if a timeout is appropriate
-            timeout = ep_len == self.max_epoch_len
+            timeout = ep_len == self.max_ep_len
             epoch_ended = t == self.steps_per_epoch - 1
 
             # N. B.: could also have a different ep_len for each env and consider timeout and terminal conditions
@@ -403,18 +424,9 @@ class OnPolicyRunner(object):
             if terminal.all() or timeout or epoch_ended:
                 # If the trajectory didn't reach terminal state, bootstrap value target
                 if epoch_ended:
-                    _, v, _ = self.agent.act(states)
+                    _, v, _ = self.agent.act(states_normalized)
                 else:
                     v = jnp.zeros(self.env.num_envs)
-
-                if timeout:
-                    ep_returns = ep_returns.at[:, t].set(ep_ret)
-
-                if terminal.all():
-                    terminal_env_indices = jnp.nonzero(terminal)
-                    ep_returns = ep_returns.at[terminal_env_indices, t].set(
-                        ep_ret[terminal_env_indices]
-                    )
 
                 buffer.end_traj(v)
 
@@ -424,6 +436,7 @@ class OnPolicyRunner(object):
                     jnp.zeros(self.env.num_envs),
                     0,
                 )
+                states_normalized = normalize_obs(states)
 
         # Get the data from the training loop and save it
         data = buffer.get()

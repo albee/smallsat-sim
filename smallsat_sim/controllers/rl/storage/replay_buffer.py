@@ -98,6 +98,7 @@ class ReplayBuffer(object):
         data = dict(
             obs=self.obs_buf,
             act=self.act_buf,
+            rews=self.rew_buf,
             ret=self.ret_buf,
             tdres=self.tdres_buf,
             logp=self.logp_buf,

@@ -210,7 +210,7 @@ class PPO(BaseAgent):
         """
         self.steps_per_epoch = self.env.env_cfg.control.RL.PPO.steps_per_epoch
         self.epochs = self.env.env_cfg.control.RL.PPO.epochs
-        self.max_epoch_len = self.env.env_cfg.control.RL.PPO.max_epoch_len
+        self.max_ep_len = self.env.env_cfg.control.RL.PPO.max_ep_len
         self.gamma = self.env.env_cfg.control.RL.PPO.gamma
         self.lam = self.env.env_cfg.control.RL.PPO.lam
         self.actor_lr = self.env.env_cfg.control.RL.PPO.actor_lr

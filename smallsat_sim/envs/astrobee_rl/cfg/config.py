@@ -55,7 +55,7 @@ class EnvConfig(BaseEnvConfig):
             class VPG:
                 steps_per_epoch = 4096
                 epochs = 50
-                max_epoch_len = 1024
+                max_ep_len = 1024
                 gamma = 0.99
                 lam = 0.97
                 actor_lr = 1e-4
@@ -64,7 +64,7 @@ class EnvConfig(BaseEnvConfig):
             class PPO:
                 steps_per_epoch = 4096
                 epochs = 50
-                max_epoch_len = 1024
+                max_ep_len = 1024
                 gamma = 0.99
                 lam = 0.95
                 actor_lr = 5e-4
