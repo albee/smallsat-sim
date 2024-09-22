@@ -161,6 +161,12 @@ class SlidingWindowPlus(OnlineLearningStrategy):
         # How many times called process
         self.counter = -1
 
+        # Initialize fault detector flag counter
+        self.fault_counter = 0
+
+        # Initialize past input
+        self.x_input_past = torch.zeros((1,27))
+
     def process(
         self,
         gp_model: ExactGP,
@@ -175,6 +181,8 @@ class SlidingWindowPlus(OnlineLearningStrategy):
         # Convert to tensor
         if not torch.is_tensor(x_input):
             x_input = to_tensor(arr=x_input, device=self.device)
+            print(timestamp)
+            
 
         if not torch.is_tensor(y_target):
             y_target = to_tensor(arr=y_target, device=self.device)
@@ -203,10 +211,20 @@ class SlidingWindowPlus(OnlineLearningStrategy):
             # Record datapoint in timestamps
             self.timestamps.append(timestamp)
 
+            # Save point
+            self.x_input_past = x_input.clone()
+
             return
+        print(gp_model.train_inputs[0].shape[-2])
+
+        # Check if point is different enough to last one
+        delta = torch.norm(gp_feature_selector(x_input-self.x_input_past), 2)
+        if delta < 0.01:
+            print(f"Rejected point due to low delta of {delta}")
+            return gp_model
 
         # Check if the point shall be added to the dictionary
-        if not self._add_point_to_dict(
+        if self._detect_failure(
             gp_model, x_input, y_target, gp_feature_selector, timestamp
         ):
             return gp_model
@@ -235,6 +253,9 @@ class SlidingWindowPlus(OnlineLearningStrategy):
             # Check for training
             fantasy_model = self._check_training(fantasy_model)
 
+            # Save point
+            self.x_input_past = x_input.clone()
+
             return fantasy_model
 
         with torch.no_grad():
@@ -246,12 +267,15 @@ class SlidingWindowPlus(OnlineLearningStrategy):
             # Record datapoint in timestamps
             self.timestamps.append(timestamp)
 
+            # Save point
+            self.x_input_past = x_input.clone()
+
             return fantasy_model
 
     def _check_training(self, fantasy_model: ExactGP) -> ExactGP:
-        pass
+        return fantasy_model
 
-    def _add_point_to_dict(
+    def _detect_failure(
         self,
         gp_model: gpytorch.models.ExactGP,
         x_test: torch.Tensor,
@@ -277,10 +301,22 @@ class SlidingWindowPlus(OnlineLearningStrategy):
         # Calculate the beta quantity
         beta = self._calc_beta(mu, y_test, stddev)
 
-        if beta.min() < 0.05:
+        if beta.min() < 0.05 and gp_model.train_inputs[0].shape[0] > 20:
             print(f"Fault at {timestamp}!")
+            self.flag_counter += 1
+            if self.flag_counter == 5:
+                gp_model.set_train_data(
+                    gp_feature_selector(x_test),
+                    y_test,
+                    strict=False,
+                )
+                print(f"Reset GP data at time {timestamp}!")
 
-        return True
+            return True
+        else:
+            self.flag_counter = 0
+
+            return False
 
     def _calc_beta(self, mu: torch.Tensor, y_test: torch.Tensor, stddev: torch.Tensor):
 

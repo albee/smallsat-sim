@@ -102,7 +102,7 @@ class Logger(object):
         return [os.path.join(folder, f) for f in pkl_files]
 
     def load_log(
-        self, run_id: Optional[int] = None, folder: Optional[str] = None
+        self, folder: Optional[str] = None, run_id: Optional[int] = None, 
     ) -> pd.DataFrame:
         """
         Load the saved log data from all pickle files in the most recent log directory, concatenating them into a single DataFrame.

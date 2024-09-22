@@ -349,6 +349,10 @@ class BaseEnv(object):
         else:
             self.data.ctrl = input
 
+        # Log perturbed inputs
+        if hasattr(self, "logger"):
+            self.logger.log(self.run_id, self.data.time, u_actual=self.data.ctrl.copy())
+
     def _post_physics_step(self) -> None:
         """
         Executes actions after stepping simulation

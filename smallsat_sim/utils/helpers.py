@@ -192,7 +192,7 @@ def calc_attitude_error(q_ref: np.ndarray, q: np.ndarray) -> float:
     error_rotation = desired_rotation * actual_rotation.inv()
 
     # Extract the angle of the error quaternion
-    return error_rotation.magnitude()
+    return np.abs(np.degrees(error_rotation.magnitude()))
 
 
 def calc_model_error(

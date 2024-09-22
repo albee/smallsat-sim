@@ -8,7 +8,7 @@ class ScaleFeatureSelector(FeatureSelector):
     def __init__(
         self,
         input_selection: np.ndarray | torch.Tensor | None = None,
-        scale=10,
+        scale=1,
         device="cpu",
     ) -> torch.Tensor:
         input_selection = input_selection * scale

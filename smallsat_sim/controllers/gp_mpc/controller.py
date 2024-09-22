@@ -185,7 +185,7 @@ class GPMPC(BaseMPCController):
 
         # Initialize some hyperparameters for GP
         # TODO: Move to configuration file
-        self.M = 500  # number of points in list
+        self.M = 300  # number of points in list
         self.gp_update_counter = 0  # Keep track how many times dict has been updated
         self.gp_initialized = False  # Keep track if GP is already initialized
 
@@ -228,43 +228,33 @@ class GPMPC(BaseMPCController):
         likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(
             num_tasks=6, noise_constraint=Positive()
         )
-        noise_likelihood = torch.tensor([0])
-        noise_raw_task_noises = torch.tensor([-30.0, -30.0, -30.0, -30.0, -30.0, -30.0])
-        noise_raw_noise = torch.tensor([-30.0])
-        with torch.no_grad():
-            likelihood.raw_task_noises.data = noise_raw_task_noises
-            likelihood.noise.data = noise_likelihood
-            likelihood.raw_noise.data = noise_raw_noise
+
+        # Hardcode noise parameters in likelihood
+        likelihood.noise = torch.tensor([1e-12])
+        likelihood.raw_task_noises.data = torch.tensor(
+            [-30.0, -30.0, -30.0, -30.0, -30.0, -30.0]
+        )
 
         # Initialize GP model and overwrite default values
+        train_x = torch.zeros(1,12)
+        train_y = torch.zeros(1,6)
+        mode = "Nonlinear Kernel"
         gp_model = BatchIndependentMultitaskGPModel(
-            train_x=None,
-            train_y=None,
+            train_x=train_x,
+            train_y=train_y,
             likelihood=likelihood,
             residual_dimension=6,
             input_dimension=sum(input_feature_selection),
             use_ard=True,
+            mode=mode,
         )
 
         for name, param in gp_model.named_parameters():
             print(f"Parameter {name} has shape {param.shape} and values:")
             print(param)
 
-        # Manually setting raw_outputscale
-        # new_raw_outputscale = torch.tensor([10, 10, 10, 10, 10, 10])
-        new_variance = torch.tensor([1e-10])
-        new_raw_variance = torch.tensor(
-            [-15.0, -15.0, -15.0, -15.0, -15.0, -15.0]
-        ).view(6, 1, 1)
-
-        with torch.no_grad():
-            gp_model.covar_module.variance.data = new_variance
-            gp_model.covar_module.raw_variance.data = new_raw_variance
-            # gp_model.covar_module.outputscale.data = new_raw_outputscale
-            # gp_model.covar_module.base_kernel.raw_variance.data = new_raw_variance
-
-        gp_model.eval()
-        likelihood.eval()
+        # Set hyperparemters of linear kernel manually.
+        gp_model = self._initialize_hyperparameters(gp_model, likelihood, mode)
 
         # Initialize the Residual Model
         residual_model = GPyTorchResidualLearningModel(
@@ -301,6 +291,19 @@ class GPMPC(BaseMPCController):
             use_cython=False,  # TODO: Check why not supported
             B=self.B_d.numpy(),
         )
+
+    def _initialize_hyperparameters(self, gp_model, likelihood, mode):
+        if mode == "Linear Kernel":
+            gp_model.covar_module.variance = torch.tensor([1e-6])
+        elif mode == "Nonlinear Kernel":
+            pass
+        else:
+            raise RuntimeError(f"Mode {mode} not known.")
+
+        gp_model.eval()
+        likelihood.eval()
+
+        return gp_model
 
     def _generate_nominal_ocp(self, env) -> None:
         """
@@ -418,6 +421,13 @@ class GPMPC(BaseMPCController):
             + omega.T @ Q_omega @ omega
             + (model.u.T) @ R @ (model.u)
             - q_theta * d_theta
+        )
+
+        # Create a casadi cost function for numerical evaluation
+        self.cost_function = ca.Function(
+            "cost_function",
+            [acados_model.x, acados_model.u, p_start, t, theta_start, q_des],
+            [ocp.model.cost_expr_ext_cost],
         )
 
         # Nonlinear constraint
@@ -775,6 +785,13 @@ class GPMPC(BaseMPCController):
             mean = observed_pred.mean
             lower, upper = observed_pred.confidence_region()
 
+            try:
+                n_points_GP = self.gp_mpc.residual_model.gp_model.train_inputs[0].shape[
+                    -2
+                ]
+            except:
+                n_points_GP = 0
+
             # Log quantities
             self.logger.log(
                 run_id=self.run_id,
@@ -783,10 +800,11 @@ class GPMPC(BaseMPCController):
                 gp_pred=mean.squeeze(0).cpu().numpy(),
                 gp_lower=lower.squeeze(0).cpu().numpy(),
                 gp_upper=upper.squeeze(0).cpu().numpy(),
+                n_points_GP=n_points_GP,
             )
 
             # Check if we want to log training data too
-            if np.abs(self.timestamp - 50) < 0.06:
+            if np.abs(self.timestamp % 10) < 0.1 and self.timestamp > 0.0:
                 self.logger.log(
                     run_id=self.run_id,
                     timestamp=self.timestamp,
@@ -821,7 +839,7 @@ class GPMPC(BaseMPCController):
             x_test = torch.from_numpy(np.hstack((self.x_past, self.u_past))).unsqueeze(
                 0
             )
-            with torch.no_grad():
+            with torch.no_grad(), gpytorch.settings.fast_pred_var():
                 z_test = self.input_selection(x_test)
                 predicted_residual = self.gp_mpc.residual_model.gp_model(z_test)
                 predicted_residual = self.residual_scaler(predicted_residual)
@@ -909,7 +927,12 @@ class GPMPC(BaseMPCController):
             solve_time = 0
 
             # Track cost value of current solution
-            mpc_cost = self.gp_mpc.ocp_solver.get_cost()
+            mpc_cost = self.cost_function(self.gp_mpc.ocp_solver.get(0, "x"),
+                                          self.gp_mpc.ocp_solver.get(0, "u"),
+                                          self.gp_mpc.p_hat_nonlin[0, 0:3].copy(),
+                                          self.gp_mpc.p_hat_nonlin[0, 3:6].copy(),
+                                          self.gp_mpc.p_hat_nonlin[0, 6].copy(),
+                                          self.gp_mpc.p_hat_nonlin[0, 7:11].copy()).full()
 
             # Log quantities
             self.logger.log(
@@ -919,6 +942,7 @@ class GPMPC(BaseMPCController):
                 attitude_error=attitude_error,
                 solve_time=solve_time,
                 mpc_cost=mpc_cost,
+                u_demanded=self.u_past,  # This is the input commanded my the MPC at the current timestep
             )
 
     def _visualize_prediction(self) -> None:
@@ -960,3 +984,8 @@ class GPMPC(BaseMPCController):
             # Extract image from renderer and append it for post-processing
             sim_img = self.renderer.render().copy()
             self.frames.append(sim_img)
+
+            if hasattr(self, "logger"):
+                self.logger.log(
+                    run_id=self.run_id, timestamp=self.data.time, frames=sim_img
+                )
