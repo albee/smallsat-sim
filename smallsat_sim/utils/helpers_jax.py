@@ -255,17 +255,17 @@ def mae_loss_fn(model, X: jnp.ndarray, y: jnp.ndarray, key) -> jnp.ndarray:
     return jnp.mean(jnp.abs(y_pred - y))
 
 
-@jax.jit
 def normalize_obs(obs: jnp.ndarray, ep_obs: jnp.ndarray, step: int) -> jnp.ndarray:
     """
     Normalize the observations along a trajectory.
     """
-    return obs
+    return (obs - ep_obs[:, : step + 1, :].mean(axis=1)) / (
+        ep_obs[:, : step + 1, :].std(axis=1) + 1e-8
+    )
 
 
-@jax.jit
 def scale_rews(rews: jnp.ndarray, ep_rets: jnp.ndarray, step: int) -> jnp.ndarray:
     """
     Scale the rewards along a trajectory.
     """
-    return rews / (ep_rets[:, :step+1].std(axis=1) + 1e-8)
+    return rews / (ep_rets[:, : step + 1].std(axis=1) + 1e-8)
