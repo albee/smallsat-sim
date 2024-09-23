@@ -238,7 +238,7 @@ class GPMPC(BaseMPCController):
         # Initialize GP model and overwrite default values
         train_x = torch.zeros(1,12)
         train_y = torch.zeros(1,6)
-        mode = "Nonlinear Kernel"
+        mode = "Linear Kernel"
         gp_model = BatchIndependentMultitaskGPModel(
             train_x=train_x,
             train_y=train_y,
@@ -695,8 +695,8 @@ class GPMPC(BaseMPCController):
 
         # Solve for the first control input in receding horizon fashion
         self.gp_mpc.solve()
-        self.X_res, U_res = self.gp_mpc.get_solution()
-        u0 = U_res[0, :]
+        self.X_res, self.U_res = self.gp_mpc.get_solution()
+        u0 = self.U_res[0, :]
 
         # Visualize
         self._visualize_prediction()
@@ -735,7 +735,7 @@ class GPMPC(BaseMPCController):
         theta_shifted.pop(0)
 
         # Set parameters
-        for i in range(self.ctrl_cfg.N):
+        for i in range(self.ctrl_cfg.N+1):
 
             theta_curr = theta_shifted[i]
 
