@@ -42,12 +42,18 @@ class RLController(object):
             nnx.update(self.agent.critic.v_net, restored_state["critic_model"].v_net)
         else:
             raise Exception("No training has been done yet.")
+        
+        # Helper variables to normalize the observations
+        num_saved_obs = 3
+        last_obs = jnp.zeros((self.env.num_envs, num_saved_obs, self.env.obs_dim))
+        step = 0
 
+        self.env.reset()
         start_time = time.time()
         states = self.env.get_states(self.reference_points[self.tracking_point_idx])
-        states_normalized = normalize_obs(states)
+        states_normalized = states
         terminal = jnp.zeros(self.env.num_envs, dtype=bool)
-        self.env.reset()
+
         while True:
             real_time = time.time() - start_time
             sim_time = self.env.mjx_batch.time[0]
@@ -57,8 +63,12 @@ class RLController(object):
                 states_normalized
             )  # No sampling/exploration noise needed
             states = self.env.get_states(self.reference_points[self.tracking_point_idx])
-            states_normalized = normalize_obs(states)
+            if step == (num_saved_obs):
+                last_obs = jnp.roll(last_obs, num_saved_obs-1, axis=1)
+            last_obs = last_obs.at[:, step, :].set(states)
+            states_normalized = normalize_obs(states, last_obs, step)
             _, terminal = self.env.transition(actions, states)
+            step += 1
             if terminal.all():
                 if self.tracking_point_idx == (len(self.reference_points) - 1):
                     break

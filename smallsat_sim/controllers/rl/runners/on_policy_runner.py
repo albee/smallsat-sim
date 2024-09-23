@@ -201,7 +201,7 @@ class OnPolicyRunner(object):
             jnp.zeros(self.env.num_envs),
             0,
         )
-        states_normalized = normalize_obs(states)
+        states_normalized = states
 
         # Create PRNG keys
         key = jax.random.PRNGKey(42)
@@ -210,6 +210,7 @@ class OnPolicyRunner(object):
         # Main training loop
         for epoch in range(self.epochs):
             ep_returns = jnp.zeros((self.env.num_envs, self.steps_per_epoch))
+            ep_obs = jnp.zeros((self.env.num_envs, self.steps_per_epoch, self.env.obs_dim))
             for t in range(self.steps_per_epoch):
                 a, v, logp = self.agent.act(states_normalized, epoch)
 
@@ -226,7 +227,8 @@ class OnPolicyRunner(object):
 
                 # Update state
                 states = self.env.get_states(self.reference_point)
-                states_normalized = normalize_obs(states)
+                ep_obs = ep_obs.at[:, t, :].set(states)
+                states_normalized = normalize_obs(states, ep_obs, t)
 
                 # Check if a timeout is appropriate
                 timeout = ep_len == self.max_ep_len
@@ -263,7 +265,7 @@ class OnPolicyRunner(object):
                         jnp.zeros(self.env.num_envs),
                         0,
                     )
-                    states_normalized = normalize_obs(states)
+                    states_normalized = states
 
             # Get the data from the training loop and save it
             data = buffer.get()
@@ -334,16 +336,18 @@ class OnPolicyRunner(object):
 
         for eval in range(self.n_evals):
             print(f"Testing policy: episode {eval+1}/{self.n_evals}")
+            self.env.reset()
             states = self.env.get_states(self.reference_point)
-            states_normalized = normalize_obs(states)
+            states_normalized = states
             ep_ret = jnp.zeros(self.env.num_envs)
             ep_returns = jnp.zeros((self.env.num_envs, self.episode_len))
+            ep_obs = jnp.zeros((self.env.num_envs, self.episode_len, self.env.obs_dim))
             terminal = jnp.zeros(self.env.num_envs, dtype=bool)
-            self.env.reset()
             for ep in range(self.episode_len):
                 actions = self.agent.get_control_input(states_normalized)
                 states = self.env.get_states(self.reference_point)
-                states_normalized = normalize_obs(states)
+                ep_obs = ep_obs.at[:, ep, :].set(states)
+                states_normalized = normalize_obs(states, ep_obs, ep)
                 rewards, terminal = self.env.transition(actions, states)
                 ep_returns = ep_returns.at[:, ep].set(
                     self.gamma * ep_returns[:, ep - 1] + rewards
@@ -392,10 +396,11 @@ class OnPolicyRunner(object):
             jnp.zeros(self.env.num_envs),
             0,
         )
-        states_normalized = normalize_obs(states)
+        states_normalized = states
 
         # Main training loop
         ep_returns = jnp.zeros((self.env.num_envs, self.steps_per_epoch))
+        ep_obs = jnp.zeros((self.env.num_envs, self.steps_per_epoch, self.env.obs_dim))
         for t in range(self.steps_per_epoch):
             _, v, logp = self.agent.act(states_normalized)
             self.env.obs = self.env.get_obs()
@@ -413,7 +418,8 @@ class OnPolicyRunner(object):
 
             # Update state
             states = self.env.get_states(self.reference_point)
-            states_normalized = normalize_obs(states)
+            ep_obs = ep_obs.at[:, t, :].set(states)
+            states_normalized = normalize_obs(states, ep_obs, t)
 
             # Check if a timeout is appropriate
             timeout = ep_len == self.max_ep_len
@@ -436,7 +442,7 @@ class OnPolicyRunner(object):
                     jnp.zeros(self.env.num_envs),
                     0,
                 )
-                states_normalized = normalize_obs(states)
+                states_normalized = states
 
         # Get the data from the training loop and save it
         data = buffer.get()
