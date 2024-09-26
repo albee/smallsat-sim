@@ -236,9 +236,9 @@ class GPMPC(BaseMPCController):
         )
 
         # Initialize GP model and overwrite default values
-        train_x = torch.zeros(1,12)
-        train_y = torch.zeros(1,6)
-        mode = "Linear Kernel"
+        train_x = torch.zeros(1, 12)
+        train_y = torch.zeros(1, 6)
+        mode = "Nonlinear Kernel"
         gp_model = BatchIndependentMultitaskGPModel(
             train_x=train_x,
             train_y=train_y,
@@ -344,8 +344,9 @@ class GPMPC(BaseMPCController):
         t = SX.sym("t", (3, 1))  # Direction of line segment
         theta_start = SX.sym("theta_start")  # Arclength start of line segment
         q_des = SX.sym("q_des", (4, 1))  # Desired attitude
+        q_theta = SX.sym("q_theta", (1,1))
 
-        p = ca.vertcat(p_start, t, theta_start, q_des)
+        p = ca.vertcat(p_start, t, theta_start, q_des, q_theta)
         acados_model.p = p
         ocp.model = acados_model
 
@@ -354,7 +355,7 @@ class GPMPC(BaseMPCController):
         q_l = self.ctrl_cfg.cost.q_l
         Q_c = self.ctrl_cfg.cost.Q_c
         Q_omega = self.ctrl_cfg.cost.Q_omega
-        q_theta = self.ctrl_cfg.cost.q_theta
+        #q_theta = self.ctrl_cfg.cost.q_theta
         Q_q = self.ctrl_cfg.cost.Q_q
 
         # Calculate line representation
@@ -426,14 +427,16 @@ class GPMPC(BaseMPCController):
         # Create a casadi cost function for numerical evaluation
         self.cost_function = ca.Function(
             "cost_function",
-            [acados_model.x, acados_model.u, p_start, t, theta_start, q_des],
+            [acados_model.x, acados_model.u, p_start, t, theta_start, q_des, q_theta],
             [ocp.model.cost_expr_ext_cost],
         )
 
         # Nonlinear constraint
-        acados_model.con_h_expr = e.T @ e
-        ocp.constraints.lh = np.array([0.0])
-        ocp.constraints.uh = np.array([1.0 * 1.0])
+        acados_model.con_h_expr = ca.vertcat(e.T @ e,
+                                             v.T @ v
+        )
+        ocp.constraints.lh = np.array([0.0, 0.0])
+        ocp.constraints.uh = np.array([1.0 * 1.0, 0.25 * 0.25])
 
         # Terminal constraint
         # acados_model.con_h_expr_e = acados_model.con_h_expr
@@ -482,9 +485,9 @@ class GPMPC(BaseMPCController):
                 -1.0,  # q[1]
                 -1.0,  # q[2]
                 -1.0,  # q[3]
-                -0.3,  # vx
-                -0.3,  # vy
-                -0.3,  # vz
+                -0.25,  # vx
+                -0.25,  # vy
+                -0.25,  # vz
                 -0.1,  # omega_x
                 -0.1,  # omega_y
                 -0.1,  # omega_z
@@ -502,9 +505,9 @@ class GPMPC(BaseMPCController):
                 1.0,  # q[1]
                 1.0,  # q[2]
                 1.0,  # q[3]
-                0.3,  # vx
-                0.3,  # vy
-                0.3,  # vz
+                0.25,  # vx
+                0.25,  # vy
+                0.25,  # vz
                 0.1,  # omega_x
                 0.1,  # omega_y
                 0.1,  # omega_z
@@ -628,7 +631,7 @@ class GPMPC(BaseMPCController):
         zoro_description = ZoroDescription()
         zoro_description.unc_jac_G_mat = unc_jac_G_mat
         zoro_description.backoff_scaling_gamma = (
-            0  # constraint tighenting (by how many sigma)
+            1  # constraint tighenting (by how many sigma)
         )
         zoro_description.P0_mat = Sigma_x0  # uncertainty on initial state
         zoro_description.fdbk_K_mat = np.zeros(
@@ -642,7 +645,8 @@ class GPMPC(BaseMPCController):
         zoro_description.input_P0 = False
         zoro_description.input_W_diag = True
         zoro_description.input_W_add_diag = True
-        zoro_description.output_P_matrices = False
+        zoro_description.output_P_matrices = True
+        zoro_description.idx_uh_t = [0]
         self.ocp_init.zoro_description = zoro_description
 
     def get_control_input(self, env) -> np.ndarray:
@@ -735,7 +739,7 @@ class GPMPC(BaseMPCController):
         theta_shifted.pop(0)
 
         # Set parameters
-        for i in range(self.ctrl_cfg.N+1):
+        for i in range(self.ctrl_cfg.N + 1):
 
             theta_curr = theta_shifted[i]
 
@@ -745,10 +749,36 @@ class GPMPC(BaseMPCController):
             q_des = self.planner.trajectory.get_intermediate_reference(
                 theta_curr
             ).attitude
+            q_theta = self.compute_q_theta(
+                distance=self.planner.distance_to_closest_waypoint(
+                    self.planner.trajectory.get_intermediate_reference(
+                        theta_curr
+                    ).position
+                ),i=i
+            )
+            q_theta = 5e-2
 
-            ref = np.concatenate((p_start, t, theta_1, q_des))
+            ref = np.concatenate((p_start, t, theta_1, q_des, np.array([q_theta])))
 
             self.gp_mpc.p_hat_nonlin[i, :] = ref.flatten()
+
+    def compute_q_theta(self, distance, i):
+        """
+        Computes q_theta based on the distance to the waypoint.
+        q_theta transitions smoothly from 5e-2 to 5e-3 as distance decreases from 1 meter to 0.
+        """
+        upper = 5e-2
+        lower = 5e-3
+        if distance >= 1.5:
+            return upper  # 0.05
+        elif distance <= 0.0:
+            return lower  # 0.005
+        else:
+            if i == 0:
+                print(f"Distance {distance}")
+            t = distance / 1.5  # Normalize distance to [0, 1]
+            q_theta = lower + (upper - lower) * (3 * t**2 - 2 * t**3)
+            return q_theta
 
     def _compute_residual(self, x_next: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
@@ -927,12 +957,17 @@ class GPMPC(BaseMPCController):
             solve_time = 0
 
             # Track cost value of current solution
-            mpc_cost = self.cost_function(self.gp_mpc.ocp_solver.get(0, "x"),
-                                          self.gp_mpc.ocp_solver.get(0, "u"),
-                                          self.gp_mpc.p_hat_nonlin[0, 0:3].copy(),
-                                          self.gp_mpc.p_hat_nonlin[0, 3:6].copy(),
-                                          self.gp_mpc.p_hat_nonlin[0, 6].copy(),
-                                          self.gp_mpc.p_hat_nonlin[0, 7:11].copy()).full()
+            mpc_cost = self.cost_function(
+                self.gp_mpc.ocp_solver.get(0, "x"),
+                self.gp_mpc.ocp_solver.get(0, "u"),
+                self.gp_mpc.p_hat_nonlin[0, 0:3].copy(),
+                self.gp_mpc.p_hat_nonlin[0, 3:6].copy(),
+                self.gp_mpc.p_hat_nonlin[0, 6].copy(),
+                self.gp_mpc.p_hat_nonlin[0, 7:11].copy(),
+                self.gp_mpc.p_hat_nonlin[0, 11].copy()
+            ).full()
+
+            velocity = np.linalg.norm(obs_gt[7:10])
 
             # Log quantities
             self.logger.log(
@@ -943,6 +978,7 @@ class GPMPC(BaseMPCController):
                 solve_time=solve_time,
                 mpc_cost=mpc_cost,
                 u_demanded=self.u_past,  # This is the input commanded my the MPC at the current timestep
+                velocity = velocity
             )
 
     def _visualize_prediction(self) -> None:

@@ -391,28 +391,30 @@ class MissionPlanner(BasePlanner):
         """
         # Define positional references
         positions = [
-            [-3.3, -9, 0],  # Point 1
-            [-3.3, -18, 0],  # Point 2
-            [-1, -20, 5],  # Point 3
-            [16, 0, 23],  # Point 4
-            [16, 0, 0],  # Point 5
-            [16, 0, -23],  # Point 6
-            [16, 0, -26],  # Point 7
-            [7, 0, -26],  # Point 8
-            [7, 0, -4.5],  # Point 9
-            [3, 0, -4.5],  # Point 10
-            [3, 0, -8],  # Point 11
-            [3.6, 16, -8],  # Point 12
-            [3.6, 16, 0],  # Point 13
-            [-2.5, 16, 0],  # Point 14
-            [-2.5, 5, 0],  # Point 15
-            [-7.5, 5, 0],  # Point 16
-            [-18, 10, 0],  # Point 17
-            [-18, 0, 0],  # Point 18
-            [-18, 0, -5],  # Point 19
-            [-8, 0, -5],  # Point 20
-            [-3.3, 0, -3.5],  # Point 21
-            [-3.3, -9, -3.5],  # Point 22
+            [-3.3, -9, 0],         # Point 1
+            [-3.3, -18, 0],        # Point 2
+            [-1, -20, 5],          # Point 3
+            [16, 0, 23],           # Point 4
+            [16, 0, 0],            # Point 5
+            [16, 0, -23],          # Point 6
+            [16, 0, -26],          # Point 7
+            [7, 0, -26],           # Point 8
+            [7, 0, -4.5],          # Point 9
+            [3, 0, -4.5],          # Point 10
+            [3, 0, -8],            # Point 11
+            [3.6, 16, -8],         # Point 12
+            [3.6, 16, 0],          # Point 13
+            [-2.5, 16, 0],         # Point 14
+            [-1.5, 10.5, -2],      # Point 15
+            [-2.0, 7.75, -1],      # Point 16 
+            [-5.0, 5.0, 0],        # Point 17
+            [-7.5, 5, 0],          # Point 18
+            [-18, 10, 0],          # Point 19
+            [-18, 0, 0],           # Point 20
+            [-18, 0, -5],          # Point 21
+            [-8, 0, -5],           # Point 22
+            [-3.3, 0, -3.5],       # Point 23
+            [-3.3, -9, -3.5],      # Point 24
         ]
 
         # Define attitude references (Euler angles)
@@ -433,12 +435,14 @@ class MissionPlanner(BasePlanner):
             [0, 0, -90],  # Point 14
             [0, 0, -90],  # Point 15
             [0, 0, -90],  # Point 16
-            [0, 0, -45],  # Point 17
-            [0, 0, -45],  # Point 18
-            [0, -45, 0],  # Point 19
-            [0, -90, 0],  # Point 20
-            [0, -90, 0],  # Point 21
-            [0, -45, 90],  # Point 22
+            [0, 0, -90],  # Point 17
+            [0, 0, -90],  # Point 18
+            [0, 0, -45],  # Point 19
+            [0, 0, -45],  # Point 20
+            [0, -45, 0],  # Point 21
+            [0, -90, 0],  # Point 22
+            [0, -90, 0],  # Point 23
+            [0, -45, 90],  # Point 24
         ]
 
         # Define connection type between waypoints
@@ -456,6 +460,8 @@ class MissionPlanner(BasePlanner):
             "Line",  # Point 11 to Point 12
             "Line",  # Point 12 to Point 13
             "Line",  # Point 13 to Point 14
+            "Line",  # Point 14 to Point 15
+            "Line",  # Point 14 to Point 15
             "Line",  # Point 14 to Point 15
             "Line",  # Point 15 to Point 16
             "Line",  # Point 16 to Point 17
@@ -677,3 +683,19 @@ class MissionPlanner(BasePlanner):
             closest_arc_length = self.trajectory.intervals[closest_segment_idx - 1]
 
         return (closest_point, closest_arc_length)
+    
+    def distance_to_closest_waypoint(self, point: np.ndarray) -> float:
+        """
+        Calculates the distance from the given point to the closest Waypoint.
+        Returns the distance and the index of the closest Waypoint.
+        """
+        min_distance = float('inf')
+        closest_waypoint_index = -1
+
+        for idx, waypoint in enumerate(self.waypoints):
+            distance = np.linalg.norm(point - waypoint.position)
+            if distance < min_distance:
+                min_distance = distance
+                closest_waypoint_index = idx
+
+        return min_distance

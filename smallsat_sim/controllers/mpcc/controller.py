@@ -177,15 +177,22 @@ class NominalMPCCController(BaseMPCController):
             - q_theta * d_theta
         )
 
+        # Create a casadi cost function for numerical evaluation
+        self.cost_function = ca.Function(
+            "cost_function",
+            [acados_model.x, acados_model.u, p_start, t, theta_start, q_des],
+            [ocp.model.cost_expr_ext_cost],
+        )
+
         # Nonlinear constraint
         acados_model.con_h_expr = e.T @ e
         ocp.constraints.lh = np.array([0.0])
         ocp.constraints.uh = np.array([1.0 * 1.0])
 
         # Terminal constraint
-        # acados_model.con_h_expr_e = acados_model.con_h_expr
-        # ocp.constraints.lh_e = np.array([0.0])
-        # ocp.constraints.uh_e = np.array([0.1 * 0.1])
+        acados_model.con_h_expr_e = acados_model.con_h_expr
+        ocp.constraints.lh_e = np.array([0.0])
+        ocp.constraints.uh_e = np.array([1.0 * 1.0])
 
         # Set OCP dimensions
         nx = acados_model.x.size()[0]  # number of states
@@ -227,9 +234,9 @@ class NominalMPCCController(BaseMPCController):
                 -1.0,  # q[1]
                 -1.0,  # q[2]
                 -1.0,  # q[3]
-                -0.3,  # vx
-                -0.3,  # vy
-                -0.3,  # vz
+                -0.25,  # vx
+                -0.25,  # vy
+                -0.25,  # vz
                 -0.1,  # omega_x
                 -0.1,  # omega_y
                 -0.1,  # omega_z
@@ -247,9 +254,9 @@ class NominalMPCCController(BaseMPCController):
                 1.0,  # q[1]
                 1.0,  # q[2]
                 1.0,  # q[3]
-                0.3,  # vx
-                0.3,  # vy
-                0.3,  # vz
+                0.25,  # vx
+                0.25,  # vy
+                0.25,  # vz
                 0.1,  # omega_x
                 0.1,  # omega_y
                 0.1,  # omega_z
@@ -382,6 +389,9 @@ class NominalMPCCController(BaseMPCController):
             solve_time = self.ocp_solver.get_stats("time_tot")
             print(f"Solve time: {solve_time}")
 
+        # Save current observation and input
+        self.u_past = u0
+
         # Save theta for next iteration
         for i in range(self.ctrl_cfg.N + 1):
             self.theta_prev[i] = self.ocp_solver.get(i, "x")[-1]
@@ -389,7 +399,7 @@ class NominalMPCCController(BaseMPCController):
         # Log quantities
         self._log(run_id=env.run_id, timestamp=env.data.time, env=env)
 
-        return u0[0:12]
+        return u0[0:12].copy()
 
     def _set_params(self, obs: np.ndarray) -> None:
         """
@@ -444,7 +454,12 @@ class NominalMPCCController(BaseMPCController):
             solve_time = self.ocp_solver.get_stats("time_tot")
 
             # Track cost value of current solution
-            mpc_cost = self.ocp_solver.get_cost()
+            mpc_cost = self.cost_function(self.ocp_solver.get(0, "x"),
+                                          self.ocp_solver.get(0, "u"),
+                                          self.ocp_solver.get(0, "p")[0:3].copy(),
+                                          self.ocp_solver.get(0, "p")[3:6].copy(),
+                                          self.ocp_solver.get(0, "p")[6].copy(),
+                                          self.ocp_solver.get(0, "p")[7:11].copy()).full()
 
             # Log quantities
             self.logger.log(
@@ -454,6 +469,7 @@ class NominalMPCCController(BaseMPCController):
                 attitude_error=attitude_error,
                 solve_time=solve_time,
                 mpc_cost=mpc_cost,
+                u_demanded=self.u_past,
             )
 
     def _visualize_prediction(self) -> None:

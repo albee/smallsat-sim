@@ -442,7 +442,7 @@ class ThrusterFailureSimulator:
 
         # No training needed as hyperparameters are manually set
         x_test = torch.linspace(0, self.upper_bound, self.num_points)
-        sampled_function = self._sample_gp_function(model, likelihood, x_test)
+        sampled_function = self._sample_gp_function(model, likelihood, x_test, failure_type)
 
         sampled_function = torch.clamp(sampled_function, 0, self.upper_bound)
 
@@ -451,10 +451,10 @@ class ThrusterFailureSimulator:
     def _get_actual_force(self, failure_type):
         if failure_type == PerturbationStatus.SATURATED_THRUST:
             return torch.where(
-                self.demanded_force < 0.1 * self.upper_bound,
+                self.demanded_force < 0.3 * self.upper_bound,
                 self.demanded_force,
-                0.1 * self.upper_bound
-                + 0.005
+                0.3 * self.upper_bound
+                + 0.0005
                 * torch.randn_like(self.demanded_force)
                 * (self.upper_bound - self.demanded_force),
             )
@@ -492,19 +492,23 @@ class ThrusterFailureSimulator:
         indices = np.concatenate(([0], indices, [self.num_points - 1]))
         return np.sort(indices)
 
-    def _sample_gp_function(self, gp_model, likelihood, demanded_force):
+    def _sample_gp_function(self, gp_model, likelihood, demanded_force, failure_type):
         gp_model.eval()
         likelihood.eval()
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
             observed_pred = gp_model(demanded_force)
-        return observed_pred.sample()
+
+        if failure_type == PerturbationStatus.SATURATED_THRUST:
+            return observed_pred.mean
+        else:
+            return observed_pred.sample()
 
     def _get_failure_modes(self):
         return {
             PerturbationStatus.SATURATED_THRUST: {
                 "kernel": "Matern",
                 "lengthscale": 0.1,
-                "outputscale": 0.3,
+                "outputscale": 0.01,
             },
             PerturbationStatus.FAULTY_VALVE: {
                 "kernel": "Matern",
@@ -538,7 +542,7 @@ class GPPerturbation(Perturbation):
     def apply(self, input: np.ndarray, timestamp: Optional[float] = None) -> np.ndarray:
         # Do a elementwise AND operation
         faulty = np.logical_and(
-            self.thruster_mask == PerturbationStatus.FAULTY_VALVE,
+            self.thruster_mask == self.failure_type,
             timestamp >= self.start_times,
         )
 

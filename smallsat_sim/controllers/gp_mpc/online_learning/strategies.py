@@ -218,15 +218,16 @@ class SlidingWindowPlus(OnlineLearningStrategy):
         print(gp_model.train_inputs[0].shape[-2])
 
         # Check if point is different enough to last one
-        delta = torch.norm(gp_feature_selector(x_input-self.x_input_past), 2)
-        if delta < 0.01:
-            print(f"Rejected point due to low delta of {delta}")
-            return gp_model
 
         # Check if the point shall be added to the dictionary
         if self._detect_failure(
             gp_model, x_input, y_target, gp_feature_selector, timestamp
         ):
+            return gp_model
+
+        delta = torch.norm(gp_feature_selector(x_input-self.x_input_past), 2)
+        if delta < 0.01:
+            print(f"Rejected point due to low delta of {delta}")
             return gp_model
 
         # Check if GP is already full

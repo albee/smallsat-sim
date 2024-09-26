@@ -17,30 +17,32 @@ def randomize_initial_state() -> tuple[np.ndarray, np.ndarray]:
     
     """
     # Define positional references
-    positions = np.array([
-        [-3.3, -9, 0],  # Point 1
-        [-3.3, -18, 0],  # Point 2
-        [-1, -20, 5],  # Point 3
-        [16, 0, 23],  # Point 4
-        [16, 0, 0],  # Point 5
-        [16, 0, -23],  # Point 6
-        [16, 0, -26],  # Point 7
-        [7, 0, -26],  # Point 8
-        [7, 0, -4.5],  # Point 9
-        [3, 0, -4.5],  # Point 10
-        [3, 0, -8],  # Point 11
-        [3.6, 16, -8],  # Point 12
-        [3.6, 16, 0],  # Point 13
-        [-2.5, 16, 0],  # Point 14
-        [-2.5, 5, 0],  # Point 15
-        [-7.5, 5, 0],  # Point 16
-        [-18, 10, 0],  # Point 17
-        [-18, 0, 0],  # Point 18
-        [-18, 0, -5],  # Point 19
-        [-8, 0, -5],  # Point 20
-        [-3.3, 0, -3.5],  # Point 21
-        [-3.3, -9, -3.5],  # Point 22
-    ])
+    positions = [
+        [-3.3, -9, 0],         # Point 1
+        [-3.3, -18, 0],        # Point 2
+        [-1, -20, 5],          # Point 3
+        [16, 0, 23],           # Point 4
+        [16, 0, 0],            # Point 5
+        [16, 0, -23],          # Point 6
+        [16, 0, -26],          # Point 7
+        [7, 0, -26],           # Point 8
+        [7, 0, -4.5],          # Point 9
+        [3, 0, -4.5],          # Point 10
+        [3, 0, -8],            # Point 11
+        [3.6, 16, -8],         # Point 12
+        [3.6, 16, 0],          # Point 13
+        [-2.5, 16, 0],         # Point 14
+        [-1.5, 10.5, -2],      # Point 15
+        [-2.0, 7.75, -1],      # Point 16 
+        [-5.0, 5.0, 0],        # Point 17
+        [-7.5, 5, 0],          # Point 18
+        [-18, 10, 0],          # Point 19
+        [-18, 0, 0],           # Point 20
+        [-18, 0, -5],          # Point 21
+        [-8, 0, -5],           # Point 22
+        [-3.3, 0, -3.5],       # Point 23
+        [-3.3, -9, -3.5],      # Point 24
+    ]
 
     # Define attitude references (Euler angles)
     attitudes = np.array([
@@ -60,16 +62,19 @@ def randomize_initial_state() -> tuple[np.ndarray, np.ndarray]:
         [0, 0, -90],  # Point 14
         [0, 0, -90],  # Point 15
         [0, 0, -90],  # Point 16
-        [0, 0, -45],  # Point 17
-        [0, 0, -45],  # Point 18
-        [0, -45, 0],  # Point 19
-        [0, -90, 0],  # Point 20
-        [0, -90, 0],  # Point 21
-        [0, -45, 90],  # Point 22
+        [0, 0, -90],  # Point 17
+        [0, 0, -90],  # Point 18
+        [0, 0, -45],  # Point 19
+        [0, 0, -45],  # Point 20
+        [0, -45, 0],  # Point 21
+        [0, -90, 0],  # Point 22
+        [0, -90, 0],  # Point 23
+        [0, -45, 90],  # Point 24
     ])
 
     # Define random integer
-    idx = random.randint(0, 20)
+    idx = random.randint(0, 23)
+    idx = 12
 
     pos = positions[idx]
     att = attitudes[idx]
@@ -237,7 +242,7 @@ class EnvConfig(BaseEnvConfig):
                 q_theta = 5e-2
 
                 # Penalty on attitude error
-                Q_q = 5e-3 * np.eye(4)
+                Q_q = 6e-3 * np.eye(4)
 
     class planner:
         resolution = 1  # Resolution of the grid
