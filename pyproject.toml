@@ -1,27 +1,31 @@
 [build-system]
-requires = ["poetry>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
 
-[tool.poetry]
-name = "smallsat_sim"
+[project]
+name = "smallsat_sim"  # Replace with your package name
 version = "1.0.0"
 description = "SmallSatSim"
-authors = [ "Alexander Hansson <ahansson@ethz.ch>",
-            "Markus H. Iversflaten <markus.h.iversflaten@ntnu.no>",
-            "David Schwartz <dschwartz@ethz.ch>",
-            "David Sternberg <david.c.sternberg@jpl.nasa.gov>",
-            "Keenan Albee <keenan.albee@jpl.nasa.gov>"]
 
-[tool.poetry.dependencies] # If you update the dependencies, you may also need to change requirements.txt accordingly
-python = "^3.10"  # Specify your Python version requirement here
-casadi = "3.6.5"
-numpy = "1.26.4"
-pyyaml = "6.0.1"
-mujoco = "3.2.1"
-mujoco-mjx = "3.2.1"
-glfw = "2.7.0"
-opencv-python = "4.10.0.82"
-scipy="1.14.0"
-control="0.10.0"
-h5py="3.11.0"
-pandas="2.2.2"
+dependencies = [
+    "casadi==3.6.7",
+    "numpy==1.26.4",
+    "pyyaml==6.0.1",
+    "mujoco==3.2.1",
+    "mujoco-mjx==3.2.1",
+    "glfw==2.8.0",
+    "opencv-python==4.10.0.82",
+    "scipy==1.14.1",
+    "control==0.10.0",
+    "h5py==3.12.1",
+    "pandas==2.2.2",
+    "torch==2.5.1",
+    "psutil==6.1.0",
+    "gpytorch==1.13", 
+    "pytest"
+]
+
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+where = ["src"]  # Source directory for the package

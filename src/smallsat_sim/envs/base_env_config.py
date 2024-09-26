@@ -1,0 +1,44 @@
+import torch
+import numpy as np
+import random
+
+# Set the seed for Python's random module
+random.seed(41)
+
+# Set the seed for NumPy
+np.random.seed(42)
+
+# Set the seed for PyTorch
+torch.manual_seed(42)
+
+class BaseEnvConfig:
+    """
+    Base class of all environment configurations
+    Holds general parameters applicable for all envs
+    """
+    dof = "6d"
+    
+    # Viewer options
+    class viewer:
+        # Standard viewer rendering @50Hz
+        viewer_decimation = 10
+
+    class sim:
+        dt = 1/500 # simulation runs @500Hz
+        # max_sim_time = 101 # max. simulation time
+        max_sim_time = 200 # max. simulation time
+        class noise:
+            add_obs_noise = False # add noise to ob of env
+            sigma_r = 1e-2
+            sigma_q = 1e-3
+            sigma_v = 1e-3
+            sigma_w = 1e-3
+        class obs:
+            v_frame = "body" # can alternatively be switched to "inertial"
+
+    class renderer:
+        start_recording = 0.0 # Start time of the recorded window
+        end_recording = 100 # Finish time of the recorded window
+        width = 2560 # Width resolution
+        height = 1440 # Height resolution
+        fps = 30 # Frames per second of video

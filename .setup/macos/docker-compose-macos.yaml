@@ -1,0 +1,44 @@
+name: smallsat
+services:
+  smallsat:
+      image: smallsat
+      build:
+        context: .
+        dockerfile: Dockerfile
+      container_name: smallsat
+      volumes:
+        - .:/code
+      environment:
+        - DISPLAY=novnc:0.0
+      depends_on:
+        - novnc
+      ports:
+        - 8000:8000 # ports used by debugger to communicate with vscode
+        - 5678:5678 # ports used by debugger to communicate with vscode
+        # TODO: port used to publish control inputs
+        # TODO: port used by controller to listen 
+        - "20210-20230:20210-20230/udp"
+        - "33300-33400:33300-33400/udp"
+
+  novnc:
+    image: theasp/novnc
+    environment:
+      - DISPLAY_WIDTH=1920
+      - DISPLAY_HEIGHT=1080
+      - RUN_XTERM=no
+    ports:
+      - "8080:8080"
+    networks:
+      - x11
+
+  # Starts a local NTP server so other machines can sync time.
+  ntp:
+    image: cturra/ntp
+    container_name: ntp
+    restart: always
+    ports:
+      - 123:123/udp
+    environment:
+      # Serve local time source
+      - NTP_SERVERS=127.127.1.1
+      - LOG_LEVEL=0

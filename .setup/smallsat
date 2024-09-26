@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+function up() {
+    option=$1
+    if [[ "$OSTYPE" == "linux-gnu"* ]]; then # Linux
+        xhost +local:root || echo "Cannot connect to display. Run headless."
+    elif [[ "$OSTYPE" == "darwin"* ]]; then # macOS
+        : # no-op, on macOS we use the novnc container to render the simulation
+    else
+        printf "Unknown OS detected."
+        exit 1
+    fi
+    case $option in
+    -b | --build)
+        COMPOSE_DOCKER_CLI_BUILD=1 DOCKER_BUILDKIT=1 docker compose up -d --pull never --build
+        ;;
+    -p | --pull)
+        COMPOSE_DOCKER_CLI_BUILD=1 DOCKER_BUILDKIT=1 docker compose up -d --pull missing --no-build
+        ;;
+    *)
+        printf "usage: smallsat up [-b/-p]\n"
+        printf "\noptions:\n\n"
+        printf "    -b | --build:    Always builds smallsat image from source.\n"
+        printf "    -p | --pull:     Pull smallsat image from repository.\n"
+        exit 1
+        ;;
+    esac
+    shift
+}
+
+function down() {
+    docker compose down
+    if [[ "$OSTYPE" == "linux-gnu"* ]]; then # Linux
+        xhost -local:root
+    elif [[ "$OSTYPE" == "darwin"* ]]; then # macOS
+        : # no-op, on macOS we use the novnc container to render the simulation
+    else
+        printf "Unknown OS detected."
+        exit 1
+    fi
+}
+
+function run() {
+    docker compose run --service-ports smallsat # still needs some refining!
+}
+
+function clean() {
+    docker system prune
+    docker image rm "smallsat"
+}
+
+function attach() {
+    # Finding the correct container relies on the fact that above,
+    n_running=$(docker ps | grep 'smallsat' | wc -l | xargs)
+    if [ "${n_running}" -eq 0 ]; then
+        printf "There are no smallsat container running.\n\n"
+        usage
+    elif [ "${n_running}" -eq 1 ]; then
+        container_id=$(docker ps | grep 'smallsat' | awk '{print $1}')
+        printf "Attaching to container with ID: ${container_id}\n"
+        docker exec -it ${container_id} bash
+    else
+        printf "There are multiple smallsat container running. Stop all but one.\n"
+    fi
+}
+
+function pwd_is_root() {
+    if [[ -f Dockerfile && -f .dockerignore ]]; then
+        true
+    else
+        false
+    fi
+}
+
+function usage() {
+    printf "usage: smallsat-docker <command> [-h]\n"
+    printf "\nthere are the following commands:\n\n"
+    printf "    up [-b/-p]:  Starts docker container with smallsat environment.\n"
+    printf "                 -b | --build: build smallsat Docker image from scratch.\n"
+    printf "                 -p | --pull: pull smallsat Docker image from registry.\n"
+    printf "    down:        Shuts down docker container.\n"
+    printf "    run:         Open interactive shell in container.\n"
+    printf "    clean:       Delete the previously built Docker image. 'smallsat-docker up' will rebuild the image.\n"
+    printf "    attach:      Attach to a running container (only works for a single running container).\n"
+}
+if [[ -z "${1-}" ]]; then
+    usage
+    exit 0
+fi
+
+while [[ -n "${1-}" ]]; do
+    if ! $(pwd_is_root); then
+        printf "Cannot run docker in this folder! Change to the highest-level smallsat folder.\n"
+        exit 1
+    fi
+
+    case $1 in
+    up)
+        up "${2---build}"
+        shift
+        ;;
+    down) down ;;
+    run) run ;;
+    clean) clean ;;
+    attach) attach ;;
+    -h | --help)
+        usage
+        exit 0
+        ;;
+    *)
+        usage
+        exit 1
+        ;;
+    esac
+    shift
+done

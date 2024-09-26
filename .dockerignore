@@ -1,0 +1,4 @@
+.dockerignore
+.catkin_workspace
+build_isolated/
+devel_isolated/

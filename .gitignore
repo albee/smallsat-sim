@@ -25,7 +25,9 @@ videos/
 
 # logs
 *.pkl
-logs/
+*.csv
+*.png
+# logs/
 
 # external libraries during development
 external/
