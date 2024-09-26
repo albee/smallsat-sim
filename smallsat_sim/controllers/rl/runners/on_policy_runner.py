@@ -78,7 +78,7 @@ class OnPolicyRunner(object):
         self._generate_experience()
         pretraining_data = load_training_data(self.ckpt_dir, "pretraining_data.pkl")
 
-        # Load the data (discard the first 100 steps because of the PD controller performance)
+        # Load the data
         obs = pretraining_data["obs"].reshape(-1, self.env.obs_dim)
         act = pretraining_data["act"].reshape(-1, self.env.act_dim)
         ret = pretraining_data["ret"].reshape(-1)
@@ -100,8 +100,9 @@ class OnPolicyRunner(object):
 
             actor_losses = []
             actor_val_losses = []
-            num_epochs = 50
-            batch_size = 8192
+            num_epochs = 80
+            num_batches = 256
+            batch_size = int(obs.shape[0] / num_batches)
             num_train_samples = X_train.shape[0]
             num_val_samples = X_val.shape[0]
 

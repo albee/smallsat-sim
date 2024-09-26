@@ -44,7 +44,7 @@ class RLController(object):
             raise Exception("No training has been done yet.")
         
         # Helper variables to normalize the observations
-        num_saved_obs = 3
+        num_saved_obs = 1000
         last_obs = jnp.zeros((self.env.num_envs, num_saved_obs, self.env.obs_dim))
         step = 0
 

@@ -5,6 +5,7 @@ from smallsat_sim.utils.helpers import get_args
 from smallsat_sim.controllers.rl.controller import RLController
 from smallsat_sim.envs.astrobee_rl.env import AstrobeeEnvVectorized
 from smallsat_sim.planners.oracle.oracle_rl import OraclePlannerRL
+from smallsat_sim.planners.oracle.oracle import OraclePlanner
 from smallsat_sim.planners.mission.mission import MissionPlanner
 
 

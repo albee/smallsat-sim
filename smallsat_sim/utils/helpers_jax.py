@@ -259,9 +259,10 @@ def normalize_obs(obs: jnp.ndarray, ep_obs: jnp.ndarray, step: int) -> jnp.ndarr
     """
     Normalize the observations along a trajectory.
     """
-    return (obs - ep_obs[:, : step + 1, :].mean(axis=1)) / (
-        ep_obs[:, : step + 1, :].std(axis=1) + 1e-8
-    )
+    return obs
+    # return (obs - ep_obs[:, : step + 1, :].mean(axis=1)) / (
+    #     ep_obs[:, : step + 1, :].std(axis=1) + 1e-8
+    # )
 
 
 def scale_rews(rews: jnp.ndarray, ep_rets: jnp.ndarray, step: int) -> jnp.ndarray:
