@@ -30,8 +30,8 @@ class VecEnv(BaseEnv):
         super().__init__(args)
 
         # Observation and action spaces
-        self.obs_dim = 6
-        self.act_dim = 8
+        self.obs_dim = 12
+        self.act_dim = 12
 
         # Initial position and velocity
         self.init_qpos = self.mjx_batch.qpos
@@ -224,6 +224,7 @@ class VecEnv(BaseEnv):
             axis=1,
         )
 
+
         return states
 
     def _create_viewer(self, args) -> None:
@@ -413,13 +414,27 @@ class VecEnv(BaseEnv):
         """
         Return a random quaternion.
         """
+        key, subkey1, subkey2 = jax.random.split(rng, 3)
+
         # Generate random samples from a uniform distribution over [0, 2π)
-        theta = jax.random.uniform(rng, (1,)) * 2 * jnp.pi
+        theta1 = jax.random.uniform(key, (1,)) * 2 * jnp.pi
+        theta2 = jax.random.uniform(subkey1, (1,)) * 2 * jnp.pi
+        theta3 = jax.random.uniform(subkey2, (1,)) * 2 * jnp.pi
 
         # Compute quaternion components
-        w = jnp.cos(theta / 2)
-        z = jnp.sin(theta / 2)
+        w = jnp.sin(theta1) * jnp.cos(theta2) * jnp.cos(theta3) + jnp.cos(
+            theta1
+        ) * jnp.sin(theta2) * jnp.sin(theta3)
+        x = jnp.cos(theta1) * jnp.sin(theta2) * jnp.cos(theta3) - jnp.sin(
+            theta1
+        ) * jnp.cos(theta2) * jnp.sin(theta3)
+        y = jnp.sin(theta1) * jnp.cos(theta2) * jnp.cos(theta3) - jnp.cos(
+            theta1
+        ) * jnp.sin(theta2) * jnp.sin(theta3)
+        z = jnp.cos(theta1) * jnp.cos(theta2) * jnp.sin(theta3) + jnp.sin(
+            theta1
+        ) * jnp.sin(theta2) * jnp.cos(theta3)
 
-        quaternion = jnp.array([w, jnp.zeros_like(w), jnp.zeros_like(w), z]).reshape(-1)
+        quaternion = jnp.array([w, x, y, z]).reshape(-1)
 
         return quaternion
