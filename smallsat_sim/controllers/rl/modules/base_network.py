@@ -11,7 +11,10 @@ class Critic(nnx.Module):
 
     def __init__(self, obs_dim: int, hidden_sizes: int, activation) -> None:
         super().__init__()
-        self.v_net = mlp([obs_dim] + list(hidden_sizes) + [1], activation)
+        self.obs_dim = obs_dim
+        self.v_net = mlp(
+            [obs_dim] + list(hidden_sizes) + [1], activation, last_layer_std=1.0
+        )
 
     def forward(self, obs: jnp.ndarray):
         """

@@ -3,8 +3,8 @@ from smallsat_sim.planners.base_planner import BasePlanner
 import numpy as np
 
 
-class OraclePlanner(BasePlanner):
-    def __init__(self, env, radius=10.5, spacing=0.5, clearance_dist=0.2) -> None:
+class OraclePlannerRL(BasePlanner):
+    def __init__(self, env, radius=5.0, spacing=0.5, clearance_dist=0.2) -> None:
         super().__init__(env)
         self.radius = radius
         self.spacing = spacing
@@ -60,8 +60,8 @@ class OraclePlanner(BasePlanner):
         """
         self.reference_points = []
         for i in range(int((2 * np.pi * self.radius) // self.spacing)):
-            x = 0  # x-coordinate remains constant as the circle is in the yz-plane
-            y = self.radius * np.sin(i * self.spacing / self.radius)  # y-coordinate
-            z = self.radius * np.cos(i * self.spacing / self.radius)  # z-coordinate
+            x = self.radius * np.cos(i * self.spacing / self.radius)
+            y = self.radius * np.sin(i * self.spacing / self.radius)
+            z = 10.17  # z-coordinate remains constant as the circle is in the xy-plane
 
             self.reference_points.append(np.array([x, y, z]))

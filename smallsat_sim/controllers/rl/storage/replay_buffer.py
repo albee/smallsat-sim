@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 
-from smallsat_sim.utils.helpers import discount_cumsum, combined_shape
+from smallsat_sim.utils.helpers_jax import discount_cumsum, combined_shape
 
 
 class ReplayBuffer(object):
@@ -58,9 +58,7 @@ class ReplayBuffer(object):
         run_len = self.ptr - self.path_start_idx
 
         # TD residual calculation
-        deltas = (
-            rews[:-1] - vals[:-1] + self.gamma * jnp.concatenate([vals[1:-1], vals[-1].reshape(1, -1)])
-        )
+        deltas = rews[:-1] - vals[:-1] + self.gamma * vals[1:]
         self.tdres_buf = self.tdres_buf.at[path_slice].set(
             jnp.array(
                 [
@@ -91,7 +89,7 @@ class ReplayBuffer(object):
         assert self.ptr == self.max_size
         self.ptr, self.path_start_idx = 0, 0
 
-        # Normalize the TD residuals
+        # Normalize the TD residuals (could instead also normalize on minibatch-level)
         tdres_mean = jnp.mean(self.tdres_buf, axis=0)
         tdres_std = jnp.std(self.tdres_buf, axis=0)
         self.tdres_buf = (self.tdres_buf - tdres_mean) / tdres_std
@@ -100,6 +98,7 @@ class ReplayBuffer(object):
         data = dict(
             obs=self.obs_buf,
             act=self.act_buf,
+            rews=self.rew_buf,
             ret=self.ret_buf,
             tdres=self.tdres_buf,
             logp=self.logp_buf,

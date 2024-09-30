@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Optional
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -27,7 +28,9 @@ class BaseAgent(BaseController):
         self.actor = Actor(env.obs_dim, env.act_dim, hidden_sizes, activation)
         self.critic = Critic(env.obs_dim, hidden_sizes, activation)
 
-    def act(self, states: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    def act(
+        self, states: jnp.ndarray, epoch: Optional[int] = None
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """
         Return actions, value functions, and log-likelihood of chosen actions for given states.
         """
@@ -43,16 +46,17 @@ class BaseAgent(BaseController):
         """
         Calculate the control input based on current observations for each environment.
         """
-        return self.act(obs)[0]
+        return self.actor.mu_net(obs)
 
     @abstractmethod
     def update_policy_gradient(
         self,
-        actor_lr: float,
+        key,
         obs: jnp.ndarray,
         actions: jnp.ndarray,
         tdres: jnp.ndarray,
         logp: jnp.ndarray,
+        minibatch: Optional[bool] = True,
     ) -> jnp.ndarray:
         """
         Update the policy gradient. Return the actor loss.
@@ -61,7 +65,11 @@ class BaseAgent(BaseController):
 
     @abstractmethod
     def update_value_function(
-        self, critic_lr: float, obs: jnp.ndarray, returns: jnp.ndarray
+        self,
+        key,
+        obs: jnp.ndarray,
+        returns: jnp.ndarray,
+        minibatch: Optional[bool] = True,
     ) -> jnp.ndarray:
         """
         Update the value function. Return the critic loss.

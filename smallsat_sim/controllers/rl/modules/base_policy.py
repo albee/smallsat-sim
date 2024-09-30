@@ -9,11 +9,18 @@ class Actor(nnx.Module):
     """
     The policy network. Inspired from https://spinningup.openai.com/en/latest/algorithms/vpg.html.
     """
-    def __init__(self, obs_dim: int, act_dim: int, hidden_sizes: int, activation) -> None:
+
+    def __init__(
+        self, obs_dim: int, act_dim: int, hidden_sizes: int, activation
+    ) -> None:
         super().__init__()
-        log_std = -0.5 * jnp.ones(act_dim)
+        self.obs_dim = obs_dim
+        self.act_dim = act_dim
+        log_std = -2.0 * jnp.ones(act_dim)
         self.log_std = nnx.Param(log_std)
-        self.mu_net = mlp([obs_dim] + list(hidden_sizes) + [act_dim], activation)
+        self.mu_net = mlp(
+            [obs_dim] + list(hidden_sizes) + [act_dim], activation, last_layer_std=0.01
+        )
 
     def _distribution(self, obs: jnp.ndarray):
         """
@@ -22,7 +29,7 @@ class Actor(nnx.Module):
         mu = self.mu_net(obs)
         std = jnp.exp(self.log_std.value)
         return distrax.MultivariateNormalDiag(mu, std)
-    
+
     def _log_prob_from_dist(self, pi: jnp.ndarray, actions: jnp.ndarray):
         """
         Return the log-probability of actions under the action distribution.
@@ -41,4 +48,3 @@ class Actor(nnx.Module):
             logp = self._log_prob_from_dist(pi, actions)
 
         return pi, logp
-    
