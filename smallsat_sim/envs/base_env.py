@@ -1,4 +1,5 @@
 import numpy as np
+import jax.numpy as jnp
 import mujoco
 import mujoco.viewer
 import cv2
@@ -37,6 +38,9 @@ class BaseEnv(object):
 
         # Initialize arguments
         self.args = args
+
+        # Flag to know whether VecEnv is being used
+        self.using_rl = False
 
         # Save time of simulation start (for filenames)
         self.sim_start_time = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
@@ -316,11 +320,15 @@ class BaseEnv(object):
         """
         # External disturbances
         if self.disturbances:
-            self.data.qfrc_applied = self.disturbances.apply()
+            self.data.qfrc_applied = np.asarray(
+                self.disturbances.apply(self.data.time).reshape(-1)
+            )
 
         # Perturbations
         if self.perturbations:
-            self.data.ctrl = self.perturbations.apply(input, self.data.time)
+            self.data.ctrl = np.asarray(
+                self.perturbations.apply(jnp.asarray(input), self.data.time).reshape(-1)
+            )
         else:
             self.data.ctrl = input
 

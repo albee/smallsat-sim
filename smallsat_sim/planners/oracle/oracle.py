@@ -17,7 +17,7 @@ class OraclePlanner(BasePlanner):
         self._generate_reference()
 
         # visualize the circle
-        self.visualize(self.reference_points)
+        self.visualize([self.reference_points[0]])
 
     def get_reference(self, obs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
@@ -44,6 +44,15 @@ class OraclePlanner(BasePlanner):
             ].reshape(3, 1),
             np.array([1, 0, 0, 0]).reshape(4, 1),
         )
+
+    def closest_point_on_trajectory(
+        self, point: np.ndarray
+    ) -> tuple[np.ndarray, float]:
+        """
+        Finds the closest point on the trajectory to the given point.
+        Returns the position and corresponding arc length.
+        """
+        raise NotImplementedError
 
     def _generate_reference(self):
         """

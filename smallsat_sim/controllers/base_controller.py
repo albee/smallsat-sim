@@ -1,9 +1,8 @@
+from abc import abstractmethod, ABC
+import numpy as np
+
 from smallsat_sim.envs.base_env import BaseEnv
 from smallsat_sim.planners.base_planner import BasePlanner
-
-from abc import abstractmethod, ABC
-
-import numpy as np
 
 
 class BaseController(ABC):

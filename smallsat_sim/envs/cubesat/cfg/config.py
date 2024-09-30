@@ -2,6 +2,7 @@ from smallsat_sim.envs.base_env_config import BaseEnvConfig
 
 import numpy as np
 
+
 class Body:
     def __init__(self, name, pos=[0, 0, 0], euler=[0, 0, 0]) -> None:
         self.name = name
@@ -51,10 +52,10 @@ class EnvConfig(BaseEnvConfig):
 
             class cost:
                 # Intermediate quadratic cost on state
-                Q = np.zeros((13,13))
-                Q[10,10] = 1e-2
-                Q[11,11] = 1e-2
-                Q[12,12] = 1e-2
+                Q = np.zeros((13, 13))
+                Q[10, 10] = 1e-2
+                Q[11, 11] = 1e-2
+                Q[12, 12] = 1e-2
 
                 # Intermediate cost on input
                 R = 1e-3 * np.eye(12)
@@ -74,13 +75,43 @@ class EnvConfig(BaseEnvConfig):
 
             class cost:
                 # Intermediate quadratic cost on state
-                Q = np.zeros((13,13))
-                Q[10,10] = 1e-2
-                Q[11,11] = 1e-2
-                Q[12,12] = 1e-2
+                Q = np.zeros((13, 13))
+                Q[10, 10] = 1e-2
+                Q[11, 11] = 1e-2
+                Q[12, 12] = 1e-2
 
                 # Intermediate cost on input
                 R = 1e-3 * np.eye(12)
 
                 # Terminal quadratic cost on position
                 Q_e = np.eye(3)
+
+        # RL controller params
+        class RL:
+            control_decimation = 25
+
+            # Number of environments
+            num_envs = 4096
+
+            # Hyperparams for the learning loop
+            class VPG:
+                steps_per_epoch = 3000
+                epochs = 50
+                max_epoch_len = 300
+                gamma = 0.99
+                lam = 0.97
+                actor_lr = 3e-3
+                critic_lr = 1e-3
+
+            class PPO:
+                steps_per_epoch = 3000
+                epochs = 50
+                max_epoch_len = 300
+                gamma = 0.99
+                lam = 0.97
+                actor_lr = 3e-3
+                critic_lr = 1e-3
+
+            # Hyperparams for the evaluation loop
+            episode_len = 300
+            n_evals = 100

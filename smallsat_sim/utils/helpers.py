@@ -5,6 +5,8 @@
 # Parsing
 import argparse
 import numpy as np
+import scipy.signal
+
 
 # Import all base classes for typing
 from smallsat_sim.controllers.base_controller import BaseController
@@ -34,6 +36,9 @@ def get_args() -> argparse.Namespace:
         "--video", action="store_true", help="Create a video of the experiment"
     )
     parser.add_argument("--log", action="store_true", help="Enable data logging")
+    parser.add_argument(
+        "--wandb", action="store_true", help="Use Weights & Biases to log RL data"
+    )
 
     # Parse the arguments
     args = parser.parse_args()
@@ -157,6 +162,23 @@ def quat_conjugate(q) -> np.ndarray:
     else:
         raise ValueError("input must be of dim. 4 (unit quaternion)")
     return q_conj
+
+
+def discount_cumsum(x, discount) -> np.ndarray:
+    """
+    Compute cumulative sums of vectors. Inspired from https://spinningup.openai.com/en/latest/algorithms/vpg.html.
+    """
+    return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
+
+
+def combined_shape(len, shape=None):
+    """
+    Combine two array shapes. Inspired from https://spinningup.openai.com/en/latest/algorithms/vpg.html.
+    """
+    if shape is None:
+        return (len,)
+
+    return (len, shape) if np.isscalar(shape) else (len, *shape)
 
 
 def calc_lateral_tracking_error(obs: np.ndarray, planner: BasePlanner) -> float:
