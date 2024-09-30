@@ -21,3 +21,9 @@ Initial release for stable version of MuJuCo CPU simulation and in-work planning
 - Stable "lunar gateway" sample environment
 - Visualization and collision detection utiltities, including gateway mesh
 
+## [0.3.0]
+
+Added support for RL training via mjx on GPU, including a simple 3DOF example.
+
+- Complete RL training pipeline via mjx, including Docker environment
+- A 3DOF RL training example, using PPO
