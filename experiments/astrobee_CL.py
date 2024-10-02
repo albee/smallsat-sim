@@ -15,10 +15,10 @@ args = get_args()
 env = AstrobeeEnv(args=args)
 
 # Create planner
-planner = MissionPlanner(env)
+planner = MissionPlanner(env,planner_mode="Waypoint Tracking")
 
 # Create controller
-ctrl = NominalMPCCController(env, planner)
+ctrl = NominalMPCController(env, planner)
 
 # Define start time
 start_time = time.time()

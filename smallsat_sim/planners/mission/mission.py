@@ -365,7 +365,7 @@ class MissionPlanner(BasePlanner):
             self.get_reference = self._get_reference_wp_tracking
 
             # Initialize current reference point
-            self.idx_reference_point = 1
+            self.idx_reference_point = 12
 
             # Initialize the timer clearance boolean
             self.timer_started = False
@@ -378,7 +378,7 @@ class MissionPlanner(BasePlanner):
             self._generate_intermediate_reference()
 
             # Initialize current reference point
-            self.idx_reference_point = 1
+            self.idx_reference_point = 12
 
             # Initialize the timer clearance boolean
             self.timer_started = False
@@ -519,7 +519,7 @@ class MissionPlanner(BasePlanner):
                 self.start_time = time.time()
             elif time.time() - self.start_time > 5:
                 self.idx_reference_point += 1
-                self.timer_started = True
+                self.timer_started = False
 
         # Visualize the waypoints and corridor in the saved video
         self._visualize_renderer(
@@ -555,7 +555,7 @@ class MissionPlanner(BasePlanner):
                 if not self.timer_started:
                     self.timer_started = True
                     self.start_time = time.time()
-                elif time.time() - self.start_time > 5:
+                elif time.time() - self.start_time > 10:
                     self.idx_reference_point += 1
                     self.timer_started = True
 
