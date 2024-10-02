@@ -1,0 +1,11 @@
+digraph "packages_Experiemnts" {
+rankdir=BT
+charset="utf-8"
+"experiments" [color="black", label=<experiments>, shape="box", style="solid"];
+"experiments.astrobee_CL" [color="black", label=<experiments.astrobee_CL>, shape="box", style="solid"];
+"experiments.astrobee_RL" [color="black", label=<experiments.astrobee_RL>, shape="box", style="solid"];
+"experiments.cubesat_CL" [color="black", label=<experiments.cubesat_CL>, shape="box", style="solid"];
+"experiments.rl_training" [color="black", label=<experiments.rl_training>, shape="box", style="solid"];
+"experiments.rl_training.train_astrobee" [color="black", label=<experiments.rl_training.train_astrobee>, shape="box", style="solid"];
+"experiments.test" [color="black", label=<experiments.test>, shape="box", style="solid"];
+}
