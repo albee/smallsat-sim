@@ -20,15 +20,15 @@ class AstrobeeEnv(BaseEnv):
         #self.disturbances = DisturbanceList([ConstantForceDisturbance(0.05, np.array([1, 1, 1]))])
 
         # Fail Thruster 0
-        self.perturbations.perturbations[0].stuck_off_thruster(0, 70.0)
+        #self.perturbations.perturbations[0].stuck_off_thruster(0, 70.0)
         #self.perturbations.perturbations[0].stuck_off_thruster(2, 70.0)
         
         # self.perturbations.perturbations[3].register_perturbation(0, 0.0, 0.15)
-        self.perturbations.perturbations[3].register_perturbation(2, 0.0, 0.0)
+        #self.perturbations.perturbations[3].register_perturbation(2, 0.0, 0.0)
 
         
-        self.perturbations.perturbations[3].register_perturbation(5, 0.0, 0.0)
-        self.perturbations.perturbations[4].register_perturbation(7, 0.0, 0.0)
+        #self.perturbations.perturbations[3].register_perturbation(5, 0.0, 0.0)
+        #self.perturbations.perturbations[4].register_perturbation(7, 0.0, 0.0)
 
-        self.perturbations.perturbations[4].register_perturbation(9, 0.0, 0.0)
-        self.perturbations.perturbations[4].register_perturbation(1, 0.0, 0.0)
+        #self.perturbations.perturbations[4].register_perturbation(9, 0.0, 0.0)
+        #self.perturbations.perturbations[4].register_perturbation(1, 0.0, 0.0)

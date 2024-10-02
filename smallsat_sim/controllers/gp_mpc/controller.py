@@ -240,8 +240,8 @@ class GPMPC(BaseMPCController):
         train_y = torch.zeros(1, 6)
         mode = "Nonlinear Kernel"
         gp_model = BatchIndependentMultitaskGPModel(
-            train_x=train_x,
-            train_y=train_y,
+            train_x=None,
+            train_y=None,
             likelihood=likelihood,
             residual_dimension=6,
             input_dimension=sum(input_feature_selection),

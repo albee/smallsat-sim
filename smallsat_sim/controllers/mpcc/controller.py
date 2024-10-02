@@ -470,6 +470,7 @@ class NominalMPCCController(BaseMPCController):
                 solve_time=solve_time,
                 mpc_cost=mpc_cost,
                 u_demanded=self.u_past,
+                pos = obs_gt[0:3]
             )
 
     def _visualize_prediction(self) -> None:
