@@ -213,8 +213,8 @@ class NominalMPCController(BaseMPCController):
 
         # Set intial condition
         ocp.constraints.idxbx_0 = np.arange(13)
-        ocp.constraints.lbx_0 = env.obs[0:13].copy()
-        ocp.constraints.ubx_0 = env.obs[0:13].copy()
+        ocp.constraints.lbx_0 = env.get_obs()[0:13].copy()
+        ocp.constraints.ubx_0 = env.get_obs()[0:13].copy()
         ocp.parameter_values = np.zeros(ocp.dims.np)
 
         # Configure solver options
@@ -243,7 +243,7 @@ class NominalMPCController(BaseMPCController):
         """
         Initializes the solver. Also known as "warm start".
         """
-        xinit = env.obs[0:13]
+        xinit = env.get_obs()
         x_guess = np.concatenate((xinit, xinit))
 
         [self.ocp_solver.set(i, "x", x_guess) for i in range(self.ctrl_cfg.N + 1)]
@@ -259,7 +259,7 @@ class NominalMPCController(BaseMPCController):
             self._initialize_solver(env)
 
         # Set the reference position
-        ref_pos, ref_quat = self.planner.get_reference(env.obs)
+        ref_pos, ref_quat = self.planner.get_reference(env.get_obs())
         ref_vel = np.zeros((3, 1))
         ref_omega = np.zeros((3, 1))
         ref = np.concatenate((ref_pos, ref_quat, ref_vel, ref_omega))
@@ -268,11 +268,11 @@ class NominalMPCController(BaseMPCController):
 
         # Solve for the first control input in receding horizon fashion
         u0 = self.ocp_solver.solve_for_x0(
-            env.obs[0:13], print_stats_on_failure=True, fail_on_nonzero_status=False
+            env.get_obs()[0:13], print_stats_on_failure=True, fail_on_nonzero_status=False
         )
         self._visualize_prediction()
         if hasattr(self, "renderer") and self.renderer is not None:
-            _, _ = self.planner.get_reference(env.obs)
+            _, _ = self.planner.get_reference(env.get_obs())
             self._visualize_prediction_renderer()
 
         return u0
