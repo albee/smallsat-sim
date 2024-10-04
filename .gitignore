@@ -1,3 +1,5 @@
+deps/
+
 # mujoco artifacts
 *MUJOCO_LOG*
 
