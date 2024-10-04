@@ -20,14 +20,21 @@ Python dependencies are specified in `requirements.text` and are installed in th
 
 
 ## Installation
-First, create a virtual environment with Python 3.10.11. This can be done with Visual Studio's extension *Python Environment Manager* or `pyenv`, outlined [here](https://robiokidenis.medium.com/how-to-install-multiple-python-on-your-mac-d20713740a2d).
+First, create a virtual environment with Python 3.10.11. This can be done with Visual Studio's extension *Python Environment Manager*, `pyenv`, outlined [here](https://robiokidenis.medium.com/how-to-install-multiple-python-on-your-mac-d20713740a2d).
 
 ```bash
 pyenv install 3.10.11
 pyenv global 3.10.11  # to globally switch for your user account
 ```
 
-Next, create a virtual environment in `<smallsat-sim`:
+### Using install script
+
+```bash
+./install_deps.sh
+```
+
+### Using pyenv and pip
+Next, create a virtual environment in `smallsat-sim`:
 
 ```bash
 python -m venv .venv
@@ -45,14 +52,12 @@ Afterwards install all necessary packages:
 pip install -e .
 ```
 
-To check if the installation was successful, try the test script:
+### Using poetry
 
 ```bash
-cd experiments
-python3 test.py
+poetry env use $(pyenv which python)
+poetry install
 ```
-
-This should show a cube with two thrusters moving periodically from the left to the right. Happy coding!
 
 ***Note for Ubuntu VMs on Mac M1!***
 
@@ -63,8 +68,17 @@ You will need to load the correct OpenGL interface libraries for visualization t
 ```
 
 
-## Usage
-TODO
+## Usage 
+To check if the installation was successful, try the test script:
+
+```bash
+cd experiments
+python3 test.py
+```
+
+This should show a cube with two thrusters moving periodically from the left to the right. Happy coding!
+
+TODO: need Docker instructions!
 
 ### Running the Simulation Headless
 TODO (i.e., how do we run the simulation with no visualization when we're training or doing Monte Carlo, etc.)

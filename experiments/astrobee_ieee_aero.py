@@ -1,4 +1,5 @@
 import time
+from enum import Enum
 from smallsat_sim.utils.helpers import get_args
 from smallsat_sim.controllers.pd.controller import PDController
 from smallsat_sim.controllers.nominal_mpc.controller import NominalMPCController
@@ -11,24 +12,42 @@ from smallsat_sim.planners.mission.mission import MissionPlanner
 # Get arguments for script execution
 args = get_args()
 
+class Mode(Enum):
+  LINGER = 1
+  FLYBY = 2
+  FAILURE = 3
+
+mode = Mode.FLYBY
+
 # Create environment
 env = AstrobeeEnv(args=args)
 
-# Create planner
-planner = MissionPlanner(env, planner_mode="Intermediate Waypoint Tracking")
-
-# Create controller
-ctrl = NominalMPCCController(env, planner)
+# Linger mode
+# NB: has a segfault issue!
+if (mode == Mode.LINGER):
+  planner = MissionPlanner(env, planner_mode="Waypoint Tracking")
+  ctrl = NominalMPCController(env, planner)
+# Flyby mode
+elif (mode == Mode.FLYBY):
+  planner = MissionPlanner(env, planner_mode="Intermediate Waypoint Tracking")
+  ctrl = NominalMPCCController(env, planner)
+# Flyby mode, failure
+elif (mode == Mode.FAILURE):
+  planner = MissionPlanner(env, planner_mode="Intermediate Waypoint Tracking")
+  ctrl = NominalMPCCController(env, planner)
 
 # Define start time
 start_time = time.time()
 
 # Simulation loop
+failed = False
 while env.data.time <= env.env_cfg.sim.max_sim_time:
-
     real_time = time.time() - start_time
 
     sim_time = env.data.time
+
+    if (mode == Mode.FAILURE and sim_time > 20.0):
+      failed = True
 
     if True:
         # Calculate control action (open-loop)
