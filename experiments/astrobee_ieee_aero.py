@@ -21,6 +21,7 @@ mode = Mode.FLYBY
 
 # Create environment
 env = AstrobeeEnv(args=args)
+env.env_cfg.sim.max_sim_time = 200.0
 
 # Linger mode
 # NB: has a segfault issue!
