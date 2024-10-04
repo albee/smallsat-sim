@@ -15,10 +15,10 @@ args = get_args()
 env = AstrobeeEnv(args=args)
 
 # Create planner
-planner = MissionPlanner(env, planner_mode="Intermediate Waypoint Tracking")
+planner = MissionPlanner(env, planner_mode="Waypoint Tracking")
 
 # Create controller
-ctrl = NominalMPCCController(env, planner)
+ctrl = NominalMPCController(env, planner)
 
 # Define start time
 start_time = time.time()
@@ -43,3 +43,5 @@ env.get_sim_rendering(env.env_name)
 # Save log if logging is enabled
 if args.log:
     env.logger.save_log()
+
+print("Simulation complete.")

@@ -522,10 +522,10 @@ class MissionPlanner(BasePlanner):
                 self.timer_started = False
 
         # Visualize the waypoints and corridor in the saved video
-        self._visualize_renderer(
-            [waypoint.position for waypoint in self.waypoints],
-            size=[0.1, 0, 0],
-        )
+        # self._visualize_renderer(
+        #     [waypoint.position for waypoint in self.waypoints],
+        #     size=[0.1, 0, 0],
+        # )
 
         return (
             self.waypoints[self.idx_reference_point].position.reshape(3, 1),
