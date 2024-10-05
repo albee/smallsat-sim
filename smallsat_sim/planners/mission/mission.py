@@ -541,23 +541,14 @@ class MissionPlanner(BasePlanner):
             self.idx_reference_point % len(self._intermediate_reference)
         ]
 
-        # Check if current state is close enough
-        dist = np.linalg.norm(obs[0:3] - next_point.position)
+        dist = np.linalg.norm(
+            obs[0:3]
+            - self.waypoints[self.idx_reference_point % len(self.waypoints)].position
+        )
 
-        # If smallsat enters clearance dist -> start timer
-        # Once it's been inside clearance dist for certain time,
-        # switch reference to next waypoint
-        if isinstance(next_point, IntermediateWaypoint):
-            if dist < self.clearance_dist:
-                self.idx_reference_point += 1
-        else:
-            if dist < self.clearance_dist:
-                if not self.timer_started:
-                    self.timer_started = True
-                    self.start_time = time.time()
-                elif time.time() - self.start_time > 10:
-                    self.idx_reference_point += 1
-                    self.timer_started = True
+        # Check if current state is close enough
+        if dist < self.clearance_dist:
+            self.idx_reference_point += 1
 
         # Visualize the waypoints and corridor in the saved video
         self._visualize_renderer(

@@ -381,8 +381,9 @@ class NominalMPCCController(BaseMPCController):
         )
         self._visualize_prediction()
 
+        self.planner.get_reference(env.obs)  # always update reference for bookeeping
+
         if hasattr(self, "renderer") and self.renderer is not None:
-            _, _ = self.planner.get_reference(env.obs)
             self._visualize_prediction_renderer()
 
         if False:
@@ -455,8 +456,12 @@ class NominalMPCCController(BaseMPCController):
 
             # Track cost value of current solution
             mpc_cost = self.cost_function(self.ocp_solver.get(0, "x"),
-                                          self.ocp_solver.get(0, "u")).full()
-                                          # TODO(kalbee): these terms are use on mpcc runs!
+                                          self.ocp_solver.get(0, "u"),
+                                          np.zeros((3,1)),
+                                          np.zeros((3,1)),
+                                          np.zeros((1,1)),
+                                          np.zeros((4,1))).full()
+                                          # TODO(kalbee): these terms are used on nominal mpcc runs!
                                         #   self.ocp_solver.get(0, "pi")[0:3].copy(),
                                         #   self.ocp_solver.get(0, "pi")[3:6].copy(),
                                         #   self.ocp_solver.get(0, "pi")[6].copy(),
@@ -472,7 +477,7 @@ class NominalMPCCController(BaseMPCController):
                 mpc_cost=mpc_cost,
                 u_demanded=self.u_past,
                 pos = obs_gt[0:3]
-            )
+            )  
 
     def _visualize_prediction(self) -> None:
         """

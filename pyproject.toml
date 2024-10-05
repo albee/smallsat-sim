@@ -27,3 +27,8 @@ h5py = "3.11.0"
 pandas = "2.2.2"
 psutil = "6.0.0"
 gpytorch = "1.13"
+pyqt6 = "^6.7.1"
+
+[tool.poetry.group.dev.dependencies]
+ipykernel = "^6.29.5"
+

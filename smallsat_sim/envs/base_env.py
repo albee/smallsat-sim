@@ -66,6 +66,7 @@ class BaseEnv(object):
             # Update viewer
             if substep % self.env_cfg.viewer.viewer_decimation == 0:
                 self._update_viewer()
+                pass
                 # self._update_renderer() # Moved to planner to visualize ref. as well
 
             # Step in MuJoCo engine
