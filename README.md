@@ -57,18 +57,45 @@ You will need to load the correct OpenGL interface libraries for visualization t
   export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libGLEW.so:/usr/lib/aarch64-linux-gnu/libGLX_mesa.so.0
 ```
 
+A Docker container containing all necessary packages is also provided.
+
 
 ## Usage
-TODO
+The main files to run simulations can be found in the `experiments` folder. For each smallsat, there is a choice of different planning and control algorithms. This folder also contains a training script for reinforcement learning (RL) agents. Control parameters are set in the respective configuration files of each environment.
+
+All experiments can be run by mounting the `smallsat-sim` directory on the provided Docker container. Running simulations on GPU is only possible for RL controllers and only by using the Docker container. For more information, see the instructions below.
 
 ### Running the Simulation Headless
-TODO (i.e., how do we run the simulation with no visualization when we're training or doing Monte Carlo, etc.)
+To run the simulation without the viewer, add the `--headless` flag to your command. This will result in shorter runtimes and less memory consumption.
+
+### Logging Data from Experiments
+To log various user-defined metrics, add `--log` to your command. To save videos of the simulation runs, add `--video`. The start and end times of the video are defined in the base environment configuration.
+
+If you are using RL, you may also want to monitor the training online using Weights & Biases. To do so, add `--wandb` to your command. An account is needed to use this feature.
 
 ### Using the MuJoCo Backend
-TODO
+The RL controller uses MuJoCo XLA (MJX) as a physics engine. This allows for training in multiple environments in parallel. All other applications are built on MuJoCo.
+
+***Note for MacOS users!***
+
+The usual `python` command must be replaced by `mjpython` for the passive viewer to work. `mjpython` is installed as part of the `mujoco`package, and you can select it as the default interpreter in VS Code. More information can be found [here](https://mujoco.readthedocs.io/en/stable/python.html#passive-viewer).
 
 ### Using the CasADi Backend
 TODO
+
+### Using the Docker Container
+A container runtime environment must be installed to build the Docker image and run containers. An alternative to Docker Desktop is [Colima](https://github.com/abiosoft/colima).
+
+To build the docker image, run:
+```
+docker compose build x86_gpu  # Or x86_cpu depending on the platform
+```
+
+To run an experiment on the resulting Docker container, run:
+```
+docker compose up x86_gpu /path/to/experiment --headless
+```
+The Docker container is only compatible with headless mode for now.
 
 
 ## Development Practices
