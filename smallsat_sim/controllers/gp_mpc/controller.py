@@ -238,7 +238,7 @@ class GPMPC(BaseMPCController):
         # Initialize GP model and overwrite default values
         train_x = torch.zeros(1, 12)
         train_y = torch.zeros(1, 6)
-        mode = "Nonlinear Kernel"
+        mode = "Linear Kernel"
         gp_model = BatchIndependentMultitaskGPModel(
             train_x=None,
             train_y=None,
@@ -693,7 +693,8 @@ class GPMPC(BaseMPCController):
             self.gp_mpc.ocp_solver.set(i, "u", self.last_solution["inputs"][i_next])
 
         # Set initial condition
-        xinit = np.append(env.get_obs(), self.theta_prev[1])
+        _, theta_init = self.planner.closest_point_on_trajectory(env.get_obs()[0:3])
+        xinit = np.append(env.get_obs(), theta_init)
         self.gp_mpc.ocp_solver.set(0, "lbx", xinit)
         self.gp_mpc.ocp_solver.set(0, "ubx", xinit)
 
@@ -775,7 +776,8 @@ class GPMPC(BaseMPCController):
             return lower  # 0.005
         else:
             if i == 0:
-                print(f"Distance {distance}")
+                #print(f"Distance {distance}")
+                pass
             t = distance / 1.5  # Normalize distance to [0, 1]
             q_theta = lower + (upper - lower) * (3 * t**2 - 2 * t**3)
             return q_theta
@@ -901,7 +903,7 @@ class GPMPC(BaseMPCController):
         Initializes the solver. Also known as "warm start".
         """
         # Retrieve closest point on track (relevant for theta)
-        _, theta_init = self.planner.closest_point_on_trajectory(env.obs[0:3])
+        _, theta_init = self.planner.closest_point_on_trajectory(env.get_obs()[0:3])
 
         # Array to store previous theta
         self.theta_prev = [theta_init for i in range(self.ctrl_cfg.N + 1)]
@@ -911,17 +913,35 @@ class GPMPC(BaseMPCController):
         x_guess = np.zeros(
             self.nx,
         )
-        x_guess[0:13] = env.obs[0:13].copy()
+        x_guess[0:13] = env.get_obs()[0:13].copy()
+
+        # Set theta by incrementing the previous theta
         x_guess[-1] = theta_init
 
-        [
-            self.gp_mpc.ocp_solver.set(i, "x", x_guess)
-            for i in range(self.ctrl_cfg.N + 1)
-        ]
-        [
-            self.gp_mpc.ocp_solver.set(i, "u", np.zeros((self.nu, 1)))
-            for i in range(self.ctrl_cfg.N)
-        ]
+        # Warm start the solver
+        for i in range(self.ctrl_cfg.N):
+            x_guess_i = x_guess.copy()
+            x_guess_i[-1] += i* self.ctrl_cfg.Ts * 0.1
+
+            self.theta_prev[i] += i* self.ctrl_cfg.Ts * 0.1
+
+            u_guess_i = np.zeros((self.nu, 1))
+            u_guess_i[-1] = 0.1
+
+            point = self.planner.trajectory.get_intermediate_reference(x_guess_i[-1])
+            x_guess_i[0:3] = point.position
+            x_guess_i[3:7] = point.attitude
+
+            x_guess_i[7:10] = 0.1 * self.planner.trajectory._get_tangent_segment(x_guess_i[-1])
+
+            self.gp_mpc.ocp_solver.set(i, "x", x_guess_i)
+            self.gp_mpc.ocp_solver.set(i, "u", u_guess_i)
+
+            if i == self.ctrl_cfg.N -1:
+                x_guess_i[-1] += i* self.ctrl_cfg.Ts * 0.1
+                self.theta_prev[-1] += i* self.ctrl_cfg.Ts * 0.1
+                self.gp_mpc.ocp_solver.set(i+1, "x", x_guess_i)
+
 
         for i in range(self.N):
             self.last_solution["states"][i] = x_guess

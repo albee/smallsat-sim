@@ -16,6 +16,7 @@ from smallsat_sim import SMALLSAT_STEWARD_ROOT_DIR
 
 
 from argparse import Namespace
+from typing import Optional
 
 
 class BaseEnv(object):
@@ -39,7 +40,7 @@ class BaseEnv(object):
         self.args = args
 
         # Save time of simulation start (for filenames)
-        self.sim_start_time = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+        self.sim_start_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
         # Initialize MC iterations
         self.run_id = 0
@@ -48,11 +49,31 @@ class BaseEnv(object):
         if args.log:
             self.logger = Logger(log_name=self.sim_start_time)
 
-    def reset(self) -> None:
+    def reset(self, pos: Optional[list] = None, att: Optional[list] = None) -> None:
         """
         Resets environment to a desired state.
+
+        NOTE: att is in euler angles [roll, pitch, yaw] in radians.
         """
-        pass
+
+        if pos is not None and att is not None:
+            # Reset position and attitude
+            mujoco.mj_resetData(self.model, self.data)
+            self.data.qpos[:3] = pos
+            # Need to convert att to a quaternion for MuJoCo
+            euler = np.radians(np.array(att))
+            quat = np.zeros(4)
+            
+            mujoco.mju_euler2Quat(quat, euler, "XYZ")
+        
+            self.data.qpos[3:7] = quat
+
+            mujoco.mj_forward(self.model, self.data)
+        else:
+            mujoco.mj_resetData(self.model, self.data)
+        
+        self.set_obs(v_frame= "body")
+        print("Environment reset.")
 
     def step(self, input: np.array) -> None:
         """

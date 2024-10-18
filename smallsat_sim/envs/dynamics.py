@@ -64,8 +64,8 @@ class SymbolicModel:
                 )
             )
 
-        # self.mixer[:, 0] = 0
-        # self.mixer[:, 2] = 0
+        # self.mixer[:, 5] = 0
+        # self.mixer[:, 7] = 0
 
     def _setup_model(self) -> None:
         """

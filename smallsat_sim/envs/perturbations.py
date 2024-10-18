@@ -593,10 +593,11 @@ class GPPerturbation(Perturbation):
         ).generate_failure_data(self.failure_type)
 
         # Plot data
-        plt.figure()
-        plt.plot(x_data, y_data, "--")
+        if False:
+            plt.figure()
+            plt.plot(x_data, y_data, "--")
 
-        plt.show()
+            plt.show()
 
         # Create the interpolation function for the affected thruster
         self.interpolations[thruster_index] = interp1d(
@@ -632,6 +633,19 @@ class FaultyValve(GPPerturbation):
 class SaturatedThrust(GPPerturbation):
     def __init__(self, model_config) -> None:
         super().__init__(model_config, PerturbationStatus.SATURATED_THRUST)
+
+    def register_perturbation(
+        self,
+        index: int | None = None,
+        start_time: float | None = 0,
+        valve_min: float | None = None,
+        valve_max: float | None = None,
+    ) -> None:
+        return super().register_perturbation(index, start_time, valve_min, valve_max)
+    
+class ThrustInstability(GPPerturbation):
+    def __init__(self, model_config) -> None:
+        super().__init__(model_config, PerturbationStatus.THRUST_INSTABILITY)
 
     def register_perturbation(
         self,

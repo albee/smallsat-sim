@@ -457,10 +457,10 @@ class NominalMPCCController(BaseMPCController):
             # Track cost value of current solution
             mpc_cost = self.cost_function(self.ocp_solver.get(0, "x"),
                                           self.ocp_solver.get(0, "u"),
-                                          np.zeros((3,1)),
-                                          np.zeros((3,1)),
-                                          np.zeros((1,1)),
-                                          np.zeros((4,1))).full()
+                                          self.ocp_solver.get(0, "p")[0:3].copy(),
+                                          self.ocp_solver.get(0, "p")[3:6].copy(),
+                                          self.ocp_solver.get(0, "p")[6].copy(),
+                                          self.ocp_solver.get(0, "p")[7:11].copy()).full()
                                           # TODO(kalbee): these terms are used on nominal mpcc runs!
                                         #   self.ocp_solver.get(0, "pi")[0:3].copy(),
                                         #   self.ocp_solver.get(0, "pi")[3:6].copy(),

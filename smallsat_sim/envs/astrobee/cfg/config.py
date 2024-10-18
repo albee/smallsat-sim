@@ -74,6 +74,7 @@ def randomize_initial_state() -> tuple[np.ndarray, np.ndarray]:
 
     # Define random integer
     idx = random.randint(0, 23)
+    #idx = random.randint(11, 16)
     idx = 12
 
     pos = positions[idx]
@@ -81,6 +82,11 @@ def randomize_initial_state() -> tuple[np.ndarray, np.ndarray]:
 
     pos += np.random.uniform(-0.5, 0.5, 3)
     att += np.random.randint(-45, 46, 3)
+
+    return pos, att
+
+    pos += np.random.uniform(-0.7, 0.7, 3)
+    att += np.random.randint(-60, 60, 3)
 
 
     return pos.tolist(), att.tolist()
@@ -198,7 +204,7 @@ class EnvConfig(BaseEnvConfig):
 
             class cost:
                 # Intermediate cost on input
-                R = 5e-2 * np.eye(12)
+                R = 1e-2 * np.eye(12)
 
                 # Cost on lag error
                 q_l = 5e-2
@@ -213,7 +219,7 @@ class EnvConfig(BaseEnvConfig):
                 q_theta = 5e-2
 
                 # Penalty on attitude error
-                Q_q = 1e-3 * np.eye(4)
+                Q_q = 8e-3 * np.eye(4)
 
         # GPMPC controller parameters
         class GPMPC:
@@ -227,7 +233,7 @@ class EnvConfig(BaseEnvConfig):
 
             class cost:
                 # Intermediate cost on input
-                R = 5e-2 * np.eye(12)
+                R = 1e-2 * np.eye(12)
 
                 # Cost on lag error
                 q_l = 5e-2
@@ -242,7 +248,7 @@ class EnvConfig(BaseEnvConfig):
                 q_theta = 5e-2
 
                 # Penalty on attitude error
-                Q_q = 6e-3 * np.eye(4)
+                Q_q = 8e-3 * np.eye(4)
 
     class planner:
         resolution = 1  # Resolution of the grid
