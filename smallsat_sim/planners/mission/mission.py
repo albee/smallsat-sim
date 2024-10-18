@@ -319,7 +319,7 @@ class Trajectory:
 
     def _get_tangent_segment(self, arc_length: float) -> np.ndarray:
         """
-        Returns the starting point of a segment wrt. the arc length
+        Returns the tangent of a segment wrt. the arc length
         """
         segment_index = self._get_segment_index(arc_length)
 
@@ -671,7 +671,7 @@ class MissionPlanner(BasePlanner):
         if closest_segment_idx == 0:
             closest_arc_length = closest_absolute_arc_length
         else:
-            closest_arc_length = self.trajectory.intervals[closest_segment_idx - 1]
+            closest_arc_length = closest_absolute_arc_length + self.trajectory.intervals[closest_segment_idx - 1]
 
         return (closest_point, closest_arc_length)
     
