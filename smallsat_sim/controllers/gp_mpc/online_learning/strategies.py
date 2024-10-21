@@ -224,11 +224,12 @@ class SlidingWindowPlus(OnlineLearningStrategy):
             gp_model, x_input, y_target, gp_feature_selector, timestamp
         ):
             return gp_model
-
-        delta = torch.norm(gp_feature_selector(x_input-self.x_input_past), 2)
-        if delta < 0.01:
-            print(f"Rejected point due to low delta of {delta}")
-            return gp_model
+        
+        if True:
+            delta = torch.norm(gp_feature_selector(x_input-self.x_input_past), 2)
+            if delta < 0.01:
+                print(f"Rejected point due to low delta of {delta}")
+                return gp_model
 
         # Check if GP is already full
         if gp_model.train_inputs[0].shape[-2] >= self.max_num_points:
@@ -302,8 +303,8 @@ class SlidingWindowPlus(OnlineLearningStrategy):
         # Calculate the beta quantity
         beta = self._calc_beta(mu, y_test, stddev)
 
-        if beta.min() < 0.05 and gp_model.train_inputs[0].shape[0] > 20:
-            print(f"Fault at {timestamp}!")
+        if np.min(beta) < 0.05 and gp_model.train_inputs[0].shape[0] > 50:
+            print(f"Fault at {timestamp} due to idx {np.argmin(beta)} with value{np.min(beta)}!")
             self.flag_counter += 1
             if self.flag_counter == 5:
                 gp_model.set_train_data(
@@ -313,7 +314,9 @@ class SlidingWindowPlus(OnlineLearningStrategy):
                 )
                 print(f"Reset GP data at time {timestamp}!")
 
-            return True
+                return True
+            else:
+                return False
         else:
             self.flag_counter = 0
 
@@ -324,10 +327,12 @@ class SlidingWindowPlus(OnlineLearningStrategy):
         # Calculate the standardized distance for each dimension
         standardized_distance = torch.abs(mu - y_test) / stddev
 
-        # Calculate the argument for the normal CDF for each dimension
-        cdf_args = 1.96 - standardized_distance
+        # # Calculate the argument for the normal CDF for each dimension
+        # cdf_args = 1.96 - standardized_distance
 
-        # Calculate the probability using the CDF of the standard normal distribution
-        beta = norm.cdf(cdf_args.cpu().numpy())
+        # # Calculate the probability using the CDF of the standard normal distribution
+        # beta = norm.cdf(cdf_args.cpu().numpy())
 
-        return beta
+        p = 2 * (1-norm.cdf(standardized_distance))
+
+        return p

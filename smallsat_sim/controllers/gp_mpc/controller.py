@@ -294,7 +294,7 @@ class GPMPC(BaseMPCController):
 
     def _initialize_hyperparameters(self, gp_model, likelihood, mode):
         if mode == "Linear Kernel":
-            gp_model.covar_module.variance = torch.tensor([1e-6])
+            gp_model.covar_module.variance = torch.tensor([1e-5])
         elif mode == "Nonlinear Kernel":
             pass
         else:
@@ -439,9 +439,9 @@ class GPMPC(BaseMPCController):
         ocp.constraints.uh = np.array([1.0 * 1.0, 0.25 * 0.25])
 
         # Terminal constraint
-        # acados_model.con_h_expr_e = acados_model.con_h_expr
-        # ocp.constraints.lh_e = np.array([0.0])
-        # ocp.constraints.uh_e = np.array([0.1 * 0.1])
+        acados_model.con_h_expr_e = acados_model.con_h_expr
+        ocp.constraints.lh_e = np.array([0.0, 0.0])
+        ocp.constraints.uh_e = np.array([1.0 * 1.0, 0.25 * 0.25])
 
         # Set OCP dimensions
         nx = acados_model.x.size()[0]  # number of states
@@ -757,7 +757,7 @@ class GPMPC(BaseMPCController):
                     ).position
                 ),i=i
             )
-            q_theta = 5e-2
+            q_theta = 5e-3
 
             ref = np.concatenate((p_start, t, theta_1, q_des, np.array([q_theta])))
 
@@ -1041,7 +1041,8 @@ class GPMPC(BaseMPCController):
             sim_img = self.renderer.render().copy()
             self.frames.append(sim_img)
 
-            if hasattr(self, "logger"):
-                self.logger.log(
-                    run_id=self.run_id, timestamp=self.data.time, frames=sim_img
-                )
+            if False:
+                if hasattr(self, "logger"):
+                    self.logger.log(
+                        run_id=self.run_id, timestamp=self.data.time, frames=sim_img
+                    )

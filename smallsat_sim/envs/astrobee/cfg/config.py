@@ -75,7 +75,7 @@ def randomize_initial_state() -> tuple[np.ndarray, np.ndarray]:
     # Define random integer
     idx = random.randint(0, 23)
     #idx = random.randint(11, 16)
-    idx = 12
+    idx = 13
 
     pos = positions[idx]
     att = attitudes[idx]
@@ -229,7 +229,7 @@ class EnvConfig(BaseEnvConfig):
             Ts = BaseEnvConfig.sim.dt * control_decimation
 
             # Define MPC's horizon
-            N = 75
+            N = 80
 
             class cost:
                 # Intermediate cost on input

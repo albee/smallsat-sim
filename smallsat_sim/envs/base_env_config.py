@@ -37,6 +37,6 @@ class BaseEnvConfig:
     class renderer:
         start_recording = 0.0 # Start time of the recorded window
         end_recording = 120 # Finish time of the recorded window
-        width = 2560 # Width resolution
-        height = 1440 # Height resolution
+        width = 1920 # Width resolution
+        height = 1080 # Height resolution
         fps = 30 # Frames per second of video

@@ -287,6 +287,7 @@ class BaseEnv(object):
         self.cam.trackbodyid = 2  # tracks smallsat
         self.cam.azimuth = 10.0
         self.cam.type = 1
+        self.cam.lookat = self.data.qpos[:3]
 
         # Save frames to create the video
         self.frames = []

@@ -343,7 +343,7 @@ class MissionPlanner(BasePlanner):
     def __init__(
         self,
         env,
-        spacing=1.0,
+        spacing=0.2,
         clearance_dist=0.1,
         planner_mode="Intermediate Waypoint Tracking",
     ) -> None:
@@ -405,10 +405,11 @@ class MissionPlanner(BasePlanner):
             [3.6, 16, -8],         # Point 12
             [3.6, 16, 0],          # Point 13
             [-2.5, 16, 0],         # Point 14
-            [-1.5, 10.5, -2],      # Point 15
-            [-2.0, 7.75, -1],      # Point 16 
-            [-5.0, 5.0, 0],        # Point 17
-            [-7.5, 5, 0],          # Point 18
+            [-1.5, 12, -2],        # Point 15
+            [-2.0, 8, 0], 
+            [-2.0, 6.0, 0],         # Point 16 
+            [-4.0, 5.5, 0],        # Point 17
+            [-10, 5, 0],          # Point 18
             [-18, 10, 0],          # Point 19
             [-18, 0, 0],           # Point 20
             [-18, 0, -5],          # Point 21
@@ -434,6 +435,7 @@ class MissionPlanner(BasePlanner):
             [90, 0, -90],  # Point 13
             [0, 0, -90],  # Point 14
             [0, 0, -90],  # Point 15
+            [0, 0, -90],
             [0, 0, -90],  # Point 16
             [0, 0, -90],  # Point 17
             [0, 0, -90],  # Point 18
@@ -464,6 +466,7 @@ class MissionPlanner(BasePlanner):
             "Line",  # Point 14 to Point 15
             "Line",  # Point 14 to Point 15
             "Line",  # Point 15 to Point 16
+            "Line",
             "Line",  # Point 16 to Point 17
             "Line",  # Point 17 to Point 18
             "Line",  # Point 18 to Point 19
@@ -522,10 +525,10 @@ class MissionPlanner(BasePlanner):
                 self.timer_started = False
 
         # Visualize the waypoints and corridor in the saved video
-        # self._visualize_renderer(
-        #     [waypoint.position for waypoint in self.waypoints],
-        #     size=[0.1, 0, 0],
-        # )
+        self._visualize_renderer(
+            [waypoint.position for waypoint in self.waypoints],
+            size=[0.03, 0, 0],
+        )
 
         return (
             self.waypoints[self.idx_reference_point].position.reshape(3, 1),
@@ -553,7 +556,7 @@ class MissionPlanner(BasePlanner):
         # Visualize the waypoints and corridor in the saved video
         self._visualize_renderer(
             [waypoint.position for waypoint in self._intermediate_reference],
-            size=[0.1, 0, 0],
+            size=[0.04, 0, 0],
         )
 
         return (
@@ -690,3 +693,104 @@ class MissionPlanner(BasePlanner):
                 closest_waypoint_index = idx
 
         return min_distance
+    
+    def _visualize_renderer(
+        self, points: list[np.ndarray], color=[1, 0, 0, 2], size=[0.05, 0, 0]
+    ) -> None:
+        """
+        Visualizes reference points in the MuJoCo renderer.
+        """
+        if (
+            self.data.time >= self.env_cfg.renderer.start_recording
+            and self.data.time <= self.env_cfg.renderer.end_recording
+        ):
+            self.renderer.scene.ngeom = 0
+
+            # Update the renderer scene
+            self.renderer.update_scene(self.data, self.cam)
+
+            # # Iterate over all points which need to be visualized in renderer
+            for point in points:
+                self.renderer.scene.ngeom += 1
+                x = point[0]
+                y = point[1]
+                z = point[2]
+                mujoco.mjv_initGeom(
+                    self.renderer.scene.geoms[self.renderer.scene.ngeom - 1],
+                    type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                    size=size,
+                    pos=np.array([x, y, z]),
+                    mat=np.eye(3).flatten(),
+                    rgba=np.array(color),
+                )
+
+            # Line segments
+            # Collision constraints
+            # for i, segment in enumerate(self.trajectory.reference):
+            #     # Increment ngeom
+            #     self.renderer.scene.ngeom += 1
+
+            #     # Extract points
+            #     start_point = segment.start_point.position
+            #     end_point = segment.end_point.position
+
+            #     # Initialize geometry
+            #     mujoco.mjv_initGeom(
+            #         self.renderer.scene.geoms[self.renderer.scene.ngeom - 1],
+            #         type=mujoco.mjtGeom.mjGEOM_LINE,
+            #         size=np.zeros(3),
+            #         pos=np.zeros(3),
+            #         mat=np.zeros(9),
+            #         rgba=np.array(color),
+            #     )
+
+            #     # Make the connector geometry
+            #     mujoco.mjv_makeConnector(
+            #         self.renderer.scene.geoms[self.renderer.scene.ngeom - 1],
+            #         mujoco.mjtGeom.mjGEOM_LINE,
+            #         20,
+            #         start_point[0],
+            #         start_point[1],
+            #         start_point[2],
+            #         end_point[0],
+            #         end_point[1],
+            #         end_point[2],
+            #     )
+
+            # Collision constraints
+            collision_radius = 1.0
+            for i, segment in enumerate(self.trajectory.reference):
+                # Increment ngeom
+                self.renderer.scene.ngeom += 1
+
+                # Extract points
+                start_point = segment.start_point.position
+                end_point = segment.end_point.position
+
+                # Initialize geometry
+                mujoco.mjv_initGeom(
+                    self.renderer.scene.geoms[self.renderer.scene.ngeom - 1],
+                    type=mujoco.mjtGeom.mjGEOM_CAPSULE,
+                    size=np.zeros(3),
+                    pos=np.zeros(3),
+                    mat=np.zeros(9),
+                    rgba=np.array([0.69, 0.4, 1, 0.1]),
+                )
+
+                # Make the connector geometry
+                mujoco.mjv_makeConnector(
+                    self.renderer.scene.geoms[self.renderer.scene.ngeom - 1],
+                    mujoco.mjtGeom.mjGEOM_CAPSULE,
+                    collision_radius,
+                    start_point[0],
+                    start_point[1],
+                    start_point[2],
+                    end_point[0],
+                    end_point[1],
+                    end_point[2],
+                )
+
+            # Extract image from renderer and append it for post-processing
+            if not self.is_mpc:
+                sim_img = self.renderer.render().copy()
+                self.frames.append(sim_img)
