@@ -7,6 +7,8 @@ from smallsat_sim.envs.astrobee.cfg.config import randomize_initial_state
 
 import random
 
+random.seed(25)
+
 def randomize_perturbations(env):
     """
     Randomize what perturbations are applied to the system.
@@ -20,13 +22,13 @@ def randomize_perturbations(env):
     perturbation_scenarios = [
         {
             "scenario": "stuck_off_two_thrusters_same_face",
-            "probability": 0.35,
+            "probability": 0.25,
             "num_thrusters": 2,
             "action": env.perturbations.perturbations[0].stuck_off_thruster,
         },
         {
             "scenario": "stuck_off_truster",
-            "probability": 0.3,
+            "probability": 0.2,
             "num_thrusters": 1,
             "action": env.perturbations.perturbations[0].stuck_off_thruster,
         },
@@ -129,10 +131,10 @@ def randomize_perturbations(env):
                             perturbation['action'](thruster, start_time)  # Example of stuck_off_thruster action
                             perturbation_log.append((thruster, start_time, "stuck_off"))
                         elif "faulty_valve" in perturbation['scenario']:
-                            min_valve_thresh = 0.2 if thruster < 4 else 0.1
+                            min_valve_thresh = 0.12 if thruster < 4 else 0.06
                             max_valve_thresh = 0.6 if thruster < 4 else 0.3
                             min_valve = random.uniform(0, min_valve_thresh)
-                            max_valve = random.uniform(0.85*max_valve_thresh, max_valve_thresh)
+                            max_valve = random.uniform(0.9*max_valve_thresh, max_valve_thresh)
 
                             perturbation['action'](thruster, start_time, min_valve, max_valve)
                             perturbation_log.append((thruster, start_time, f"faulty_valve ({min_valve}, {max_valve})"))
@@ -151,12 +153,15 @@ def randomize_perturbations(env):
     for thruster, time, p_type in perturbation_log:
         print(f"Thruster {thruster} perturbed at time {time:.2f} with type {p_type}")
 
+    if hasattr(env, 'logger'):
+        env.logger.log(run_id=env.run_id,timestamp=0.0,perturbation_log=perturbation_log)
+
 
 # Get arguments for script execution
 args = get_args()
 
 # Number of MC runs
-num_MC = 10
+num_MC = 20
 
 # Create environment
 env = AstrobeeEnv(args=args)
@@ -170,14 +175,12 @@ planner = MissionPlanner(env)
 ctrl = GPMPC(env, planner)
 
 
-env.env_cfg.sim.max_sim_time = 50
-
 # Simulation loop
 for i in range(num_MC):
-    if i > 0:
-        env.env_cfg.sim.max_sim_time = 120
-    else:
-        env.env_cfg.sim.max_sim_time = 2
+    # if i > 0:
+    #     env.env_cfg.sim.max_sim_time = 120
+    # else:
+    #     env.env_cfg.sim.max_sim_time = 2
         
     while env.data.time <= env.env_cfg.sim.max_sim_time:
         sim_time = env.data.time

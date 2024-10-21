@@ -32,10 +32,11 @@ def randomize_initial_state() -> tuple[np.ndarray, np.ndarray]:
         [3.6, 16, -8],         # Point 12
         [3.6, 16, 0],          # Point 13
         [-2.5, 16, 0],         # Point 14
-        [-1.5, 10.5, -2],      # Point 15
-        [-2.0, 7.75, -1],      # Point 16 
-        [-5.0, 5.0, 0],        # Point 17
-        [-7.5, 5, 0],          # Point 18
+        [-1.5, 12, -2],        # Point 15
+        [-2.0, 8, 0], 
+        [-2.0, 6.0, 0],         # Point 16 
+        [-4.0, 5.5, 0],        # Point 17
+        [-10, 5, 0],          # Point 18
         [-18, 10, 0],          # Point 19
         [-18, 0, 0],           # Point 20
         [-18, 0, -5],          # Point 21
@@ -45,7 +46,7 @@ def randomize_initial_state() -> tuple[np.ndarray, np.ndarray]:
     ]
 
     # Define attitude references (Euler angles)
-    attitudes = np.array([
+    attitudes = [
         [0, 0, 90],  # Point 1
         [0, 0, 90],  # Point 2
         [0, 0, 90],  # Point 3
@@ -61,6 +62,7 @@ def randomize_initial_state() -> tuple[np.ndarray, np.ndarray]:
         [90, 0, -90],  # Point 13
         [0, 0, -90],  # Point 14
         [0, 0, -90],  # Point 15
+        [0, 0, -90],
         [0, 0, -90],  # Point 16
         [0, 0, -90],  # Point 17
         [0, 0, -90],  # Point 18
@@ -70,15 +72,18 @@ def randomize_initial_state() -> tuple[np.ndarray, np.ndarray]:
         [0, -90, 0],  # Point 22
         [0, -90, 0],  # Point 23
         [0, -45, 90],  # Point 24
-    ])
+    ]
 
     # Define random integer
-    idx = random.randint(0, 23)
-    #idx = random.randint(11, 16)
-    idx = 13
+    idx = random.randint(0, 24)
+    idx = random.randint(11, 17)
+    #idx = 12
 
     pos = positions[idx]
     att = attitudes[idx]
+
+    test = np.random.uniform(-0.5, 0.5, 3)
+    test = np.random.randint(-45, 46, 3)
 
     pos += np.random.uniform(-0.5, 0.5, 3)
     att += np.random.randint(-45, 46, 3)

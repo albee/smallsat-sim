@@ -451,9 +451,9 @@ class ThrusterFailureSimulator:
     def _get_actual_force(self, failure_type):
         if failure_type == PerturbationStatus.SATURATED_THRUST:
             return torch.where(
-                self.demanded_force < 0.3 * self.upper_bound,
+                self.demanded_force < 0.2 * self.upper_bound,
                 self.demanded_force,
-                0.3 * self.upper_bound
+                0.2 * self.upper_bound
                 + 0.0005
                 * torch.randn_like(self.demanded_force)
                 * (self.upper_bound - self.demanded_force),

@@ -238,7 +238,7 @@ class GPMPC(BaseMPCController):
         # Initialize GP model and overwrite default values
         train_x = torch.zeros(1, 12)
         train_y = torch.zeros(1, 6)
-        mode = "Linear Kernel"
+        mode = "Nonlinear Kernel"
         gp_model = BatchIndependentMultitaskGPModel(
             train_x=None,
             train_y=None,
@@ -294,7 +294,7 @@ class GPMPC(BaseMPCController):
 
     def _initialize_hyperparameters(self, gp_model, likelihood, mode):
         if mode == "Linear Kernel":
-            gp_model.covar_module.variance = torch.tensor([1e-2])
+            gp_model.covar_module.variance = torch.tensor([1e-1])
         elif mode == "Nonlinear Kernel":
             pass
         else:
@@ -699,7 +699,13 @@ class GPMPC(BaseMPCController):
         self.gp_mpc.ocp_solver.set(0, "ubx", xinit)
 
         # Solve for the first control input in receding horizon fashion
+        start_time = time.perf_counter()
         self.gp_mpc.solve()
+        end_time = time.perf_counter()
+
+        if self.has_logger:
+            env.logger.log(run_id=self.run_id, timestamp=self.timestamp, solve_time=((end_time-start_time)*1000))
+
         self.X_res, self.U_res = self.gp_mpc.get_solution()
         u0 = self.U_res[0, :]
 
