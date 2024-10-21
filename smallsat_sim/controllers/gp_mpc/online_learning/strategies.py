@@ -327,12 +327,12 @@ class SlidingWindowPlus(OnlineLearningStrategy):
         # Calculate the standardized distance for each dimension
         standardized_distance = torch.abs(mu - y_test) / stddev
 
-        # # Calculate the argument for the normal CDF for each dimension
-        # cdf_args = 1.96 - standardized_distance
-
-        # # Calculate the probability using the CDF of the standard normal distribution
-        # beta = norm.cdf(cdf_args.cpu().numpy())
-
         p = 2 * (1-norm.cdf(standardized_distance))
+
+        # Caluclate a mask of what deltas mu - y_test are below 1e-5
+        mask = torch.abs(mu - y_test) < 1e-4
+
+        # Set values to 1 where mask is true
+        p[mask] = 1
 
         return p

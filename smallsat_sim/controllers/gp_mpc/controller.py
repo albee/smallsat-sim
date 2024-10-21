@@ -294,7 +294,7 @@ class GPMPC(BaseMPCController):
 
     def _initialize_hyperparameters(self, gp_model, likelihood, mode):
         if mode == "Linear Kernel":
-            gp_model.covar_module.variance = torch.tensor([1e-5])
+            gp_model.covar_module.variance = torch.tensor([1e-2])
         elif mode == "Nonlinear Kernel":
             pass
         else:
@@ -1041,7 +1041,7 @@ class GPMPC(BaseMPCController):
             sim_img = self.renderer.render().copy()
             self.frames.append(sim_img)
 
-            if False:
+            if True:
                 if hasattr(self, "logger"):
                     self.logger.log(
                         run_id=self.run_id, timestamp=self.data.time, frames=sim_img

@@ -265,10 +265,12 @@ class BaseEnv(object):
         )
 
         # Set default camera options
-        self.viewer.cam.distance = 3.0
+        self.viewer.cam.distance = 4.0
         self.viewer.cam.trackbodyid = 2  # tracks smallsat
-        self.viewer.cam.azimuth = 10.0
+        self.viewer.cam.azimuth = -20.0
+        self.viewer.cam.elevation = -20
         self.viewer.cam.type = 1
+        self.viewer.cam.lookat = self.data.qpos[:3]
 
     def _create_renderer(self) -> None:
         """
@@ -283,9 +285,10 @@ class BaseEnv(object):
 
         # Set up the scene and the default camera options
         self.cam = mujoco.MjvCamera()
-        self.cam.distance = 5.0
+        self.cam.distance = 4.0
         self.cam.trackbodyid = 2  # tracks smallsat
-        self.cam.azimuth = 10.0
+        self.cam.azimuth = -20.0
+        self.cam.elevation = -20
         self.cam.type = 1
         self.cam.lookat = self.data.qpos[:3]
 

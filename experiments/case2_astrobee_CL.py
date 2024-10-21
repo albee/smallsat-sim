@@ -7,7 +7,7 @@ from smallsat_sim.controllers.lqr.controller import LQRController
 from smallsat_sim.controllers.gp_mpc.controller import GPMPC
 from smallsat_sim.envs.astrobee.env import AstrobeeEnv
 from smallsat_sim.planners.oracle.oracle import OraclePlanner
-from smallsat_sim.planners.mission.mission import MissionPlanner
+from smallsat_sim.planners.mission.mission import MissionPlanner, MissionPlannerCubicSpline
 
 # Get arguments for script execution
 args = get_args()
@@ -15,8 +15,8 @@ args = get_args()
 # Create environment
 env = AstrobeeEnv(args=args)
 
-env.perturbations.perturbations[0].stuck_off_thruster(0, 45.0)
-env.perturbations.perturbations[0].stuck_off_thruster(2, 45.0)
+env.perturbations.perturbations[0].stuck_off_thruster(0, 46.0)
+env.perturbations.perturbations[0].stuck_off_thruster(2, 46.0)
 
 # Create planner
 planner = MissionPlanner(env)
