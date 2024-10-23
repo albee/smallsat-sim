@@ -3,7 +3,9 @@ from smallsat_sim.envs.perturbations import (
     PerturbationList,
     StuckOffThrusters,
     StuckOnThrusters,
-    SamplePerturbation,
+    FaultyValve,
+    SaturatedThrust,
+    ThrustInstability,
 )
 from smallsat_sim.envs.disturbances import DisturbanceList, ConstantForceDisturbance
 
@@ -19,11 +21,29 @@ class AstrobeeEnvVectorized(VecEnv):
         # Instantiate perturbations
         self.perturbations = PerturbationList(
             [
-                StuckOffThrusters(self.env_cfg, self.model_cfg),
-                StuckOnThrusters(self.env_cfg, self.model_cfg),
-                SamplePerturbation(self.env_cfg, self.model_cfg, 10.0),
+                StuckOffThrusters(self.env_cfg, self.model_cfg),  # 0
+                StuckOnThrusters(self.env_cfg, self.model_cfg),  # 1
+                FaultyValve(self.env_cfg, self.model_cfg),  # 2
+                SaturatedThrust(self.env_cfg, self.model_cfg),  # 3
+                ThrustInstability(self.env_cfg, self.model_cfg), # 4
             ]
         )
 
+        self.perturbations.perturbations[2].register_perturbation()
+
         # Instantiate disturbances
         self.disturbances = DisturbanceList([ConstantForceDisturbance(self.env_cfg)])
+
+    def reset_perturbations(self) -> None:
+        """
+        Resets the perturbations
+        """
+        self.perturbations = PerturbationList(
+            [
+                StuckOffThrusters(self.env_cfg, self.model_cfg),  # 0
+                StuckOnThrusters(self.env_cfg, self.model_cfg),  # 1
+                FaultyValve(self.env_cfg, self.model_cfg),  # 2
+                SaturatedThrust(self.env_cfg, self.model_cfg),  # 3
+                ThrustInstability(self.env_cfg, self.model_cfg), # 4
+            ]
+        )

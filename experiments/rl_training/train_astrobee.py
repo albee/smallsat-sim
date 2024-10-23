@@ -25,7 +25,7 @@ args = get_args()
 env = AstrobeeEnvVectorized(args=args)
 
 # Create planner
-planner = OraclePlanner(env)
+planner = OraclePlannerRL(env)
 
 # Create runner
 runner = OnPolicyRunner(env, planner)

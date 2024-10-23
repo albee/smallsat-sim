@@ -16,3 +16,4 @@ tensorflow-probability==0.24.0
 distrax==0.1.5
 pandas==2.2.2
 wandb==0.17.8
+gpflow==2.9.2

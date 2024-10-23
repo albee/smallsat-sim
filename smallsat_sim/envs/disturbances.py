@@ -1,7 +1,17 @@
 from abc import ABC, abstractmethod
+from enum import Enum
 from typing import Optional, List
 import jax
 import jax.numpy as jnp
+
+
+class DisturbanceStatus(Enum):
+    """
+    Document type of active disturbance.
+    0 := Constant force disturbance
+    """
+
+    CONSTANT_FORCE = 0
 
 
 class Disturbance(ABC):
@@ -100,12 +110,10 @@ class ConstantForceDisturbance(Disturbance):
         env_config,
         magnitude: Optional[float] = None,
         direction: Optional[float] = None,
-        disturbed_envs: Optional[float] = None,
     ) -> None:
         super().__init__()
 
-        self.failure_type = "const_force_disturbance"
-
+        self.failure_type = DisturbanceStatus.CONSTANT_FORCE
         self.is_active = False
 
         # Find out how many environments there are
@@ -114,22 +122,15 @@ class ConstantForceDisturbance(Disturbance):
         else:
             self.num_envs = 1
 
+        self.disturbed_envs = None
+
+        self.start_times = jnp.zeros(self.num_envs)
+
         # Randomize the force magnitude over the enviroments
         if magnitude is None:
             magnitude = jax.random.uniform(
                 jax.random.PRNGKey(42), (self.num_envs, 1), minval=0, maxval=0.2
             )
-
-        if disturbed_envs is None:
-            fraction_disturbed_envs = 0.1
-            self.disturbed_envs = jax.random.randint(
-                jax.random.PRNGKey(1),
-                shape=(int(fraction_disturbed_envs * self.num_envs),),
-                minval=0,
-                maxval=self.num_envs,
-            )
-        else:
-            self.disturbed_envs = disturbed_envs
 
         # Randomize the force direction over the enviroments
         if direction is None:
@@ -158,19 +159,34 @@ class ConstantForceDisturbance(Disturbance):
         self.const_force = jnp.concatenate((force, torque), axis=1)
 
     def apply(self, timestamp: Optional[float] = 0.0) -> jnp.ndarray:
-        if self.is_active and timestamp >= self.start_time:
-            mask = jnp.zeros_like(self.const_force)
-            mask = mask.at[self.disturbed_envs, :].set(1)
-            return self.const_force * mask
-        else:
-            return jnp.zeros((self.num_envs, 6))
+        disturbance_mask, time_mask = jnp.zeros_like(self.const_force), jnp.zeros_like(
+            self.const_force
+        )
+        if self.disturbed_envs is not None:
+            disturbance_mask = disturbance_mask.at[self.disturbed_envs, :].set(1)
+        time_mask = time_mask.at[timestamp >= self.start_times, :].set(1)
+        return self.const_force * disturbance_mask * time_mask
 
-    def const_force_disturbance(self, start_time: Optional[float] = 0.0) -> None:
+    def const_force_disturbance(
+        self,
+        disturbed_envs: Optional[jnp.ndarray] = None,
+        start_time: Optional[float] = 0.0,
+    ) -> None:
         """
         Activate the constant force disturbance.
         """
-        self.start_time = start_time
-        self.is_active = True
+        if isinstance(disturbed_envs, jnp.ndarray):
+            self.disturbed_envs = disturbed_envs
+        else:
+            fraction_disturbed_envs = 1.0
+            self.disturbed_envs = jax.random.randint(
+                jax.random.PRNGKey(42),
+                shape=(int(fraction_disturbed_envs * self.num_envs),),
+                minval=0,
+                maxval=self.num_envs,
+            )
+
+        self.start_times = self.start_times.at[disturbed_envs].set(start_time)
         print("Constant force disturbance is active.")
 
     def deactivate_const_force_disturbance(self) -> None:
