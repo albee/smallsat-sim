@@ -19,6 +19,13 @@ __pycache__/
 # generated acados code
 c_generated_code/
 
+# specific files
+*.pkl
+*.pdf
+*.png
+*.jpg
+*.svg
+
 # video files
 *.mp4
 videos/
