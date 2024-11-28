@@ -28,6 +28,7 @@ c_generated_code/
 
 # video files
 *.mp4
+*.gif
 videos/
 
 # utils for lamda-quad
