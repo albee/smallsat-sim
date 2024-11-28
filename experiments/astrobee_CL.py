@@ -15,9 +15,6 @@ args = get_args()
 # Create environment
 env = AstrobeeEnv(args=args)
 
-env.perturbations.perturbations[0].stuck_off_thruster(5, 0.0)
-env.perturbations.perturbations[0].stuck_off_thruster(7, 0.0)
-
 # Create planner
 planner = MissionPlanner(env, planner_mode="Waypoint Tracking")
 

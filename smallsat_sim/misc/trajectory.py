@@ -25,7 +25,7 @@ plt.rcParams.update({
 class TrajectoryPlotter:
     def __init__(self):
         # Updated list of positions with the new points added
-        self.positions = [
+        positions = [
             [-3.3, -9, 0],         # Point 1
             [-3.3, -18, 0],        # Point 2
             [-1, -20, 5],          # Point 3
@@ -41,15 +41,15 @@ class TrajectoryPlotter:
             [3.6, 16, 0],          # Point 13
             [-2.5, 16, 0],         # Point 14
             [-1.5, 10.5, -2],      # Point 15
-            [-2.0, 7.75, -1],      # Point 16
-            [-5.0, 5.0, 0],        # Point 17
+            [-2.0, 7.75, -1],      # Point 16 
+            [-4.0, 5.5, 0],        # Point 17
             [-7.5, 5, 0],          # Point 18
             [-18, 10, 0],          # Point 19
             [-18, 0, 0],           # Point 20
             [-18, 0, -5],          # Point 21
             [-8, 0, -5],           # Point 22
             [-3.3, 0, -3.5],       # Point 23
-            [-3.3, -9, -3.5]      # Point 24
+            [-3.3, -9, -3.5],      # Point 24
         ]
 
     def find_waypoints_path_length(self, positions):
@@ -386,11 +386,14 @@ if __name__ == "__main__":
         meshes.append(mesh)
 
     # Call the plotting function with the list of meshes
-    plotter.plot_trajectory_with_pos_and_tube(
+    plotter.add_trajectory_with_pos_and_tube(
+        ax,
         start_point,
         end_point,
         df,
         subsample_step=subsample_step,
         meshes=meshes,
-        tube_radius=1.0
+        tube_radius=1.0,
+        label="Flyby",
+        color="black"
     )

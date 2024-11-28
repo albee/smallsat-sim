@@ -230,7 +230,7 @@ class GPMPC(BaseMPCController):
         )
 
         # Hardcode noise parameters in likelihood
-        likelihood.noise = torch.tensor([1e-12])
+        likelihood.noise = torch.tensor([1e-10])
         likelihood.raw_task_noises.data = torch.tensor(
             [-30.0, -30.0, -30.0, -30.0, -30.0, -30.0]
         )
@@ -294,7 +294,7 @@ class GPMPC(BaseMPCController):
 
     def _initialize_hyperparameters(self, gp_model, likelihood, mode):
         if mode == "Linear Kernel":
-            gp_model.covar_module.variance = torch.tensor([1e-1])
+            gp_model.covar_module.variance = torch.tensor([1e-2])
         elif mode == "Nonlinear Kernel":
             pass
         else:
@@ -669,17 +669,27 @@ class GPMPC(BaseMPCController):
         if res_output is not None:
             residual, x_train = res_output
             residual = self.residual_scaler(residual)
+      
+            # Add noise to residual
+            # TODO: Move this to somewhere else --> Maybe BaseEnv file
+            if True:
+                residual = residual + np.random.normal(0, 5e-6, residual.shape)
+                if self.has_logger:
+                    self.logger.log(run_id=self.run_id, timestamp=self.timestamp, gp_GT=residual)
+
             start_time = time.perf_counter()
             self.gp_mpc.residual_model.record_datapoint(
                 x_input=x_train, y_target=residual, timestamp=env.data.time
             )
             end_time = time.perf_counter()
+            if self.has_logger:
+                self.logger.log(run_id=self.run_id, timestamp=self.timestamp, record_time=((end_time-start_time)*1000))
 
         # print(f"Total Update GP time: {(end_time-start_time)}")
 
         # Check solver status and re-initialize if needed
         if self.gp_mpc.ocp_solver.status != 0:
-            print(f"Solution optimal, solver status: {self.gp_mpc.ocp_solver.status}")
+            print(f"Solution suboptimal, solver status: {self.gp_mpc.ocp_solver.status}")
             self._initialize_solver(env)
 
         # Set parameters
@@ -704,7 +714,7 @@ class GPMPC(BaseMPCController):
         end_time = time.perf_counter()
 
         if self.has_logger:
-            env.logger.log(run_id=self.run_id, timestamp=self.timestamp, solve_time=((end_time-start_time)*1000))
+            self.logger.log(run_id=self.run_id, timestamp=self.timestamp, solve_time=((end_time-start_time)*1000))
 
         self.X_res, self.U_res = self.gp_mpc.get_solution()
         u0 = self.U_res[0, :]
@@ -810,18 +820,22 @@ class GPMPC(BaseMPCController):
 
         if self.has_logger:
             # Calculate the predicted residual
-            with torch.no_grad(), gpytorch.settings.fast_pred_var():
+            with torch.no_grad():
                 x_star = torch.atleast_2d(
                     self.input_selection(torch.from_numpy(x_train))
                 )
-                observed_pred = self.gp_mpc.residual_model.gp_model(x_star)
-
-            # Scale residual
-            observed_pred = self.residual_scaler(observed_pred)
+                observed_pred = self.gp_mpc.residual_model.gp_model.likelihood(
+                    self.gp_mpc.residual_model.gp_model(x_star))
 
             # Get mean and confidence intervals
             mean = observed_pred.mean
-            lower, upper = observed_pred.confidence_region()
+            stddev = observed_pred.stddev
+
+            # Make sure it's numerically stable
+            stddev[stddev < 1e-5] = torch.max(stddev.max().clone().detach(), torch.tensor(1e-5, dtype=stddev.dtype))
+
+            lower = mean - 2*stddev
+            upper = mean + 2*stddev
 
             try:
                 n_points_GP = self.gp_mpc.residual_model.gp_model.train_inputs[0].shape[
@@ -978,10 +992,6 @@ class GPMPC(BaseMPCController):
 
             attitude_error = calc_attitude_error(q_ref=q_ref, q=obs_gt[3:7])
 
-            # Track solve time
-            # TODO: Where to get this from?
-            solve_time = 0
-
             # Track cost value of current solution
             mpc_cost = self.cost_function(
                 self.gp_mpc.ocp_solver.get(0, "x"),
@@ -1001,7 +1011,6 @@ class GPMPC(BaseMPCController):
                 timestamp=timestamp,
                 tracking_error=tracking_error,
                 attitude_error=attitude_error,
-                solve_time=solve_time,
                 mpc_cost=mpc_cost,
                 u_demanded=self.u_past,  # This is the input commanded my the MPC at the current timestep
                 velocity = velocity

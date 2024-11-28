@@ -77,18 +77,18 @@ def randomize_initial_state() -> tuple[np.ndarray, np.ndarray]:
     # Define random integer
     idx = random.randint(0, 24)
     idx = random.randint(11, 17)
-    #idx = 12
+    idx = 17
 
     pos = positions[idx]
     att = attitudes[idx]
 
-    test = np.random.uniform(-0.5, 0.5, 3)
-    test = np.random.randint(-45, 46, 3)
+    # test = np.random.uniform(-0.5, 0.5, 3)
+    # test = np.random.randint(-45, 46, 3)
 
-    pos += np.random.uniform(-0.5, 0.5, 3)
-    att += np.random.randint(-45, 46, 3)
+    # pos += np.random.uniform(-0.5, 0.5, 3)
+    # att += np.random.randint(-45, 46, 3)
 
-    return pos, att
+    # return pos, att
 
     pos += np.random.uniform(-0.7, 0.7, 3)
     att += np.random.randint(-60, 60, 3)

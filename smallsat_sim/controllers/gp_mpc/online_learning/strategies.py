@@ -180,9 +180,7 @@ class SlidingWindowPlus(OnlineLearningStrategy):
 
         # Convert to tensor
         if not torch.is_tensor(x_input):
-            x_input = to_tensor(arr=x_input, device=self.device)
-            print(timestamp)
-            
+            x_input = to_tensor(arr=x_input, device=self.device)            
 
         if not torch.is_tensor(y_target):
             y_target = to_tensor(arr=y_target, device=self.device)
@@ -215,9 +213,6 @@ class SlidingWindowPlus(OnlineLearningStrategy):
             self.x_input_past = x_input.clone()
 
             return
-        print(gp_model.train_inputs[0].shape[-2])
-
-        # Check if point is different enough to last one
 
         # Check if the point shall be added to the dictionary
         if self._detect_failure(
@@ -228,7 +223,7 @@ class SlidingWindowPlus(OnlineLearningStrategy):
         if True:
             delta = torch.norm(gp_feature_selector(x_input-self.x_input_past), 2)
             if delta < 0.01:
-                print(f"Rejected point due to low delta of {delta}")
+                #print(f"Rejected point due to low delta of {delta}")
                 return gp_model
 
         # Check if GP is already full
@@ -291,20 +286,22 @@ class SlidingWindowPlus(OnlineLearningStrategy):
         # Calculate the expected mean at the location
         with torch.no_grad():
             z_test = torch.atleast_2d(gp_feature_selector(x_test))
-            observed_pred = gp_model(z_test)
+            observed_pred = gp_model.likelihood(gp_model(z_test))
 
             # Extract mean
             mu = observed_pred.mean
-            # print(mu)
 
             # Extract Variance
             stddev = observed_pred.stddev
-
+            # Check for numerical instabilities
+            # stddev must be > likelihood stddev
+            # If an entry is below, set to likelihood stddev
+            stddev[stddev < 1e-5] = torch.max(stddev.max().clone().detach(), torch.tensor(1e-5, dtype=stddev.dtype))
+            
         # Calculate the beta quantity
         beta = self._calc_beta(mu, y_test, stddev)
 
         if np.min(beta) < 0.05 and gp_model.train_inputs[0].shape[0] > 50:
-            print(f"Fault at {timestamp} due to idx {np.argmin(beta)} with value{np.min(beta)}!")
             self.flag_counter += 1
             if self.flag_counter == 5:
                 gp_model.set_train_data(
@@ -312,7 +309,7 @@ class SlidingWindowPlus(OnlineLearningStrategy):
                     y_test,
                     strict=False,
                 )
-                print(f"Reset GP data at time {timestamp}!")
+                #print(f"Reset GP data at time {timestamp}!")
 
                 return True
             else:
@@ -328,11 +325,5 @@ class SlidingWindowPlus(OnlineLearningStrategy):
         standardized_distance = torch.abs(mu - y_test) / stddev
 
         p = 2 * (1-norm.cdf(standardized_distance))
-
-        # Caluclate a mask of what deltas mu - y_test are below 1e-5
-        mask = torch.abs(mu - y_test) < 1e-4
-
-        # Set values to 1 where mask is true
-        p[mask] = 1
-
+        
         return p

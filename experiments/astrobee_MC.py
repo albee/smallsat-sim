@@ -7,10 +7,6 @@ from smallsat_sim.envs.astrobee.cfg.config import randomize_initial_state
 
 import random
 
-random.seed(69)
-random.seed(57)
-random.seed(40)
-
 def randomize_perturbations(env):
     """
     Randomize what perturbations are applied to the system.
@@ -169,8 +165,8 @@ def randomize_perturbations(env):
 args = get_args()
 
 # Number of MC runs
-start_MC = 250
-num_MC = 600
+start_MC = 0
+num_MC = 100
 
 # Create environment
 env = AstrobeeEnv(args=args)
@@ -186,11 +182,7 @@ ctrl = GPMPC(env, planner)
 
 # Simulation loop
 for i in range(start_MC, num_MC):
-    # if i > 0:
-    #     env.env_cfg.sim.max_sim_time = 120
-    # else:
-    #     env.env_cfg.sim.max_sim_time = 2
-        
+
     while env.data.time <= env.env_cfg.sim.max_sim_time:
         sim_time = env.data.time
 

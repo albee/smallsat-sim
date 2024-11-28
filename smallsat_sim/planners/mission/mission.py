@@ -527,7 +527,7 @@ class MissionPlanner(BasePlanner):
         # Visualize the waypoints and corridor in the saved video
         self._visualize_renderer(
             [waypoint.position for waypoint in self.waypoints],
-            size=[0.03, 0, 0],
+            size=[0.04, 0, 0],
         )
 
         return (
@@ -595,7 +595,7 @@ class MissionPlanner(BasePlanner):
         if True:
             self.visualize(
                 [waypoint.position for waypoint in self._intermediate_reference],
-                size=[0.1, 0, 0],
+                size=[0.04, 0, 0],
             )
 
     def _visualize_collision_constraints(self) -> None:
@@ -794,3 +794,332 @@ class MissionPlanner(BasePlanner):
             if not self.is_mpc:
                 sim_img = self.renderer.render().copy()
                 self.frames.append(sim_img)
+
+
+"""
+Cubic splines implementation
+"""
+import numpy as np
+from scipy.interpolate import CubicSpline
+
+class MissionPlannerCubicSpline(MissionPlanner):
+    """
+    Planning module which contains a hardcoded trajectory represented by a cubic spline
+    """
+
+    def __init__(
+        self,
+        env,
+        spacing=1.0,
+    ) -> None:
+
+        # Initialize parameters
+        self.spacing = spacing
+
+        # Load the waypoints
+        self._load_waypoints_CS()
+
+        # Create the trajectory
+        self._create_trajectory_CS()
+
+        # Generate visualization waypoints
+        self.visualization_points = self.get_visualization_points(spacing=0.1)
+
+
+        super().__init__(env)
+
+    def _load_waypoints_CS(self) -> None:
+        """
+        Loads the sparse waypoints that shall be reached
+        """
+        # Define positional references
+        self.positions = [
+            [-3.3, -9, 0],         # Point 1
+            [-3.3, -18, 0],        # Point 2
+            [-1, -20, 5],          # Point 3
+            [16, 0, 23],           # Point 4
+            [16, 0, 0],            # Point 5
+            [16, 0, -23],          # Point 6
+            [16, 0, -26],          # Point 7
+            [7, 0, -26],           # Point 8
+            [7, 0, -4.5],          # Point 9
+            [3, 0, -4.5],          # Point 10
+            [3, 0, -8],            # Point 11
+            [3.6, 16, -8],         # Point 12
+            [3.6, 16, 0],          # Point 13
+            [-2.5, 16, 0],         # Point 14
+            [-1.5, 12, -2],        # Point 15
+            [-2.0, 8, 0],
+            [-2.0, 6.0, 0],        # Point 16 
+            [-4.0, 5.5, 0],        # Point 17
+            [-10, 5, 0],           # Point 18
+            [-18, 10, 0],          # Point 19
+            [-18, 0, 0],           # Point 20
+            [-18, 0, -5],          # Point 21
+            [-8, 0, -5],           # Point 22
+            [-3.3, 0, -3.5],       # Point 23
+            [-3.3, -9, -3.5],      # Point 24
+        ]
+
+        attitudes = [
+            [0, 0, 90],  # Point 1
+            [0, 0, 90],  # Point 2
+            [0, 0, 90],  # Point 3
+            [0, 0, 180],  # Point 4
+            [0, 0, 180],  # Point 5
+            [0, 0, 180],  # Point 6
+            [0, 0, 180],  # Point 7
+            [0, -90, 0],  # Point 8
+            [0, 0, 0],  # Point 9
+            [0, -90, 0],  # Point 10
+            [0, -180, 0],  # Point 11
+            [0, -90, 0],  # Point 12
+            [90, 0, -90],  # Point 13
+            [0, 0, -90],  # Point 14
+            [0, 0, -90],  # Point 15
+            [0, 0, -90],
+            [0, 0, -90],  # Point 16
+            [0, 0, -90],  # Point 17
+            [0, 0, -90],  # Point 18
+            [0, 0, -45],  # Point 19
+            [0, 0, -45],  # Point 20
+            [0, -45, 0],  # Point 21
+            [0, -90, 0],  # Point 22
+            [0, -90, 0],  # Point 23
+            [0, -45, 90],  # Point 24
+        ]
+
+        # Convert attitudes from Euler angles (degrees) to quaternions
+        # Assuming Euler angles are in ZYX order and scalar_first=True
+        self.attitudes = R.from_euler('ZYX', attitudes, degrees=True).as_quat()
+        # Adjust to scalar_first format [w, x, y, z]
+        self.attitudes = self.attitudes[:, [3, 0, 1, 2]]  # Reorder to [w, x, y, z]
+
+    def _create_trajectory_CS(self) -> None:
+        """
+        Creates a continuous trajectory made up of cubic splines interpolating between the waypoints.
+        Interpolates both positions and attitudes.
+        """
+        # Convert waypoints to numpy array
+        waypoints = np.array(self.positions)
+        attitudes = self.attitudes  # Quaternions [w, x, y, z]
+        num_waypoints = len(waypoints)
+        # Initialize lists to hold interpolated points and attitudes
+        interpolated_points = []
+        interpolated_attitudes = []
+        cumulative_lengths = [0.0]  # Initialize cumulative arc lengths
+
+        # Loop over each segment between waypoints, including the last segment back to the first waypoint
+        for i in range(num_waypoints):
+            start_point = waypoints[i]
+            end_point = waypoints[(i + 1) % num_waypoints]  # Wrap around to the first waypoint
+            start_attitude = attitudes[i]
+            end_attitude = attitudes[(i + 1) % num_waypoints]
+
+            # Calculate distance between points
+            segment_length = np.linalg.norm(end_point - start_point)
+
+            # Skip zero-length segments
+            if segment_length == 0:
+                continue
+
+            # Determine number of points needed (at least 1 to include start and end)
+            num_points = max(int(np.floor(segment_length / self.spacing)), 1)
+
+            # Generate linearly spaced interpolation parameters
+            t_values = np.linspace(0, 1, num_points + 1)  # Include start and end
+
+            # Reorder quaternions to [x, y, z, w] format for scipy Rotation
+            start_attitude_xyzw = start_attitude[[1, 2, 3, 0]]  # [x, y, z, w]
+            end_attitude_xyzw = end_attitude[[1, 2, 3, 0]]      # [x, y, z, w]
+
+            # Create rotations for slerp
+            key_times = [0, 1]
+            key_rots = R.from_quat([start_attitude_xyzw, end_attitude_xyzw])
+
+            slerp = Slerp(key_times, key_rots)
+
+            # Interpolate positions and attitudes
+            for t in t_values:
+                # Interpolate position
+                point = (1 - t) * start_point + t * end_point
+                # Avoid adding duplicate points
+                if len(interpolated_points) > 0 and np.allclose(point, interpolated_points[-1]):
+                    continue
+                interpolated_points.append(point)
+                # Interpolate attitude using slerp
+                interp_rot = slerp([t])[0]
+                interp_quat_xyzw = interp_rot.as_quat()
+                # Convert back to [w, x, y, z] format
+                interp_quat_wxyz = interp_quat_xyzw[[3, 0, 1, 2]]
+                interpolated_attitudes.append(interp_quat_wxyz)
+
+                # Update cumulative arc lengths
+                if len(interpolated_points) > 1:
+                    delta_length = np.linalg.norm(interpolated_points[-1] - interpolated_points[-2])
+                    cumulative_lengths.append(cumulative_lengths[-1] + delta_length)
+
+        # Ensure periodicity by checking if the first and last points are the same
+        if not np.allclose(interpolated_points[0], interpolated_points[-1]):
+            # Append the first point and attitude to ensure periodicity
+            interpolated_points.append(interpolated_points[0])
+            interpolated_attitudes.append(interpolated_attitudes[0])
+            # Update cumulative length
+            delta_length = np.linalg.norm(interpolated_points[-1] - interpolated_points[-2])
+            cumulative_lengths.append(cumulative_lengths[-1] + delta_length)
+
+        # Convert to numpy arrays
+        interpolated_points = np.array(interpolated_points)
+        interpolated_attitudes = np.array(interpolated_attitudes)
+        s = np.array(cumulative_lengths)
+
+        # Remove any duplicate s values to ensure s is strictly increasing
+        s_diff = np.diff(s)
+        if not np.all(s_diff > 0):
+            # Find indices where s increases
+            increasing_indices = np.where(s_diff > 0)[0] + 1  # indices where s increases
+            valid_indices = np.concatenate(([0], increasing_indices))
+            s = s[valid_indices]
+            interpolated_points = interpolated_points[valid_indices]
+            interpolated_attitudes = interpolated_attitudes[valid_indices]
+
+        # Store total length for modulo operation
+        self.total_length = s[-1]
+
+        # Fit cubic splines x(s), y(s), z(s)
+        self.x_spline = CubicSpline(s, interpolated_points[:, 0], bc_type='periodic')
+        self.y_spline = CubicSpline(s, interpolated_points[:, 1], bc_type='periodic')
+        self.z_spline = CubicSpline(s, interpolated_points[:, 2], bc_type='periodic')
+
+        # Store the interpolated attitudes and cumulative lengths for attitude interpolation
+        self.interpolated_attitudes = interpolated_attitudes
+        self.s_attitudes = s
+
+    def get_attitude(self, s):
+        """
+        Given an arc length s, return the interpolated quaternion at that point.
+        """
+        # Apply modulo operation to handle wrapping around the trajectory
+        s = s % self.total_length
+
+        # Find the segment index corresponding to s
+        idx = np.searchsorted(self.s_attitudes, s) - 1
+        idx = np.clip(idx, 0, len(self.s_attitudes) - 2)
+
+        # Get the start and end attitudes and their arc lengths
+        s0 = self.s_attitudes[idx]
+        s1 = self.s_attitudes[idx + 1]
+        t = (s - s0) / (s1 - s0) if s1 > s0 else 0.0  # Avoid division by zero
+
+        # Reorder quaternions to [x, y, z, w] format
+        attitude1_xyzw = self.interpolated_attitudes[idx][[1, 2, 3, 0]]
+        attitude2_xyzw = self.interpolated_attitudes[idx + 1][[1, 2, 3, 0]]
+
+        # Create rotations for slerp
+        key_times = [s0, s1]
+        key_rots = R.from_quat([attitude1_xyzw, attitude2_xyzw])
+
+        slerp = Slerp(key_times, key_rots)
+        interp_rot = slerp([s])[0]
+        interp_quat_xyzw = interp_rot.as_quat()
+        # Convert back to [w, x, y, z] format
+        interp_quat_wxyz = interp_quat_xyzw[[3, 0, 1, 2]]
+        return interp_quat_wxyz
+
+
+    def get_spline_parameters(self, s):
+        """
+        Given an arc length s, return the coefficients of the cubic spline segment that contains s.
+        """
+        # Apply modulo operation to handle wrapping around the trajectory
+        s = s % self.total_length
+        # Find the segment index corresponding to s
+        idx = np.searchsorted(self.x_spline.x, s, side='right') - 1
+        idx = np.clip(idx, 0, len(self.x_spline.x) - 2)
+        # Extract coefficients for x, y, z
+        x_coeffs = self.x_spline.c[:, idx]
+        y_coeffs = self.y_spline.c[:, idx]
+        z_coeffs = self.z_spline.c[:, idx]
+        # The spline segment is defined over [s0, s1]
+        s0 = self.x_spline.x[idx]
+        s1 = self.x_spline.x[idx + 1]
+        return {
+            'segment_index': idx,
+            's_range': (s0, s1),
+            'x_coeffs': x_coeffs,
+            'y_coeffs': y_coeffs,
+            'z_coeffs': z_coeffs,
+        }
+
+    def get_visualization_points(self, spacing=0.1) -> list[IntermediateWaypoint]:
+        """
+        Generates IntermediateWaypoint objects along the trajectory at specified intervals for visualization purposes.
+        Returns a list of IntermediateWaypoint objects.
+        """
+        # Total arc length
+        total_length = self.total_length
+        # Number of samples, ensure we include the last point
+        num_samples = int(np.ceil(total_length / spacing)) + 1
+        # Generate arc lengths at specified spacing
+        s_values = np.linspace(0, total_length, num_samples)
+
+        # Evaluate spline functions at these arc lengths
+        x_vals = self.x_spline(s_values)
+        y_vals = self.y_spline(s_values)
+        z_vals = self.z_spline(s_values)
+
+        # Initialize list of IntermediateWaypoint objects
+        waypoints = []
+
+        # Interpolate attitudes at these arc lengths
+        attitudes = []
+        for s in s_values:
+            quat = self.get_attitude(s)
+            attitudes.append(quat)
+
+        # Create IntermediateWaypoint objects
+        velocity = np.array([0.0, 0.0, 0.0])  # Zero velocity
+
+        for x, y, z, quat in zip(x_vals, y_vals, z_vals, attitudes):
+            position = np.array([x, y, z])
+            attitude = quat  # Quaternion [w, x, y, z]
+            waypoint = IntermediateWaypoint(position, attitude, velocity)
+            waypoints.append(waypoint)
+
+        return waypoints
+
+    def closest_point_on_trajectory_CS(self, point):
+        """
+        Given a 3D point, find the closest point on the spline and the corresponding arc length.
+        Returns:
+            closest_point (np.ndarray): The closest point on the spline.
+            s_closest (float): The arc length corresponding to the closest point.
+        """
+        from scipy.optimize import minimize_scalar
+
+        # Objective function: squared distance between spline point at s and the given point
+        def objective(s):
+            s = s % self.total_length  # Wrap around the total length
+            x = self.x_spline(s)
+            y = self.y_spline(s)
+            z = self.z_spline(s)
+            spline_point = np.array([x, y, z])
+            return np.sum((spline_point - point) ** 2)
+
+        # Perform the minimization over s in the interval [0, total_length]
+        res = minimize_scalar(
+            objective,
+            bounds=(0, self.total_length),
+            method='bounded',
+            options={'xatol': 1e-8}
+        )
+
+        if res.success:
+            s_closest = res.x % self.total_length
+            x_closest = self.x_spline(s_closest)
+            y_closest = self.y_spline(s_closest)
+            z_closest = self.z_spline(s_closest)
+            closest_point = np.array([x_closest, y_closest, z_closest])
+            return closest_point, s_closest
+        else:
+            raise RuntimeError("Optimization failed to find the closest point on the trajectory.")

@@ -15,8 +15,10 @@ args = get_args()
 # Create environment
 env = AstrobeeEnv(args=args)
 
-env.perturbations.perturbations[0].stuck_off_thruster(0, 46.0)
-env.perturbations.perturbations[0].stuck_off_thruster(2, 46.0)
+# Define perturbations
+env.perturbations.perturbations[0].stuck_off_thruster(0, 55.0)
+env.perturbations.perturbations[0].stuck_off_thruster(2, 55.0)
+env.perturbations.perturbations[2].register_perturbation(1, 80, 0.0)
 
 # Create planner
 planner = MissionPlanner(env)
