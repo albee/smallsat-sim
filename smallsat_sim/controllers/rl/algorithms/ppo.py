@@ -4,7 +4,6 @@ import jax.numpy as jnp
 from flax import nnx
 import optax
 from functools import partial
-from typing import Optional
 
 from smallsat_sim.envs.base_env import BaseEnv
 from smallsat_sim.controllers.rl.algorithms.base_agent import BaseAgent
@@ -40,7 +39,7 @@ class PPO(BaseAgent):
             self.epochs * self.critic_training_epochs * self.num_minibatches
         )
 
-        # Initialize an ADAM optimizers for the actor and critic networks with linear lr decay
+        # Initialize an ADAM optimizers for the actor, critic and encoder networks with linear lr decay
         self.actor_optimizer = nnx.Optimizer(
             self.actor,
             optax.adam(
@@ -70,30 +69,35 @@ class PPO(BaseAgent):
         self,
         actor_model,
         tdres: jnp.ndarray,
-        obs: jnp.ndarray,
+        obs_extrinsics: jnp.ndarray,
         actions: jnp.ndarray,
         logp: jnp.ndarray,
         clip_ratio: float,
     ):
-        _, logp_a = actor_model.forward(obs, actions)
+        _, logp_a = actor_model.forward(obs_extrinsics, actions)
         ratio = jnp.exp(logp_a - logp)
         clip_adv = jax.lax.clamp(1 - clip_ratio, ratio, 1 + clip_ratio)
         return -jax.lax.min(ratio * tdres, clip_adv).mean()
 
     # Define the critic loss
     @partial(nnx.jit, static_argnums=(0,))
-    def jit_critic_loss_fn(self, critic_model, returns: jnp.ndarray, obs: jnp.ndarray):
-        values = critic_model.forward(obs)
+    def jit_critic_loss_fn(
+        self,
+        critic_model,
+        returns: jnp.ndarray,
+        obs_extrinsics: jnp.ndarray,
+    ):
+        values = critic_model.forward(obs_extrinsics)
         return jnp.mean((values - returns) ** 2)  # MSE loss
 
     def update_policy_gradient(
         self,
         key,
-        obs: jnp.ndarray,
+        obs_extrinsics: jnp.ndarray,
         actions: jnp.ndarray,
         tdres: jnp.ndarray,
         logp: jnp.ndarray,
-        minibatch: Optional[bool] = True,
+        minibatch: bool = True,
     ) -> jnp.ndarray:
         """
         Update the policy gradient.
@@ -104,7 +108,7 @@ class PPO(BaseAgent):
 
         # Compute the actor loss
         for i in range(self.actor_training_epochs):
-            shuffled_obs = jax.random.permutation(keys[i], obs)
+            shuffled_obs_extrinsics = jax.random.permutation(keys[i], obs_extrinsics)
             shuffled_actions = jax.random.permutation(keys[i], actions)
             shuffled_tdres = jax.random.permutation(keys[i], tdres)
             shuffled_logp = jax.random.permutation(keys[i], logp)
@@ -116,7 +120,7 @@ class PPO(BaseAgent):
                     actor_loss, grads = nnx.value_and_grad(self.jit_actor_loss_fn)(
                         self.actor,
                         shuffled_tdres[start:end],
-                        shuffled_obs[start:end],
+                        shuffled_obs_extrinsics[start:end],
                         shuffled_actions[start:end],
                         shuffled_logp[start:end],
                         self.clip_ratio,
@@ -124,7 +128,7 @@ class PPO(BaseAgent):
                     print(f"{actor_loss = }")
 
                     _, logp_a = self.actor.forward(
-                        shuffled_obs[start:end], shuffled_actions[start:end]
+                        shuffled_obs_extrinsics[start:end], shuffled_actions[start:end]
                     )
 
                     kl = (shuffled_logp[start:end] - logp_a).mean()
@@ -139,14 +143,14 @@ class PPO(BaseAgent):
                 actor_loss, grads = nnx.value_and_grad(self.jit_actor_loss_fn)(
                     self.actor,
                     tdres,
-                    obs,
+                    obs_extrinsics,
                     actions,
                     logp,
                     self.clip_ratio,
                 )
                 print(f"{actor_loss = }")
 
-                _, logp_a = self.actor.forward(obs, actions)
+                _, logp_a = self.actor.forward(obs_extrinsics, actions)
 
                 kl = (logp - logp_a).mean()
                 if kl > 1.5 * self.target_kl:
@@ -161,9 +165,9 @@ class PPO(BaseAgent):
     def update_value_function(
         self,
         key,
-        obs: jnp.ndarray,
+        obs_extrinsics: jnp.ndarray,
         returns: jnp.ndarray,
-        minibatch: Optional[bool] = True,
+        minibatch: bool = True,
     ) -> jnp.ndarray:
         """
         Update the value function.
@@ -185,7 +189,7 @@ class PPO(BaseAgent):
 
                     # Compute the critic loss
                     critic_loss, grads = nnx.value_and_grad(self.jit_critic_loss_fn)(
-                        self.critic, returns[mb_indices], obs[mb_indices]
+                        self.critic, returns[mb_indices], obs_extrinsics[mb_indices]
                     )
                     print(f"{critic_loss = }")
 
@@ -195,7 +199,7 @@ class PPO(BaseAgent):
             else:
                 # Compute the critic loss
                 critic_loss, grads = nnx.value_and_grad(self.jit_critic_loss_fn)(
-                    self.critic, returns, obs
+                    self.critic, returns, obs_extrinsics
                 )
                 print(f"{critic_loss = }")
 

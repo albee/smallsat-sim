@@ -36,6 +36,9 @@ runner.pretrain()
 # Learning
 runner.learn()
 
+# Adaptation module training
+runner.train_adaptation_module()
+
 # Evaluation
 runner.evaluate()
 

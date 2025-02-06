@@ -238,7 +238,7 @@ def mse_loss_fn(model, X: jnp.ndarray, y: jnp.ndarray, key) -> jnp.ndarray:
     """
     Mean squared error loss function.
     """
-    y_pred_dist, _ = model.forward(X)
+    y_pred_dist, _ = model(X)
     y_pred = y_pred_dist.sample(seed=key)
 
     return jnp.mean((y_pred - y) ** 2)
@@ -259,10 +259,9 @@ def normalize_obs(obs: jnp.ndarray, ep_obs: jnp.ndarray, step: int) -> jnp.ndarr
     """
     Normalize the observations along a trajectory.
     """
-    return obs
-    # return (obs - ep_obs[:, : step + 1, :].mean(axis=1)) / (
-    #     ep_obs[:, : step + 1, :].std(axis=1) + 1e-8
-    # )
+    return (obs - ep_obs[:, : step + 1, :].mean(axis=1)) / (
+        ep_obs[:, : step + 1, :].std(axis=1) + 1e-8
+    )
 
 
 def scale_rews(rews: jnp.ndarray, ep_rets: jnp.ndarray, step: int) -> jnp.ndarray:

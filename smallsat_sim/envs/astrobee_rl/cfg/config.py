@@ -70,6 +70,9 @@ class EnvConfig(BaseEnvConfig):
                 actor_lr = 5e-4
                 critic_lr = 5e-3
 
+            # Hyperparams for the adaptation module
+            am_lr = 1e-3
+
             # Hyperparams for the evaluation loop
             episode_len = 700
             n_evals = 10

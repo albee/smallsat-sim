@@ -15,7 +15,7 @@ class BaseAgent(BaseController):
     Base implementation for actor-critic agents.
     """
 
-    def __init__(self, env, planner, activation=nnx.tanh) -> None:
+    def __init__(self, env, planner, activation=nnx.tanh, adaptive=False) -> None:
         self.ctrl_cfg = env.env_cfg.control.RL
         super().__init__(env, planner, self.ctrl_cfg)
 
@@ -25,28 +25,30 @@ class BaseAgent(BaseController):
         self.num_layers = 2
         self.layer_width = 64
         hidden_sizes = [self.layer_width] * self.num_layers
-        self.actor = Actor(env.obs_dim, env.act_dim, hidden_sizes, activation)
-        self.critic = Critic(env.obs_dim, hidden_sizes, activation)
+        self.actor = Actor(
+            env.obs_dim, env.act_dim, hidden_sizes, activation, env.ext_dim
+        )
+        self.critic = Critic(env.obs_dim, hidden_sizes, activation, env.ext_dim)
 
     def act(
-        self, states: jnp.ndarray, epoch: Optional[int] = None
+        self, states_ext: jnp.ndarray, epoch: Optional[int] = None
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """
         Return actions, value functions, and log-likelihood of chosen actions for given states.
         """
-        pi, _ = self.actor.forward(states)
+        pi, _ = self.actor.forward(states_ext)
         key = jax.random.PRNGKey(42)
         actions = pi.sample(seed=key)
-        values = self.critic.forward(states)
+        values = self.critic.forward(states_ext)
         logp = self.actor._log_prob_from_dist(pi, actions)
 
         return actions, values, logp
 
-    def get_control_input(self, obs: jnp.ndarray) -> jnp.ndarray:
+    def get_control_input(self, obs_ext: jnp.ndarray) -> jnp.ndarray:
         """
         Calculate the control input based on current observations for each environment.
         """
-        return self.actor.mu_net(obs)
+        return self.actor.mu_net(obs_ext)
 
     @abstractmethod
     def update_policy_gradient(
@@ -56,7 +58,7 @@ class BaseAgent(BaseController):
         actions: jnp.ndarray,
         tdres: jnp.ndarray,
         logp: jnp.ndarray,
-        minibatch: Optional[bool] = True,
+        minibatch: bool = True,
     ) -> jnp.ndarray:
         """
         Update the policy gradient. Return the actor loss.
@@ -69,7 +71,7 @@ class BaseAgent(BaseController):
         key,
         obs: jnp.ndarray,
         returns: jnp.ndarray,
-        minibatch: Optional[bool] = True,
+        minibatch: bool = True,
     ) -> jnp.ndarray:
         """
         Update the value function. Return the critic loss.

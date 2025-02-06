@@ -13,10 +13,10 @@ def identity(input: jnp.ndarray) -> jnp.ndarray:
 def mlp(
     sizes,
     activation,
-    output_activation=nnx.relu,
+    output_activation=None,
     std=jnp.sqrt(2),
     last_layer_std=jnp.sqrt(2),
-):  # ReLU because the control inputs must be positive
+):
     """
     Basic multilayer perceptron architecture.
     """
@@ -25,7 +25,10 @@ def mlp(
 
     for i in range(len(sizes) - 1):
         if i >= len(sizes) - 2:
-            activation_function = output_activation
+            if output_activation is None:
+                activation_function = identity
+            else:
+                activation_function = output_activation
             current_std = last_layer_std
         else:
             activation_function = activation

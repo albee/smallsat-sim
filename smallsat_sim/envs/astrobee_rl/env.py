@@ -29,7 +29,7 @@ class AstrobeeEnvVectorized(VecEnv):
             ]
         )
 
-        self.perturbations.perturbations[2].register_perturbation()
+        # self.perturbations.perturbations[2].register_perturbation()
 
         # Instantiate disturbances
         self.disturbances = DisturbanceList([ConstantForceDisturbance(self.env_cfg)])

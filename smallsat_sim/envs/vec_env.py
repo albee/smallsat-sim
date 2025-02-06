@@ -32,6 +32,7 @@ class VecEnv(BaseEnv):
         # Observation and action spaces
         self.obs_dim = 6
         self.act_dim = 8
+        self.ext_dim = self.act_dim
 
         # Initial position and velocity
         self.init_qpos = self.mjx_batch.qpos
@@ -89,9 +90,9 @@ class VecEnv(BaseEnv):
         squared_attitude_dev = states[:, 2] ** 2
         squared_vel = states[:, 3] ** 2 + states[:, 4] ** 2
         squared_angvel = states[:, 5] ** 2
-        control_effort = jnp.sum(actions ** 2)
+        control_effort = jnp.sum(actions**2)
 
-        # Curriculum-based training # TODO: tune weights
+        # Curriculum-based training
         if (
             iter is not None and iter < 25
         ):  # Assumption: train for more than this many epochs

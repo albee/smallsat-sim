@@ -9,15 +9,23 @@ class Critic(nnx.Module):
     The network used by the value function.
     """
 
-    def __init__(self, obs_dim: int, hidden_sizes: int, activation) -> None:
+    def __init__(
+        self,
+        obs_dim: int,
+        hidden_sizes: int,
+        activation,
+        ext_dim: int = 0,
+    ) -> None:
         super().__init__()
         self.obs_dim = obs_dim
         self.v_net = mlp(
-            [obs_dim] + list(hidden_sizes) + [1], activation, last_layer_std=1.0
+            [obs_dim + ext_dim] + list(hidden_sizes) + [1],
+            activation,
+            last_layer_std=1.0,
         )
 
-    def forward(self, obs: jnp.ndarray):
+    def forward(self, obs_extrinsics: jnp.ndarray):
         """
         Return the value estimates for given observations.
         """
-        return jnp.squeeze(self.v_net(obs), -1)
+        return jnp.squeeze(self.v_net(obs_extrinsics), -1)

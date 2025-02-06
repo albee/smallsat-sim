@@ -5,7 +5,6 @@ from smallsat_sim.envs.perturbations import (
     PerturbationList,
     StuckOffThrusters,
     StuckOnThrusters,
-    SamplePerturbation,
 )
 from smallsat_sim.envs.disturbances import DisturbanceList, ConstantForceDisturbance
 
@@ -23,7 +22,6 @@ class AstrobeeEnv(BaseEnv):
             [
                 StuckOffThrusters(self.env_cfg, self.model_cfg),
                 StuckOnThrusters(self.env_cfg, self.model_cfg),
-                SamplePerturbation(self.env_cfg, self.model_cfg, 10.0),
             ]
         )
 

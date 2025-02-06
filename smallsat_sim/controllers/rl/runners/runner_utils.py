@@ -10,6 +10,7 @@ def save_training_data(data_path: str, data_filename: str, data: dict) -> None:
         pickle.dump(data, file)
     print(f"Training data saved to {data_filename}")
 
+
 def save_trained_modules(agent, ckpt_dir: str, ckpt_filename: str) -> None:
     """
     Save the actor and critic network params.
@@ -22,6 +23,19 @@ def save_trained_modules(agent, ckpt_dir: str, ckpt_filename: str) -> None:
         pickle.dump(training_state, file)
     print(f"Checkpoint saved to {ckpt_filename}")
 
+
+def save_adaptation_module(am, ckpt_dir: str, ckpt_filename: str) -> None:
+    """
+    Save the actor and critic network params.
+    """
+    training_state = {
+        "am_model": nnx.state(am),
+    }
+    with open(ckpt_dir + ckpt_filename, "wb") as file:
+        pickle.dump(training_state, file)
+    print(f"Checkpoint saved to {ckpt_filename}")
+
+
 def load_training_data(data_path: str, data_filename: str):
     """
     Load the training data.
@@ -31,6 +45,7 @@ def load_training_data(data_path: str, data_filename: str):
     print(f"Checkpoint loaded from {data_filename}")
 
     return data
+
 
 def load_trained_modules(ckpt_dir: str, ckpt_filename: str):
     """

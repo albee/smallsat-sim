@@ -3,7 +3,6 @@ import jax.numpy as jnp
 from flax import nnx
 import optax
 from functools import partial
-from typing import Optional
 
 from smallsat_sim.envs.base_env import BaseEnv
 from smallsat_sim.controllers.rl.algorithms.base_agent import BaseAgent
@@ -49,7 +48,7 @@ class VPG(BaseAgent):
         actions: jnp.ndarray,
         tdres: jnp.ndarray,
         logp: jnp.ndarray,
-        minibatch: Optional[bool] = True,
+        minibatch: bool = True,
     ) -> jnp.ndarray:
         """
         Update the policy gradient.
@@ -71,7 +70,7 @@ class VPG(BaseAgent):
         key,
         obs: jnp.ndarray,
         returns: jnp.ndarray,
-        minibatch: Optional[bool] = True,
+        minibatch: bool = True,
     ) -> jnp.ndarray:
         """
         Update the value function.
