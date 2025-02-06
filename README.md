@@ -93,7 +93,7 @@ docker compose build x86_gpu  # Or x86_cpu depending on the platform
 
 To run an experiment on the resulting Docker container, run:
 ```
-docker compose up x86_gpu /path/to/experiment --headless
+docker compose run x86_gpu /path/to/experiment --headless
 ```
 The Docker container is only compatible with headless mode for now.
 
