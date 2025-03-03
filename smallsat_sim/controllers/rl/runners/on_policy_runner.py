@@ -229,7 +229,7 @@ class OnPolicyRunner(object):
                     jnp.concatenate([states, ext], axis=1), epoch
                 )  # Use un-normalized states
 
-                r, terminal = self.agent.env.transition(a, states, epoch)
+                r, terminal = self.env.transition(a, states, epoch)
                 ep_returns = ep_returns.at[:, t].set(
                     self.gamma * ep_returns[:, t - 1] + r
                 )
@@ -347,9 +347,9 @@ class OnPolicyRunner(object):
             # Save the trained actor and critic network weights
             save_trained_modules(self.agent, self.ckpt_dir, "training_state.pkl")
 
-    def train_adaptation_module(self) -> None:
+    def train_adaptation_module_pretraining_data(self) -> None:
         """
-        Train adaptation module to predict extrinsics from the history of states and actions.
+        Train adaptation module to predict extrinsics from the history of states and actions from pretraining data.
         """
         file_path = os.path.join(self.ckpt_dir, "adapt_module_state.pkl")
         if os.path.isfile(file_path):
@@ -408,7 +408,172 @@ class OnPolicyRunner(object):
         # Save the adaptation module weights
         save_adaptation_module(self.am, self.ckpt_dir, "adapt_module_state.pkl")
 
-        # TODO: train with on-policy data as well (see RMA III. B.)
+    def train_adaptation_module_on_policy(self) -> None:
+        """
+        Train adaptation module to predict extrinsics from the history of states and actions with
+        on-policy data (RMA approach).
+        """
+        file_path = os.path.join(self.ckpt_dir, "adapt_module_state.pkl")
+        if os.path.isfile(file_path):
+            return
+
+        # Check if trained actor and critic modules are available and load them
+        file_path = os.path.join(self.ckpt_dir, "training_state.pkl")
+        if os.path.isfile(file_path):
+            restored_state = load_trained_modules(self.ckpt_dir, "training_state.pkl")
+            nnx.update(self.agent.actor.mu_net, restored_state["actor_model"].mu_net)
+            nnx.update(self.agent.critic.v_net, restored_state["critic_model"].v_net)
+        else:
+            raise Exception(
+                "The base policy must be trained before the adaptation module."
+            )
+
+        # Set up buffer
+        buffer = ReplayBuffer(
+            self.env.num_envs,
+            self.env.obs_dim,
+            self.env.act_dim,
+            self.env.ext_dim,
+            self.steps_per_epoch,
+            self.gamma,
+            self.lam,
+        )
+
+        # Initialize the environment
+        self.env.reset()
+        states, ep_ret, ep_len = (
+            self.env.get_states(self.reference_point),
+            jnp.zeros(self.env.num_envs),
+            0,
+        )
+        states_normalized = states
+
+        state_action_history = jnp.zeros(
+            (self.env.num_envs, 50, self.env.obs_dim + self.env.act_dim)
+        )  # No history in the beginning
+        ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
+
+        # Create PRNG keys
+        key = jax.random.PRNGKey(42)
+
+        # Main training loop
+        for epoch in range(self.epochs):
+            # ep_returns = jnp.zeros((self.env.num_envs, self.steps_per_epoch))
+            ep_obs = jnp.zeros(
+                (self.env.num_envs, self.steps_per_epoch, self.env.obs_dim)
+            )
+            for t in range(self.steps_per_epoch):
+                a = self.agent.get_control_input(
+                    jnp.concatenate([states, ext], axis=1)
+                )  # Use un-normalized states
+
+                _, terminal = self.env.transition(a, states, epoch)
+                ep_len += 1
+
+                # Log transition
+                placeholder = jnp.zeros((self.steps_per_epoch, self.env.num_envs))
+                buffer.store(
+                    states, a, placeholder, placeholder, placeholder, ext
+                )  # Use un-normalized states
+
+                # Update state
+                states = self.env.get_states(self.reference_point)
+                ep_obs = ep_obs.at[:, t, :].set(states)
+                states_normalized = normalize_obs(states, ep_obs, t)
+
+                state_action = jnp.expand_dims(
+                    jnp.concatenate([states, a], axis=1), axis=1
+                )
+                state_action_history = jnp.concatenate(
+                    [state_action_history[:, 1:, :], state_action], axis=1
+                )
+
+                ext = self.adaptation_module(state_action_history)
+
+                # Check if a timeout is appropriate
+                timeout = ep_len == self.max_ep_len
+                epoch_ended = t == self.steps_per_epoch - 1
+
+                # N. B.: could also have a different ep_len for each env and consider timeout and terminal conditions
+                # for each env individually
+                if terminal.all() or timeout or epoch_ended:
+                    self.env.reset()
+                    states, ep_ret, ep_len = (
+                        self.env.get_states(self.reference_point),
+                        jnp.zeros(self.env.num_envs),
+                        0,
+                    )
+                    states_normalized = states
+
+                    ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
+
+            # Get the data from the training loop and save it
+            data = buffer.get()
+            save_training_data(self.ckpt_dir, "training_data.pkl", data)
+
+            obs = data["obs"].reshape(-1, self.env.obs_dim)
+            act = data["act"].reshape(-1, self.env.act_dim)
+            extrinsics = data["extrinsics"].reshape(-1, self.env.ext_dim)
+
+            state_action_data = jnp.concatenate([obs, act], axis=1)
+
+            key = jax.random.PRNGKey(42)
+            num_epochs = 100
+
+            # Optimizer
+            am_lr = self.env.env_cfg.control.RL.am_lr
+            self.am_optimizer = nnx.Optimizer(
+                self.am,
+                optax.adam(
+                    learning_rate=am_lr,
+                    eps=1e-5,
+                ),
+            )
+
+            # Split into training and validation sets
+            X_train, y_train, X_val, y_val = train_val_split(
+                state_action_data, extrinsics
+            )
+
+            # Training loop
+            for epoch in range(num_epochs):
+                # Compute the loss
+                am_train_loss, grads = nnx.value_and_grad(mse_loss_fn)(
+                    self.am,
+                    X_train,
+                    y_train,
+                    key,
+                )
+                print(f"{am_train_loss = }")
+                self.am_optimizer.update(grads)
+
+                # Periodically evaluate on the validation set (e.g., every 10 epochs)
+                if epoch % 10 == 0:
+                    am_val_loss = mse_loss_fn(self.am, X_val, y_val, key)
+                    print(
+                        f"Epoch {epoch}: Train Loss = {am_train_loss:.4f}, Val Loss = {am_val_loss:.4f}"
+                    )
+
+            # Monitor key RL metrics during training using Weights & Biases
+            if self.env.use_wandb:
+                wandb.log(
+                    {
+                        "am_train_loss": am_train_loss,
+                        "am_val_loss": am_val_loss,
+                    }
+                )
+
+            # Log key RL metrics
+            if self.agent.has_logger:
+                self.env.logger.log(
+                    run_id=self.env.run_id,
+                    timestamp=float(self.env.mjx_batch.time[0]),
+                    am_train_loss=am_train_loss,
+                    am_val_loss=am_val_loss,
+                )
+
+            # Save the adaptation module weights
+            save_adaptation_module(self.am, self.ckpt_dir, "adapt_module_state.pkl")
 
     def evaluate(self, phase: int = 2) -> None:
         """
@@ -445,12 +610,7 @@ class OnPolicyRunner(object):
             state_action_history = jnp.zeros(
                 (self.env.num_envs, 50, self.env.obs_dim + self.env.act_dim)
             )  # No history in the beginning
-            if phase == 1:
-                ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
-            elif phase == 2:
-                ext = self.adaptation_module(state_action_history)
-            else:
-                raise Exception("There only exist two training phases.")
+            ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
 
             ep_ret = jnp.zeros(self.env.num_envs)
             ep_returns = jnp.zeros((self.env.num_envs, self.episode_len))
@@ -464,9 +624,11 @@ class OnPolicyRunner(object):
                 ep_obs = ep_obs.at[:, ep, :].set(states)
                 states_normalized = normalize_obs(states, ep_obs, ep)
 
-                state_action = jnp.concatenate([states, actions])
+                state_action = jnp.expand_dims(
+                    jnp.concatenate([states, actions], axis=1), axis=1
+                )
                 state_action_history = jnp.concatenate(
-                    [state_action_history[:, 1:, :], jnp.array([state_action])]
+                    [state_action_history[:, 1:, :], state_action], axis=1
                 )
 
                 if phase == 1:
@@ -542,7 +704,7 @@ class OnPolicyRunner(object):
             ctrl_input = self.pd_ctrl.get_control_input(self.env)
             a = jnp.asarray(ctrl_input)
 
-            r, terminal = self.agent.env.transition(a, states)
+            r, terminal = self.env.transition(a, states)
             ep_returns = ep_returns.at[:, t].set(self.gamma * ep_returns[:, t - 1] + r)
             r_scaled = scale_rews(r, ep_returns, t)
             ep_ret += r_scaled

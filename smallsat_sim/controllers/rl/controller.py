@@ -66,7 +66,7 @@ class RLController(object):
         state_action_history = jnp.zeros(
             (self.env.num_envs, 50, self.env.obs_dim + self.env.act_dim)
         )  # No history in the beginning
-        ext = self.adaptation_module(state_action_history)
+        ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
 
         terminal = jnp.zeros(self.env.num_envs, dtype=bool)
 
@@ -84,9 +84,11 @@ class RLController(object):
             last_obs = last_obs.at[:, step, :].set(states)
             states_normalized = normalize_obs(states, last_obs, step)
 
-            state_action = jnp.concatenate([states, actions])
+            state_action = jnp.expand_dims(
+                jnp.concatenate([states, actions], axis=1), axis=1
+            )
             state_action_history = jnp.concatenate(
-                [state_action_history[:, 1:, :], jnp.array([state_action])]
+                [state_action_history[:, 1:, :], state_action], axis=1
             )
 
             ext = self.adaptation_module(state_action_history)
