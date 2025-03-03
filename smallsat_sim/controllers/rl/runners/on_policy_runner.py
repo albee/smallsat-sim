@@ -85,7 +85,10 @@ class OnPolicyRunner(object):
         ret = pretraining_data["ret"].reshape(-1)
         tdres = pretraining_data["tdres"].reshape(-1)
         logp = pretraining_data["logp"].reshape(-1)
-        extrinsics = pretraining_data["extrinsics"].reshape(-1, self.env.ext_dim)
+        if self.env.use_adaptive_approach is True:
+            extrinsics = pretraining_data["extrinsics"].reshape(-1, self.env.ext_dim) 
+        else:
+            extrinsics = jnp.empty((self.steps_per_epoch * self.env.num_envs, 0))
 
         # Pretrain the policy network
         if strategy == "supervised_learning":
@@ -106,7 +109,7 @@ class OnPolicyRunner(object):
             actor_val_losses = []
             num_epochs = 80
             num_batches = 256
-            batch_size = int(obs.shape[0] / num_batches)
+            batch_size = int(jnp.ceil(obs.shape[0] / num_batches))
             num_train_samples = X_train.shape[0]
             num_val_samples = X_val.shape[0]
 
@@ -212,7 +215,10 @@ class OnPolicyRunner(object):
         )
         states_normalized = states
 
-        ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
+        if self.env.use_adaptive_approach is True:
+            ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
+        else:
+            ext = jnp.empty((self.env.num_envs, 0))
 
         # Create PRNG keys
         key = jax.random.PRNGKey(42)
@@ -247,9 +253,12 @@ class OnPolicyRunner(object):
                 ep_obs = ep_obs.at[:, t, :].set(states)
                 states_normalized = normalize_obs(states, ep_obs, t)
 
-                ext = self.env.mjx_batch.ctrl / (
-                    a + 1e-8 * jnp.ones_like(self.env.mjx_batch.ctrl)
-                )
+                if self.env.use_adaptive_approach is True:
+                    ext = self.env.mjx_batch.ctrl / (
+                        a + 1e-8 * jnp.ones_like(self.env.mjx_batch.ctrl)
+                    )
+                else:
+                    ext = jnp.empty((self.env.num_envs, 0))
 
                 # Check if a timeout is appropriate
                 timeout = ep_len == self.max_ep_len
@@ -289,8 +298,11 @@ class OnPolicyRunner(object):
                         0,
                     )
                     states_normalized = states
-
-                    ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
+                    
+                    if self.env.use_adaptive_approach is True:
+                        ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
+                    else:
+                        ext = jnp.empty((self.env.num_envs, 0))
 
             # Get the data from the training loop and save it
             data = buffer.get()
@@ -302,7 +314,10 @@ class OnPolicyRunner(object):
             tdres = data["tdres"].reshape(-1)
             returns = data["ret"].reshape(-1)
             logp = data["logp"].reshape(-1)
-            extrinsics = data["extrinsics"].reshape(-1, self.env.ext_dim)
+            if self.env.use_adaptive_approach is True:
+                extrinsics = data["extrinsics"].reshape(-1, self.env.ext_dim) 
+            else:
+                extrinsics = jnp.empty((self.steps_per_epoch * self.env.num_envs, 0))
 
             # Policy gradient update
             actor_loss = self.agent.update_policy_gradient(
@@ -351,6 +366,9 @@ class OnPolicyRunner(object):
         """
         Train adaptation module to predict extrinsics from the history of states and actions from pretraining data.
         """
+        if self.env.use_adaptive_approach is False:
+            return
+
         file_path = os.path.join(self.ckpt_dir, "adapt_module_state.pkl")
         if os.path.isfile(file_path):
             return
@@ -366,7 +384,10 @@ class OnPolicyRunner(object):
         # Load the data
         obs = pretraining_data["obs"].reshape(-1, self.env.obs_dim)
         act = pretraining_data["act"].reshape(-1, self.env.act_dim)
-        extrinsics = pretraining_data["extrinsics"].reshape(-1, self.env.ext_dim)
+        if self.env.use_adaptive_approach is True:
+            extrinsics = pretraining_data["extrinsics"].reshape(-1, self.env.ext_dim)
+        else:
+            extrinsics = jnp.empty((self.steps_per_epoch * self.env.num_envs, 0))
 
         state_action_data = jnp.concatenate([obs, act], axis=1)
 
@@ -413,6 +434,9 @@ class OnPolicyRunner(object):
         Train adaptation module to predict extrinsics from the history of states and actions with
         on-policy data (RMA approach).
         """
+        if self.env.use_adaptive_approach is False:
+            return
+
         file_path = os.path.join(self.ckpt_dir, "adapt_module_state.pkl")
         if os.path.isfile(file_path):
             return
@@ -451,7 +475,10 @@ class OnPolicyRunner(object):
         state_action_history = jnp.zeros(
             (self.env.num_envs, 50, self.env.obs_dim + self.env.act_dim)
         )  # No history in the beginning
-        ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
+        if self.env.use_adaptive_approach is True:
+            ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
+        else:
+            ext = jnp.empty((self.env.num_envs, 0))
 
         # Create PRNG keys
         key = jax.random.PRNGKey(42)
@@ -487,8 +514,11 @@ class OnPolicyRunner(object):
                 state_action_history = jnp.concatenate(
                     [state_action_history[:, 1:, :], state_action], axis=1
                 )
-
-                ext = self.adaptation_module(state_action_history)
+                
+                if self.env.use_adaptive_approach is True:
+                    ext = self.adaptation_module(state_action_history)
+                else:
+                    ext = jnp.empty((self.env.num_envs, 0))
 
                 # Check if a timeout is appropriate
                 timeout = ep_len == self.max_ep_len
@@ -504,8 +534,11 @@ class OnPolicyRunner(object):
                         0,
                     )
                     states_normalized = states
-
-                    ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
+                    
+                    if self.env.use_adaptive_approach is True:
+                        ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
+                    else:
+                        ext = jnp.empty((self.env.num_envs, 0))
 
             # Get the data from the training loop and save it
             data = buffer.get()
@@ -513,7 +546,10 @@ class OnPolicyRunner(object):
 
             obs = data["obs"].reshape(-1, self.env.obs_dim)
             act = data["act"].reshape(-1, self.env.act_dim)
-            extrinsics = data["extrinsics"].reshape(-1, self.env.ext_dim)
+            if self.env.use_adaptive_approach is True:
+                extrinsics = data["extrinsics"].reshape(-1, self.env.ext_dim) 
+            else:
+                extrinsics = jnp.empty((self.steps_per_epoch * self.env.num_envs, 0))
 
             state_action_data = jnp.concatenate([obs, act], axis=1)
 
@@ -610,7 +646,10 @@ class OnPolicyRunner(object):
             state_action_history = jnp.zeros(
                 (self.env.num_envs, 50, self.env.obs_dim + self.env.act_dim)
             )  # No history in the beginning
-            ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
+            if self.env.use_adaptive_approach is True:
+                ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
+            else:
+                ext = jnp.empty((self.env.num_envs, 0))
 
             ep_ret = jnp.zeros(self.env.num_envs)
             ep_returns = jnp.zeros((self.env.num_envs, self.episode_len))
@@ -631,15 +670,18 @@ class OnPolicyRunner(object):
                     [state_action_history[:, 1:, :], state_action], axis=1
                 )
 
-                if phase == 1:
-                    ext = self.env.mjx_batch.ctrl / (
-                        actions + 1e-8 * jnp.ones_like(self.env.mjx_batch.ctrl)
-                    )
-                elif phase == 2:
-                    ext = self.adaptation_module(state_action_history)
+                if self.env.use_adaptive_approach is True:
+                    if phase == 1:
+                        ext = self.env.mjx_batch.ctrl / (
+                            actions + 1e-8 * jnp.ones_like(self.env.mjx_batch.ctrl)
+                        )
+                    elif phase == 2:
+                        ext = self.adaptation_module(state_action_history)
+                    else:
+                        raise Exception("There only exist two training phases.")
                 else:
-                    raise Exception("There only exist two training phases.")
-
+                    ext = jnp.empty((self.env.num_envs, 0))
+                
                 rewards, terminal = self.env.transition(actions, states)
                 ep_returns = ep_returns.at[:, ep].set(
                     self.gamma * ep_returns[:, ep - 1] + rewards
@@ -691,7 +733,11 @@ class OnPolicyRunner(object):
         )
         states_normalized = states
 
-        ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
+        
+        if self.env.use_adaptive_approach is True:
+            ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
+        else:
+            ext = jnp.empty((self.env.num_envs, 0))
 
         # Main training loop
         ep_returns = jnp.zeros((self.env.num_envs, self.steps_per_epoch))
@@ -718,9 +764,12 @@ class OnPolicyRunner(object):
             ep_obs = ep_obs.at[:, t, :].set(states)
             states_normalized = normalize_obs(states, ep_obs, t)
 
-            ext = self.env.mjx_batch.ctrl / (
-                a + 1e-8 * jnp.ones_like(self.env.mjx_batch.ctrl)
-            )
+            if self.env.use_adaptive_approach is True:
+                ext = self.env.mjx_batch.ctrl / (
+                    a + 1e-8 * jnp.ones_like(self.env.mjx_batch.ctrl)
+                )
+            else:
+                ext = jnp.empty((self.env.num_envs, 0))
 
             # Check if a timeout is appropriate
             timeout = ep_len == self.max_ep_len
@@ -747,7 +796,10 @@ class OnPolicyRunner(object):
                 )
                 states_normalized = states
 
-                ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
+                if self.env.use_adaptive_approach is True:
+                    ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
+                else:
+                    ext = jnp.empty((self.env.num_envs, 0))
 
         # Get the data from the training loop and save it
         data = buffer.get()

@@ -17,7 +17,7 @@ class Actor(nnx.Module):
         act_dim: int,
         hidden_sizes: int,
         activation,
-        ext_dim: int = 0,
+        ext_dim: int,
     ) -> None:
         super().__init__()
         self.obs_dim = obs_dim

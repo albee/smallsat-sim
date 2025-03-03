@@ -27,12 +27,18 @@ class VecEnv(BaseEnv):
         # Number of environments running in parallel
         self.num_envs = self.env_cfg.control.RL.num_envs
 
+        # Flag to decide whether to use the adaptation module
+        self.use_adaptive_approach = self.env_cfg.control.RL.use_adaptive_approach
+
         super().__init__(args)
 
         # Observation and action spaces
         self.obs_dim = 6
         self.act_dim = 8
-        self.ext_dim = self.act_dim
+        if self.use_adaptive_approach is True:
+            self.ext_dim = self.act_dim
+        else:
+            self.ext_dim = 0
 
         # Initial position and velocity
         self.init_qpos = self.mjx_batch.qpos

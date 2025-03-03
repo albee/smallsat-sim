@@ -37,7 +37,7 @@ class AdaptationModule(nnx.Module):
         )
         self.linear_output = nnx.Linear(
             in_features=256,
-            out_features=ext_dim,
+            out_features=max(1, ext_dim),
             rngs=nnx.Rngs(params=0),
         )
 
