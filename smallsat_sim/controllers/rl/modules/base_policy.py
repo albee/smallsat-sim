@@ -1,7 +1,6 @@
 import jax.numpy as jnp
 from flax import nnx
 import distrax
-from typing import Optional
 
 from smallsat_sim.controllers.rl.modules.mlp import mlp
 
@@ -45,9 +44,7 @@ class Actor(nnx.Module):
         """
         return pi.log_prob(actions)
 
-    def forward(
-        self, obs_extrinsics: jnp.ndarray, actions: Optional[jnp.ndarray] = None
-    ):
+    def forward(self, obs_extrinsics: jnp.ndarray, actions: jnp.ndarray | None = None):
         """
         Return action distributions for given observations and the log-likelihood of given actions under those distributions.
         """

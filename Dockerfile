@@ -20,30 +20,30 @@ RUN apt-get update && \
     libsm6 \
     libxext6
 
-# Set the working directory
-WORKDIR /acados
+# # Set the working directory
+# WORKDIR /acados
 
-# Clone the acados repo
-RUN git clone https://github.com/acados/acados.git .
-RUN git submodule update --recursive --init
+# # Clone the acados repo
+# RUN git clone https://github.com/acados/acados.git .
+# RUN git submodule update --recursive --init
 
-# Build acados
-RUN mkdir -p build && \
-    cd build && \
-    cmake -DACADOS_WITH_QPOASES=ON .. -DACADOS_SILENT=ON && \
-    make install -j$(nproc --all)
+# # Build acados
+# RUN mkdir -p build && \
+#     cd build && \
+#     cmake -DACADOS_WITH_QPOASES=ON .. -DACADOS_SILENT=ON && \
+#     make install -j$(nproc --all)
 
-# Add acados_template as a module
-RUN cd /
-RUN pip install -e /acados/interfaces/acados_template
+# # Add acados_template as a module
+# RUN cd /
+# RUN pip install -e /acados/interfaces/acados_template
 
-# Set the relevant acados variables
-ENV ACADOS_SOURCE_DIR="/acados"
-ENV LD_LIBRARY_PATH="/acados/lib:$LD_LIBRARY_PATH"
+# # Set the relevant acados variables
+# ENV ACADOS_SOURCE_DIR="/acados"
+# ENV LD_LIBRARY_PATH="/acados/lib:$LD_LIBRARY_PATH"
 
-# Install the tera renderer (used by acados)
-COPY /.setup/install_tera_renderer.sh /acados/install_tera_renderer.sh
-RUN . /acados/install_tera_renderer.sh
+# # Install the tera renderer (used by acados)
+# COPY /.setup/install_tera_renderer.sh /acados/install_tera_renderer.sh
+# RUN . /acados/install_tera_renderer.sh
 
 # Set the working directory
 WORKDIR /smallsat-sim

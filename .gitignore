@@ -27,3 +27,6 @@ videos/
 *.pkl
 logs/
 wandb/
+
+# wandb API key
+smallsat_sim/utils/wandb_config.py

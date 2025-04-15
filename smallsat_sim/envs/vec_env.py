@@ -1,5 +1,4 @@
 from argparse import Namespace
-from typing import Optional
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -27,6 +26,9 @@ class VecEnv(BaseEnv):
         # Number of environments running in parallel
         self.num_envs = self.env_cfg.control.RL.num_envs
 
+        # Flag to decide whether to used the pretrained actor and critic networks
+        self.use_pretrained = self.env_cfg.control.RL.use_pretrained
+
         # Flag to decide whether to use the adaptation module
         self.use_adaptive_approach = self.env_cfg.control.RL.use_adaptive_approach
 
@@ -43,6 +45,9 @@ class VecEnv(BaseEnv):
         # Initial position and velocity
         self.init_qpos = self.mjx_batch.qpos
         self.init_qvel = self.mjx_batch.qvel
+
+        # Max. offset from the initial position at the start
+        self.max_start_offset = self.env_cfg.Bodies.max_start_offset
 
         # Perform a Just In Time compilation of mjx.step() so that it runs efficiently on GPU
         self.jit_step = jax.jit(jax.vmap(mjx.step, in_axes=(None, 0)))
@@ -66,7 +71,12 @@ class VecEnv(BaseEnv):
                 qpos=jnp.concatenate(
                     [
                         self.mjx_data.qpos[0:2]
-                        + jax.random.uniform(rng, (2,), minval=-2.0, maxval=2.0),
+                        + jax.random.uniform(
+                            rng,
+                            (2,),
+                            minval=-self.max_start_offset,
+                            maxval=self.max_start_offset,
+                        ),
                         self.mjx_data.qpos[2].reshape(-1),
                         self._get_random_quaternion(rng),
                     ]
@@ -81,7 +91,7 @@ class VecEnv(BaseEnv):
         self,
         actions: jnp.ndarray,
         states: jnp.ndarray,
-        iter: Optional[int] = None,
+        iter: int | None = None,
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         """
         Apply input action on the environment. Returns the rewards and wether the terminal state has been reached.
@@ -216,7 +226,7 @@ class VecEnv(BaseEnv):
             (self.num_envs, 3), next_waypoint
         )
 
-        # Compute the attitude error
+        # Compute the orientation/attitude error
         ref_orientation = jnp.full(self.num_envs, 0)
         delta_orientation = rot_angle - ref_orientation
 

@@ -1,10 +1,9 @@
-from abc import ABC, abstractmethod
-from typing import Optional
+from abc import abstractmethod
 import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from smallsat_sim.envs.base_env import BaseEnv
+from smallsat_sim.envs.vec_env import VecEnv
 from smallsat_sim.controllers.base_controller import BaseController
 from smallsat_sim.controllers.rl.modules.base_network import Critic
 from smallsat_sim.controllers.rl.modules.base_policy import Actor
@@ -21,6 +20,7 @@ class BaseAgent(BaseController):
 
         self.ctrl_cfg = env.env_cfg.control.RL
         self.env = env
+        self.planner = planner
 
         self.num_layers = 2
         self.layer_width = 64
@@ -31,7 +31,7 @@ class BaseAgent(BaseController):
         self.critic = Critic(env.obs_dim, hidden_sizes, activation, env.ext_dim)
 
     def act(
-        self, states_ext: jnp.ndarray, epoch: Optional[int] = None
+        self, states_ext: jnp.ndarray, log: bool = False
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """
         Return actions, value functions, and log-likelihood of chosen actions for given states.
@@ -42,13 +42,27 @@ class BaseAgent(BaseController):
         values = self.critic.forward(states_ext)
         logp = self.actor._log_prob_from_dist(pi, actions)
 
+        if log:
+            self._log(
+                self.env.run_id,
+                float(self.env.mjx_batch.time[0]),
+                "policy_training",
+                self.env,
+                actions,
+                states_ext,
+            )
+
         return actions, values, logp
 
-    def get_control_input(self, obs_ext: jnp.ndarray) -> jnp.ndarray:
+    def get_control_input(self, stage: str, obs_extrinsics: jnp.ndarray) -> jnp.ndarray:
         """
         Calculate the control input based on current observations for each environment.
         """
-        return self.actor.mu_net(obs_ext)
+        ctrl_input = self.actor.mu_net(obs_extrinsics)
+        self._log(
+            self.env.run_id, float(self.env.mjx_batch.time[0]), stage, self.env, ctrl_input, obs_extrinsics
+        )
+        return ctrl_input
 
     @abstractmethod
     def update_policy_gradient(
@@ -78,7 +92,7 @@ class BaseAgent(BaseController):
         """
         pass
 
-    def _log(self, run_id: int, timestamp: float, env: BaseEnv) -> None:
+    def _log(self, run_id: int, timestamp: float, env: VecEnv) -> None:
         """
         Logs desired quantities if flag is enabled
         """

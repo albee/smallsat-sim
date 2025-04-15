@@ -27,6 +27,7 @@ from smallsat_sim.utils.helpers_jax import (
     normalize_obs,
     scale_rews,
 )
+from smallsat_sim.utils.wandb_config import setup_wandb
 
 
 class OnPolicyRunner(object):
@@ -46,11 +47,15 @@ class OnPolicyRunner(object):
         # Path to save the checkpoints
         self.ckpt_dir = "smallsat_sim/controllers/rl/checkpoints/"
 
+        # Checkpoint file names
+        self._create_checkpoint_file_names()
+
         # Use Weights and Biases for logging
         if self.env.use_wandb:
-            wandb.login()
+            setup_wandb()
             wandb.init(
                 project="Astrobee-training",
+                name=self.env.run_name,
                 config={
                     "num_envs": self.env.num_envs,
                     "steps_per_epoch": self.steps_per_epoch,
@@ -69,15 +74,17 @@ class OnPolicyRunner(object):
         """
         Pretrain the actor and critic networks.
         """
-        file_path = os.path.join(self.ckpt_dir, "pretraining_state.pkl")
+        file_path = os.path.join(self.ckpt_dir, self.pretraining_data_file_name)
         if os.path.isfile(file_path):
             return
 
-        print("Pretraining modules...")
+        print("Pretraining modules...\n")
 
         # Generate experience if necessary and load the pretraining data
         self._generate_experience()
-        pretraining_data = load_training_data(self.ckpt_dir, "pretraining_data.pkl")
+        pretraining_data = load_training_data(
+            self.ckpt_dir, self.pretraining_data_file_name
+        )
 
         # Load the data
         obs = pretraining_data["obs"].reshape(-1, self.env.obs_dim)
@@ -86,7 +93,7 @@ class OnPolicyRunner(object):
         tdres = pretraining_data["tdres"].reshape(-1)
         logp = pretraining_data["logp"].reshape(-1)
         if self.env.use_adaptive_approach is True:
-            extrinsics = pretraining_data["extrinsics"].reshape(-1, self.env.ext_dim) 
+            extrinsics = pretraining_data["extrinsics"].reshape(-1, self.env.ext_dim)
         else:
             extrinsics = jnp.empty((self.steps_per_epoch * self.env.num_envs, 0))
 
@@ -120,9 +127,9 @@ class OnPolicyRunner(object):
             # Training loop
             for epoch in range(num_epochs):
                 # Shuffle the training data
-                permutation = jax.random.permutation(keys[epoch], num_train_samples)
-                X_train = X_train[permutation]
-                y_train = y_train[permutation]
+                indices = jax.random.permutation(keys[epoch], num_train_samples)
+                X_train = X_train[indices]
+                y_train = y_train[indices]
 
                 for i in range(0, num_train_samples, batch_size):
                     batch_X = X_train[i : i + batch_size]
@@ -135,7 +142,7 @@ class OnPolicyRunner(object):
                     actor_losses.append(actor_loss)
                     actor_optimizer.update(grads)
                 print(
-                    f"Epoch: {epoch+1:2} avg. actor training loss: {sum(actor_losses)/len(actor_losses)}"
+                    f"Epoch: {epoch+1:2} avg. actor training loss: {sum(actor_losses)/len(actor_losses)}\n"
                 )
 
                 for i in range(0, num_val_samples, batch_size):
@@ -148,7 +155,7 @@ class OnPolicyRunner(object):
                     )
                     actor_val_losses.append(actor_val_loss)
                 print(
-                    f"Epoch: {epoch+1:2} avg. actor evaluation loss: {sum(actor_val_losses)/len(actor_val_losses)}"
+                    f"Epoch: {epoch+1:2} avg. actor evaluation loss: {sum(actor_val_losses)/len(actor_val_losses)}\n"
                 )
                 if self.env.use_wandb:
                     wandb.log(
@@ -176,24 +183,31 @@ class OnPolicyRunner(object):
         )
 
         # Save the trained actor and critic network weights
-        save_trained_modules(self.agent, self.ckpt_dir, "pretraining_state.pkl")
+        save_trained_modules(
+            self.agent, self.ckpt_dir, self.pretraining_state_file_name
+        )
 
     def learn(self) -> None:
         """
         Main training loop.
         """
-        print("Training agent...")
+        print("Training agent...\n")
 
-        # Check if pretrained actor and critic modules are available and load them
-        file_path = os.path.join(self.ckpt_dir, "pretraining_state.pkl")
-        if os.path.isfile(file_path):
-            restored_state = load_trained_modules(
-                self.ckpt_dir, "pretraining_state.pkl"
-            )
-            nnx.update(self.agent.actor.mu_net, restored_state["actor_model"].mu_net)
-            nnx.update(self.agent.critic.v_net, restored_state["critic_model"].v_net)
-        else:
-            print("No pretrained modules available.")
+        if self.env.use_pretrained:
+            # Check if pretrained actor and critic modules are available and load them
+            file_path = os.path.join(self.ckpt_dir, self.pretraining_state_file_name)
+            if os.path.isfile(file_path):
+                restored_state = load_trained_modules(
+                    self.ckpt_dir, self.pretraining_state_file_name
+                )
+                nnx.update(
+                    self.agent.actor.mu_net, restored_state["actor_model"].mu_net
+                )
+                nnx.update(
+                    self.agent.critic.v_net, restored_state["critic_model"].v_net
+                )
+            else:
+                print("No pretrained modules available.\n")
 
         # Set up buffer
         buffer = ReplayBuffer(
@@ -232,7 +246,7 @@ class OnPolicyRunner(object):
             )
             for t in range(self.steps_per_epoch):
                 a, v, logp = self.agent.act(
-                    jnp.concatenate([states, ext], axis=1), epoch
+                    jnp.concatenate([states, ext], axis=1), log=True
                 )  # Use un-normalized states
 
                 r, terminal = self.env.transition(a, states, epoch)
@@ -270,7 +284,7 @@ class OnPolicyRunner(object):
                     # If the trajectory didn't reach terminal state, bootstrap value target
                     if epoch_ended:
                         _, v, _ = self.agent.act(
-                            jnp.concatenate([states, ext], axis=1), epoch
+                            jnp.concatenate([states, ext], axis=1)
                         )  # Use un-normalized states
                     else:
                         v = jnp.zeros(self.env.num_envs)
@@ -286,8 +300,10 @@ class OnPolicyRunner(object):
                         )
                     if self.agent.has_logger:
                         self.env.logger.log(
-                            run_id=self.env.run_id,
-                            timestamp=float(self.env.mjx_batch.time[0]),
+                            self.env.run_id,
+                            float(self.env.mjx_batch.time[0]),
+                            run_name=self.env.run_name,
+                            stage="policy_training",
                             mean_scaled_episodic_returns=ep_ret.mean(),
                         )
 
@@ -298,15 +314,17 @@ class OnPolicyRunner(object):
                         0,
                     )
                     states_normalized = states
-                    
+
                     if self.env.use_adaptive_approach is True:
-                        ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
+                        ext = jnp.ones_like(
+                            self.env.mjx_batch.ctrl
+                        )  # No control input yet
                     else:
                         ext = jnp.empty((self.env.num_envs, 0))
 
             # Get the data from the training loop and save it
             data = buffer.get()
-            save_training_data(self.ckpt_dir, "training_data.pkl", data)
+            save_training_data(self.ckpt_dir, self.training_data_file_name, data)
 
             obs = data["obs"].reshape(-1, self.env.obs_dim)
             actions = data["act"].reshape(-1, self.env.act_dim)
@@ -315,23 +333,33 @@ class OnPolicyRunner(object):
             returns = data["ret"].reshape(-1)
             logp = data["logp"].reshape(-1)
             if self.env.use_adaptive_approach is True:
-                extrinsics = data["extrinsics"].reshape(-1, self.env.ext_dim) 
+                extrinsics = data["extrinsics"].reshape(-1, self.env.ext_dim)
             else:
                 extrinsics = jnp.empty((self.steps_per_epoch * self.env.num_envs, 0))
 
-            # Policy gradient update
-            actor_loss = self.agent.update_policy_gradient(
+            # # Policy gradient update
+            # actor_loss = self.agent.update_policy_gradient(
+            #     keys[epoch],
+            #     jnp.concatenate([obs, extrinsics], axis=1),
+            #     actions,
+            #     tdres,
+            #     logp,
+            # )
+
+            # # Value function updates
+            # critic_loss = self.agent.update_value_function(
+            #     keys[epoch],
+            #     jnp.concatenate([obs, extrinsics], axis=1),
+            #     returns,
+            # )
+
+            # Update the policy gradient and the value function
+            actor_loss, critic_loss = self.agent.update_actor_critic_minibatch(
                 keys[epoch],
                 jnp.concatenate([obs, extrinsics], axis=1),
                 actions,
                 tdres,
                 logp,
-            )
-
-            # Value function updates
-            critic_loss = self.agent.update_value_function(
-                keys[epoch],
-                jnp.concatenate([obs, extrinsics], axis=1),
                 returns,
             )
 
@@ -343,28 +371,33 @@ class OnPolicyRunner(object):
                         "actor_loss": actor_loss,
                         "critic_loss": critic_loss,
                         "num_terminal": jnp.sum(terminal),
-                        "avg_log_std": self.agent.actor.log_std.value.mean(),
+                        "mean_log_std": self.agent.actor.log_std.value.mean(),
                     }
                 )
 
             # Log key RL metrics
             if self.agent.has_logger:
                 self.env.logger.log(
-                    run_id=self.env.run_id,
-                    timestamp=float(self.env.mjx_batch.time[0]),
+                    self.env.run_id,
+                    float(self.env.mjx_batch.time[0]),
+                    run_name=self.env.run_name,
+                    stage="policy_training",
                     mean_scaled_rewards=rews.mean(),
                     actor_loss=actor_loss,
                     critic_loss=critic_loss,
                     num_terminal=jnp.sum(terminal),
-                    avg_log_std=self.agent.actor.log_std.value.mean(),
+                    mean_log_std=self.agent.actor.log_std.value.mean(),
                 )
 
             # Save the trained actor and critic network weights
-            save_trained_modules(self.agent, self.ckpt_dir, "training_state.pkl")
+            save_trained_modules(
+                self.agent, self.ckpt_dir, self.training_state_file_name
+            )
 
     def train_adaptation_module_pretraining_data(self) -> None:
         """
         Train adaptation module to predict extrinsics from the history of states and actions from pretraining data.
+        NOTE: use_adaptive_approach must be set to True in the environment config.
         """
         if self.env.use_adaptive_approach is False:
             return
@@ -373,12 +406,12 @@ class OnPolicyRunner(object):
         if os.path.isfile(file_path):
             return
 
-        print("Training adaptation module...")
+        print("Training adaptation module...\n")
 
         # Generate experience if necessary and load the pretraining data
         self._generate_experience()
         pretraining_data = load_training_data(
-            self.ckpt_dir, "pretraining_data.pkl"
+            self.ckpt_dir, self.pretraining_data_file_name
         )  # Can use pretraining data
 
         # Load the data
@@ -416,14 +449,14 @@ class OnPolicyRunner(object):
                 y_train,
                 key,
             )
-            print(f"{train_loss = }")
+            print(f"{train_loss = }\n")
             self.am_optimizer.update(grads)
 
             # Periodically evaluate on the validation set (e.g., every 10 epochs)
             if epoch % 10 == 0:
                 val_loss = mse_loss_fn(self.am, X_val, y_val, key)
                 print(
-                    f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}"
+                    f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}\n"
                 )
 
         # Save the adaptation module weights
@@ -433,6 +466,7 @@ class OnPolicyRunner(object):
         """
         Train adaptation module to predict extrinsics from the history of states and actions with
         on-policy data (RMA approach).
+        NOTE: use_adaptive_approach must be set to True in the environment config.
         """
         if self.env.use_adaptive_approach is False:
             return
@@ -442,9 +476,11 @@ class OnPolicyRunner(object):
             return
 
         # Check if trained actor and critic modules are available and load them
-        file_path = os.path.join(self.ckpt_dir, "training_state.pkl")
+        file_path = os.path.join(self.ckpt_dir, self.training_state_file_name)
         if os.path.isfile(file_path):
-            restored_state = load_trained_modules(self.ckpt_dir, "training_state.pkl")
+            restored_state = load_trained_modules(
+                self.ckpt_dir, self.training_state_file_name
+            )
             nnx.update(self.agent.actor.mu_net, restored_state["actor_model"].mu_net)
             nnx.update(self.agent.critic.v_net, restored_state["critic_model"].v_net)
         else:
@@ -491,7 +527,7 @@ class OnPolicyRunner(object):
             )
             for t in range(self.steps_per_epoch):
                 a = self.agent.get_control_input(
-                    jnp.concatenate([states, ext], axis=1)
+                    "am_training", jnp.concatenate([states, ext], axis=1)
                 )  # Use un-normalized states
 
                 _, terminal = self.env.transition(a, states, epoch)
@@ -514,7 +550,7 @@ class OnPolicyRunner(object):
                 state_action_history = jnp.concatenate(
                     [state_action_history[:, 1:, :], state_action], axis=1
                 )
-                
+
                 if self.env.use_adaptive_approach is True:
                     ext = self.adaptation_module(state_action_history)
                 else:
@@ -534,20 +570,21 @@ class OnPolicyRunner(object):
                         0,
                     )
                     states_normalized = states
-                    
+
                     if self.env.use_adaptive_approach is True:
-                        ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
+                        ext = jnp.ones_like(
+                            self.env.mjx_batch.ctrl
+                        )  # No control input yet
                     else:
                         ext = jnp.empty((self.env.num_envs, 0))
 
-            # Get the data from the training loop and save it
+            # Get the data from the training loop
             data = buffer.get()
-            save_training_data(self.ckpt_dir, "training_data.pkl", data)
 
             obs = data["obs"].reshape(-1, self.env.obs_dim)
             act = data["act"].reshape(-1, self.env.act_dim)
             if self.env.use_adaptive_approach is True:
-                extrinsics = data["extrinsics"].reshape(-1, self.env.ext_dim) 
+                extrinsics = data["extrinsics"].reshape(-1, self.env.ext_dim)
             else:
                 extrinsics = jnp.empty((self.steps_per_epoch * self.env.num_envs, 0))
 
@@ -580,14 +617,14 @@ class OnPolicyRunner(object):
                     y_train,
                     key,
                 )
-                print(f"{am_train_loss = }")
+                print(f"{am_train_loss = }\n")
                 self.am_optimizer.update(grads)
 
                 # Periodically evaluate on the validation set (e.g., every 10 epochs)
                 if epoch % 10 == 0:
                     am_val_loss = mse_loss_fn(self.am, X_val, y_val, key)
                     print(
-                        f"Epoch {epoch}: Train Loss = {am_train_loss:.4f}, Val Loss = {am_val_loss:.4f}"
+                        f"Epoch {epoch}: Train Loss = {am_train_loss:.4f}, Val Loss = {am_val_loss:.4f}\n"
                     )
 
             # Monitor key RL metrics during training using Weights & Biases
@@ -602,8 +639,10 @@ class OnPolicyRunner(object):
             # Log key RL metrics
             if self.agent.has_logger:
                 self.env.logger.log(
-                    run_id=self.env.run_id,
-                    timestamp=float(self.env.mjx_batch.time[0]),
+                    self.env.run_id,
+                    float(self.env.mjx_batch.time[0]),
+                    run_name=self.env.run_name,
+                    stage="am_training",
                     am_train_loss=am_train_loss,
                     am_val_loss=am_val_loss,
                 )
@@ -617,20 +656,23 @@ class OnPolicyRunner(object):
         If phase == 1, evaluate base policy before training the adaptation module.
         If phase == 2, evaluate base policy after training the adaptation module.
         """
-        print("Evaluating agent...")
+        print("Evaluating agent...\n")
 
         # Check if trained actor, critic and adaptation modules are available and load them
-        file_path = os.path.join(self.ckpt_dir, "training_state.pkl")
+        file_path = os.path.join(self.ckpt_dir, self.training_state_file_name)
         if os.path.isfile(file_path):
-            restored_state = load_trained_modules(self.ckpt_dir, "training_state.pkl")
+            restored_state = load_trained_modules(
+                self.ckpt_dir, self.training_state_file_name
+            )
             nnx.update(self.agent.actor.mu_net, restored_state["actor_model"].mu_net)
             nnx.update(self.agent.critic.v_net, restored_state["critic_model"].v_net)
-            adapt_module_state = load_trained_modules(
-                self.ckpt_dir, "adapt_module_state.pkl"
-            )
-            nnx.update(self.am, adapt_module_state["am_model"])
+            if self.env.use_adaptive_approach and phase == 2:
+                adapt_module_state = load_trained_modules(
+                    self.ckpt_dir, "adapt_module_state.pkl"
+                )
+                nnx.update(self.am, adapt_module_state["am_model"])
         else:
-            raise Exception("No training has been done yet.")
+            raise Exception("Not all necessary modules have been trained yet.\n")
 
         # Vectorize adaptation module
         self.adaptation_module = jax.vmap(self.am)
@@ -638,7 +680,7 @@ class OnPolicyRunner(object):
         returns = jnp.zeros((self.env.num_envs, self.n_evals))
 
         for eval in range(self.n_evals):
-            print(f"Testing policy: episode {eval+1}/{self.n_evals}")
+            print(f"Testing policy: episode {eval+1}/{self.n_evals}\n")
             self.env.reset()
             states = self.env.get_states(self.reference_point)
             states_normalized = states
@@ -657,7 +699,7 @@ class OnPolicyRunner(object):
             terminal = jnp.zeros(self.env.num_envs, dtype=bool)
             for ep in range(self.episode_len):
                 actions = self.agent.get_control_input(
-                    jnp.concatenate([states, ext], axis=1)
+                    "evaluation", jnp.concatenate([states, ext], axis=1)
                 )  # Use un-normalized states
                 states = self.env.get_states(self.reference_point)
                 ep_obs = ep_obs.at[:, ep, :].set(states)
@@ -681,7 +723,7 @@ class OnPolicyRunner(object):
                         raise Exception("There only exist two training phases.")
                 else:
                     ext = jnp.empty((self.env.num_envs, 0))
-                
+
                 rewards, terminal = self.env.transition(actions, states)
                 ep_returns = ep_returns.at[:, ep].set(
                     self.gamma * ep_returns[:, ep - 1] + rewards
@@ -690,28 +732,33 @@ class OnPolicyRunner(object):
                 ep_ret += rewards_scaled
                 if terminal.all():  # Abort if all environments terminated
                     break
-                # Log key RL metrics
-                if self.agent.has_logger:
-                    self.env.logger.log(
-                        run_id=self.env.run_id,
-                        timestamp=float(self.env.mjx_batch.time[0]),
-                        states=states,
-                        num_terminal=jnp.sum(terminal),
-                    )
+
             returns = returns.at[:, eval].set(ep_ret)
+
+            # Log key RL metrics
+            if self.agent.has_logger:
+                self.env.logger.log(
+                    self.env.run_id,
+                    float(self.env.mjx_batch.time[0]),
+                    run_name=self.env.run_name,
+                    stage="evaluation",
+                    mean_scaled_episodic_returns=ep_ret.mean(),
+                    num_terminal=jnp.sum(terminal),
+                )
+
         print(
-            f"Average episodic return over all evals and all envs: {jnp.mean(returns)}"
+            f"Average episodic return over all evals and all envs: {jnp.mean(returns)}\n"
         )
 
     def _generate_experience(self) -> None:
         """
         Roll out an episode where the actions are computed from a PD controller that serves as training data.
         """
-        file_path = os.path.join(self.ckpt_dir, "pretraining_data.pkl")
+        file_path = os.path.join(self.ckpt_dir, self.pretraining_data_file_name)
         if os.path.isfile(file_path):
             return
 
-        print("Gather training data using the PD controller...")
+        print("Gather training data using the PD controller...\n")
 
         # Set up buffer
         buffer = ReplayBuffer(
@@ -733,7 +780,6 @@ class OnPolicyRunner(object):
         )
         states_normalized = states
 
-        
         if self.env.use_adaptive_approach is True:
             ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
         else:
@@ -747,8 +793,7 @@ class OnPolicyRunner(object):
                 jnp.concatenate([states, ext], axis=1)
             )  # Use un-normalized states
             self.env.obs = self.env.get_obs()
-            ctrl_input = self.pd_ctrl.get_control_input(self.env)
-            a = jnp.asarray(ctrl_input)
+            a = self.pd_ctrl.get_control_input(self.env)
 
             r, terminal = self.env.transition(a, states)
             ep_returns = ep_returns.at[:, t].set(self.gamma * ep_returns[:, t - 1] + r)
@@ -803,7 +848,7 @@ class OnPolicyRunner(object):
 
         # Get the data from the training loop and save it
         data = buffer.get()
-        save_training_data(self.ckpt_dir, "pretraining_data.pkl", data)
+        save_training_data(self.ckpt_dir, self.pretraining_data_file_name, data)
 
     def _load_rl_hyperparams(self) -> None:
         """
@@ -817,3 +862,26 @@ class OnPolicyRunner(object):
             raise Exception("Agent has not been implemented.")
         self.episode_len = self.env.env_cfg.control.RL.episode_len
         self.n_evals = self.env.env_cfg.control.RL.n_evals
+
+    def _create_checkpoint_file_names(self) -> None:
+        """
+        Create the checkpoint file names for the pretraining and training data and states.
+        """
+        if self.env.use_adaptive_approach:
+            self.pretraining_data_file_name = "pretraining_data_adaptive.pkl"
+            self.pretraining_state_file_name = "pretraining_state_adaptive.pkl"
+            if self.env.use_pretrained:
+                self.training_data_file_name = "training_data_adaptive_pretrained.pkl"
+                self.training_state_file_name = "training_state_adaptive_pretrained.pkl"
+            else:
+                self.training_data_file_name = "training_data_adaptive.pkl"
+                self.training_state_file_name = "training_state_adaptive.pkl"
+        else:
+            self.pretraining_data_file_name = "pretraining_data.pkl"
+            self.pretraining_state_file_name = "pretraining_state.pkl"
+            if self.env.use_pretrained:
+                self.training_data_file_name = "training_data_pretrained.pkl"
+                self.training_state_file_name = "training_state_pretrained.pkl"
+            else:
+                self.training_data_file_name = "training_data.pkl"
+                self.training_state_file_name = "training_state.pkl"

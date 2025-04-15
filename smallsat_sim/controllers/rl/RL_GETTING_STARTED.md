@@ -55,3 +55,7 @@ Both steps work exactly in the same way as for the other controllers.
 The training script provided in `experiments/rl_training/train_astrobee.py` directs the pretraining, training and evaluation of the actor and critic networks. To skip one of these steps, comment the corresponding function call. The necessary data for pretraining is generated with a vectorized PD controller found in `controllers/pd/vectorized_controller.py`.
 
 The agent should be trained on GPU using a CUDA Docker image. It is also possible to log videos and data from experiments, as well as to monitor training runs online using Weights & Biases. More details can be found in `README.md`.
+
+### Benchmarking the RL training methods
+
+To benchmark all different variants of the algorithm against each other, run `train_test_all.sh`. To plot the results, run `experiments/rl_benchmarking/rl_plotter.py` (this only works with `python`, not `mjpython`).
