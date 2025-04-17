@@ -13,7 +13,7 @@ scripts=("experiments/rl_benchmarking/pd_controller.py"
 for file in "${scripts[@]}"; do
   if [ -e "$file" ]; then
     echo "Running $file..."
-    python "$file" --headless --log
+    python "$file" --headless --log --wandb
   else
     echo "File $file not found."
     exit 1
