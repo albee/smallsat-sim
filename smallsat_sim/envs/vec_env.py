@@ -243,6 +243,81 @@ class VecEnv(BaseEnv):
 
         return states
 
+    def apply_random_perturbations(
+        self,
+        key,
+        fraction_perturbed_envs: float,
+        perturbation_distribution: jnp.ndarray = jnp.array(
+            [0.5, 0.05, 0.15, 0.15, 0.15]
+        ),
+    ) -> None:
+        """
+        Apply a perturbation scenario to a subset of the environments (one per environment).
+        NOTE: the thrusters are picked at random and the default times are 0.0 for now.
+        """
+        # Calculate number of environments to perturb
+        num_perturbed = int(self.num_envs * fraction_perturbed_envs)
+        if num_perturbed == 0:
+            return
+
+        # Split the key for permutation and for subkeys for perturbations
+        perm_key, subkeys_key = jax.random.split(key, 2)
+        subkeys = jax.random.split(subkeys_key, 5)
+
+        # Get a random permutation of all environment indices
+        env_indices = jnp.arange(self.num_envs)
+        permuted_indices = jax.random.permutation(perm_key, env_indices)
+        selected_indices = permuted_indices[:num_perturbed]
+
+        # Determine number of environments for each perturbation based on distribution
+        total_weight = jnp.sum(perturbation_distribution)  # should be 1.0
+        base_counts = jnp.floor(
+            num_perturbed * perturbation_distribution / total_weight
+        ).astype(jnp.int32)
+        count_sum = int(jnp.sum(base_counts))
+        remainder = num_perturbed - count_sum
+
+        # Compute fractional parts for extra allocation
+        fractional_parts = (
+            num_perturbed * perturbation_distribution / total_weight
+        ) - base_counts
+        sorted_indices = jnp.argsort(-fractional_parts)  # indices in descending order
+        if remainder > 0:
+            base_counts = base_counts.at[sorted_indices[:remainder]].add(1)
+
+        # Partition the selected indices by counts into index arrays
+        cumulative = 0
+        indices_list = []
+        for count in base_counts.tolist():
+            indices_for_perturbation = selected_indices[cumulative : cumulative + count]
+            cumulative += count
+            indices_list.append(indices_for_perturbation)
+
+        (
+            stuck_off_thruster_envs,
+            stuck_on_thruster_envs,
+            faulty_valve_envs,
+            saturated_thrust_envs,
+            thrust_instability_envs,
+        ) = indices_list
+
+        # Apply the perturbations with respective subkeys
+        self.perturbations.perturbations[0].stuck_off_thruster(
+            subkeys[0], stuck_off_thruster_envs
+        )
+        self.perturbations.perturbations[1].stuck_on_thruster(
+            subkeys[1], stuck_on_thruster_envs
+        )
+        self.perturbations.perturbations[2].register_perturbation(
+            subkeys[2], faulty_valve_envs
+        )
+        self.perturbations.perturbations[3].register_perturbation(
+            subkeys[3], saturated_thrust_envs
+        )
+        self.perturbations.perturbations[4].register_perturbation(
+            subkeys[4], thrust_instability_envs
+        )
+
     def _create_viewer(self, args) -> None:
         """
         Creates a viewer to visualize simulation

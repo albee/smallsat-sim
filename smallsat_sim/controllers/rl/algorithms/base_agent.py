@@ -42,16 +42,6 @@ class BaseAgent(BaseController):
         values = self.critic.forward(states_ext)
         logp = self.actor._log_prob_from_dist(pi, actions)
 
-        if log:
-            self._log(
-                self.env.run_id,
-                float(self.env.mjx_batch.time[0]),
-                "policy_training",
-                self.env,
-                actions,
-                states_ext,
-            )
-
         return actions, values, logp
 
     def get_control_input(self, stage: str, obs_extrinsics: jnp.ndarray) -> jnp.ndarray:
@@ -59,9 +49,17 @@ class BaseAgent(BaseController):
         Calculate the control input based on current observations for each environment.
         """
         ctrl_input = self.actor.mu_net(obs_extrinsics)
-        self._log(
-            self.env.run_id, float(self.env.mjx_batch.time[0]), stage, self.env, ctrl_input, obs_extrinsics
-        )
+
+        if stage != "am_training" and stage != "evaluation":
+            self._log(
+                self.env.run_id,
+                float(self.env.mjx_batch.time[0]),
+                stage,
+                self.env,
+                ctrl_input,
+                obs_extrinsics,
+            )
+
         return ctrl_input
 
     @abstractmethod

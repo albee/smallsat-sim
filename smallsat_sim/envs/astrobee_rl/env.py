@@ -50,14 +50,12 @@ class AstrobeeEnvVectorized(VecEnv):
             ]
         )
 
-        # self.perturbations.perturbations[2].register_perturbation()
-
         # Instantiate disturbances
         self.disturbances = DisturbanceList([ConstantForceDisturbance(self.env_cfg)])
 
     def reset_perturbations(self) -> None:
         """
-        Resets the perturbations
+        Resets the perturbations.
         """
         self.perturbations = PerturbationList(
             [

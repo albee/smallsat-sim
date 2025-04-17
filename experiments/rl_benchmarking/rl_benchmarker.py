@@ -13,6 +13,7 @@ from smallsat_sim.controllers.rl.controller import RLController
 class Benchmarker(object):
     """
     Helper functions to train and test the RL controller.
+    NOTE: scripts using Benchmarker must be run in headless mode.
     """
 
     def __init__(self, run_name: str = "default") -> None:
@@ -97,6 +98,46 @@ class Benchmarker(object):
 
         # Simulation loop
         ctrl.control(phase=phase, test_pd=test_pd)
+
+        # Test stuck off thrusters
+        ctrl.control(
+            stage="stuck_off_deployment",
+            phase=phase,
+            test_pd=test_pd,
+            perturbation_distribution=jnp.array([1.0, 0.0, 0.0, 0.0, 0.0]),
+        )
+
+        # Test stuck on thrusters
+        ctrl.control(
+            stage="stuck_on_deployment",
+            phase=phase,
+            test_pd=test_pd,
+            perturbation_distribution=jnp.array([0.0, 1.0, 0.0, 0.0, 0.0]),
+        )
+
+        # Test faulty valve
+        ctrl.control(
+            stage="faulty_valve_deployment",
+            phase=phase,
+            test_pd=test_pd,
+            perturbation_distribution=jnp.array([0.0, 0.0, 1.0, 0.0, 0.0]),
+        )
+
+        # Test saturated thrust
+        ctrl.control(
+            stage="saturated_thrust_deployment",
+            phase=phase,
+            test_pd=test_pd,
+            perturbation_distribution=jnp.array([0.0, 0.0, 0.0, 1.0, 0.0]),
+        )
+
+        # Test thrust instability
+        ctrl.control(
+            stage="thrust_instability_deployment",
+            phase=phase,
+            test_pd=test_pd,
+            perturbation_distribution=jnp.array([0.0, 0.0, 0.0, 0.0, 1.0]),
+        )
 
         # Save log if logging is enabled
         if self.args.log:

@@ -3,7 +3,6 @@ from enum import Enum
 from typing import Optional, List
 import warnings
 from copy import deepcopy
-import numpy as np
 import jax
 import jax.numpy as jnp
 from scipy.interpolate import interp1d
@@ -65,32 +64,32 @@ class Perturbation(ABC):
                 (self.num_envs, self.nu), PerturbationStatus.OPERATIONAL.value
             )
 
-        # PRNG key to select among the working thrusters
-        self.thruster_rng_key = jax.random.PRNGKey(42)
-
     def get_perturbed_envs(
-        self, proportion: float, perturbed_envs: Optional[jnp.ndarray] = None
+        self,
+        key,
+        fraction_perturbed_envs: float,
+        perturbed_envs: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         """
-        Return array with envs where a failure occurs. If proportion and num_envs are too low, no envs will be perturbed.
+        Return array with envs where a failure occurs. If fraction_perturbed_envs and num_envs are too low, no envs will be perturbed.
         """
         if isinstance(perturbed_envs, jnp.ndarray):
             return perturbed_envs
 
         else:
-            fraction_perturbed_envs = jnp.clip(proportion, 0.0, 1.0)
+            fraction_perturbed_envs = jnp.clip(perturbed_envs, 0.0, 1.0)
             num_perturbed_envs = int(fraction_perturbed_envs * self.num_envs)
             operational_thruster_mask = jnp.any(
                 Perturbation.thruster_mask == PerturbationStatus.OPERATIONAL.value,
                 axis=1,
             )  # Only select envs that still have functioning thrusters
             operational_envs = jnp.where(operational_thruster_mask)[0]
-            key = jax.random.PRNGKey(np.random.randint(0, 9999))  # No reproducability
             shuffled_indices = jax.random.permutation(key, operational_envs)
             return shuffled_indices[:num_perturbed_envs]
 
     def select_thrusters(
         self,
+        key,
         perturbed_envs: jnp.ndarray,
         perturbed_thrusters: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
@@ -102,7 +101,6 @@ class Perturbation(ABC):
             return perturbed_thrusters
 
         else:
-            jax.random.split(self.thruster_rng_key, perturbed_envs.shape[0])
 
             def random_operational_thruster(key, row, max_size=self.nu):
                 # Get indices of operational thrusters (pad with -1 if not enough)
@@ -127,9 +125,7 @@ class Perturbation(ABC):
             selected_envs = Perturbation.thruster_mask[perturbed_envs]
 
             # Generate subkeys for each row
-            subkeys = jax.random.split(
-                self.thruster_rng_key, num=perturbed_envs.shape[0]
-            )
+            subkeys = jax.random.split(key, num=perturbed_envs.shape[0])
 
             # Vectorized selection of random zero indices
             vec_random_operational_thruster = jax.vmap(
@@ -274,6 +270,7 @@ class StuckOffThrusters(Perturbation):
 
     def stuck_off_thruster(
         self,
+        key=jax.random.PRNGKey(42),
         perturbed_envs: Optional[jnp.ndarray] = None,
         perturbed_thrusters: Optional[jnp.ndarray] = None,
         start_time: Optional[float] = 0.0,
@@ -281,14 +278,14 @@ class StuckOffThrusters(Perturbation):
         """
         Method to shut off a random thruster or a specific one if provided.
         """
-        stuck_off_envs = self.get_perturbed_envs(1.0, perturbed_envs)
-        stuck_off_thrusters = self.select_thrusters(stuck_off_envs, perturbed_thrusters)
+        stuck_off_envs = self.get_perturbed_envs(key, 1.0, perturbed_envs)
+        stuck_off_thrusters = self.select_thrusters(
+            key, stuck_off_envs, perturbed_thrusters
+        )
 
         Perturbation.thruster_mask = Perturbation.thruster_mask.at[
             stuck_off_envs, stuck_off_thrusters
-        ].set(
-            jnp.full(self.stuck_off_envs.shape[0], PerturbationStatus.STUCK_OFF.value)
-        )
+        ].set(jnp.full(stuck_off_envs.shape[0], PerturbationStatus.STUCK_OFF.value))
 
         self.start_times = self.start_times.at[stuck_off_envs, stuck_off_thrusters].set(
             start_time
@@ -337,6 +334,7 @@ class StuckOnThrusters(Perturbation):
 
     def stuck_on_thruster(
         self,
+        key=jax.random.PRNGKey(42),
         perturbed_envs: Optional[jnp.ndarray] = None,
         perturbed_thrusters: Optional[jnp.ndarray] = None,
         start_time: Optional[float] = 0.0,
@@ -344,13 +342,15 @@ class StuckOnThrusters(Perturbation):
         """
         Method to unable a random thruster or a specific one if provided, to shut off.
         """
-        stuck_on_envs = self.get_perturbed_envs(1.0, perturbed_envs)
+        stuck_on_envs = self.get_perturbed_envs(key, 1.0, perturbed_envs)
 
-        stuck_on_thrusters = self.select_thrusters(stuck_on_envs, perturbed_thrusters)
+        stuck_on_thrusters = self.select_thrusters(
+            key, stuck_on_envs, perturbed_thrusters
+        )
 
         Perturbation.thruster_mask = Perturbation.thruster_mask.at[
             stuck_on_envs, stuck_on_thrusters
-        ].set(jnp.full(self.stuck_on_envs.shape[0], PerturbationStatus.STUCK_ON.value))
+        ].set(jnp.full(stuck_on_envs.shape[0], PerturbationStatus.STUCK_ON.value))
         self.start_times = self.start_times.at[stuck_on_envs, stuck_on_thrusters].set(
             start_time
         )
@@ -425,13 +425,17 @@ class ThrusterFailureSimulator:
             train_x_reshaped = tf.reshape(train_x, [-1, 1])
             train_y = tf.convert_to_tensor(train_y, dtype=tf.float64)
             train_y_reshaped = tf.reshape(train_y, [-1, 1])
-            
+
             kernel = self._choose_kernel(kernel_type, lengthscale)
             kernel.variance.assign(outputscale)
 
             mean_function = gpflow.mean_functions.Constant()
 
-            super().__init__((train_x_reshaped, train_y_reshaped), kernel=kernel, mean_function=mean_function)
+            super().__init__(
+                (train_x_reshaped, train_y_reshaped),
+                kernel=kernel,
+                mean_function=mean_function,
+            )
 
         def _choose_kernel(self, kernel_type, lengthscale):
             if kernel_type == "RBF":
@@ -442,17 +446,17 @@ class ThrusterFailureSimulator:
 
         def forward(self, x):
             test_x = tf.convert_to_tensor(x, dtype=tf.float64)
-            
-            mean_x, covar_x = self.predict_f(tf.reshape(test_x, [-1,1]), full_cov=True)
+
+            mean_x, covar_x = self.predict_f(tf.reshape(test_x, [-1, 1]), full_cov=True)
             scale = tf.linalg.cholesky(covar_x[0, :, :])
 
             return tfp.distributions.MultivariateNormalTriL(
                 loc=mean_x[:, 0], scale_tril=scale
             )
 
-    def generate_failure_data(self, failure_type):
-        actual_force = self._get_actual_force(failure_type)
-        subset_indices = self._select_subset_indices()
+    def generate_failure_data(self, key, failure_type):
+        actual_force = self._get_actual_force(key, failure_type)
+        subset_indices = self._select_subset_indices(key)
         demanded_force_subset = self.demanded_force[subset_indices]
         actual_force_subset = actual_force[subset_indices]
 
@@ -473,16 +477,15 @@ class ThrusterFailureSimulator:
 
         # No training needed as hyperparameters are manually set
         x_test = jnp.linspace(0, self.upper_bound, self.num_points)
-        sampled_function = self._sample_gp_function(
-            model, x_test, failure_type
-        )
+        sampled_function = self._sample_gp_function(model, x_test, failure_type)
 
-        sampled_function = jax.lax.clamp(0.0, jnp.asarray(sampled_function), self.upper_bound)
+        sampled_function = jax.lax.clamp(
+            0.0, jnp.asarray(sampled_function), self.upper_bound
+        )
 
         return x_test, sampled_function
 
-    def _get_actual_force(self, failure_type):
-        key = jax.random.PRNGKey(42)
+    def _get_actual_force(self, key, failure_type):
         if failure_type == PerturbationStatus.SATURATED_THRUST:
             return jnp.where(
                 self.demanded_force < 0.3 * self.upper_bound,
@@ -508,7 +511,9 @@ class ThrusterFailureSimulator:
                 )
                 * (valve_max - valve_min)
             )
-            actual_force = actual_force.at[self.demanded_force > upper_threshold].set(valve_max)
+            actual_force = actual_force.at[self.demanded_force > upper_threshold].set(
+                valve_max
+            )
             return actual_force
         elif failure_type == PerturbationStatus.THRUST_INSTABILITY:
             return (
@@ -525,18 +530,23 @@ class ThrusterFailureSimulator:
         else:
             raise ValueError(f"Unknown failure type: {failure_type}")
 
-    def _select_subset_indices(self):
-        indices = np.random.choice(
-            range(1, self.num_points - 1), size=self.subset_size - 2, replace=False
+    def _select_subset_indices(self, key):
+        indices = jax.random.choice(
+            key,
+            jnp.arange(1, self.num_points - 1),
+            shape=(self.subset_size - 2,),
+            replace=False,
         )
-        indices = np.concatenate(([0], indices, [self.num_points - 1]))
-        return np.sort(indices)
+        start = jnp.array([0], dtype=indices.dtype)
+        end   = jnp.array([self.num_points - 1], dtype=indices.dtype)
+        indices = jnp.concatenate([start, indices, end])
+        return jnp.sort(indices)
 
     def _sample_gp_function(self, gp_model, demanded_force, failure_type):
         observed_pred = gp_model.forward(demanded_force)
 
         if failure_type == PerturbationStatus.SATURATED_THRUST:
-            return observed_pred.mean
+            return observed_pred.mean()
         else:
             return observed_pred.sample()
 
@@ -611,6 +621,7 @@ class GPPerturbation(Perturbation):
 
     def register_perturbation(
         self,
+        key=jax.random.PRNGKey(42),
         perturbed_envs: Optional[jnp.ndarray] = None,
         index: Optional[int] = None,
         start_time: Optional[float] = 0.0,
@@ -625,9 +636,9 @@ class GPPerturbation(Perturbation):
             thruster_index = index
         else:
             # If we must choose the same thruster for all envs, some must be overridden
-            thruster_index = np.random.randint(8)
+            thruster_index = int(jax.random.randint(key, shape=(), minval=0, maxval=8))
 
-        gp_perturbed_envs = self.get_perturbed_envs(1.0, perturbed_envs)
+        gp_perturbed_envs = self.get_perturbed_envs(key, 1.0, perturbed_envs)
 
         Perturbation.thruster_mask = Perturbation.thruster_mask.at[
             gp_perturbed_envs, jnp.full(gp_perturbed_envs.shape[0], thruster_index)
@@ -647,7 +658,7 @@ class GPPerturbation(Perturbation):
             upper_bound=self.thruster_list[thruster_index].ctrlrange[-1],
             valve_min=valve_min,
             valve_max=valve_max,
-        ).generate_failure_data(self.failure_type)
+        ).generate_failure_data(key, self.failure_type)
 
         # Plot data
         if False:
@@ -680,6 +691,7 @@ class FaultyValve(GPPerturbation):
 
     def register_perturbation(
         self,
+        key=jax.random.PRNGKey(42),
         perturbed_envs: Optional[jnp.ndarray] = None,
         index: Optional[int] = None,
         start_time: Optional[float] = 0.0,
@@ -691,7 +703,7 @@ class FaultyValve(GPPerturbation):
                 "No min or max value set for the FaultyValve perturbation.", UserWarning
             )
         return super().register_perturbation(
-            perturbed_envs, index, start_time, valve_min, valve_max
+            key, perturbed_envs, index, start_time, valve_min, valve_max
         )
 
 
@@ -703,6 +715,7 @@ class SaturatedThrust(GPPerturbation):
 
     def register_perturbation(
         self,
+        key=jax.random.PRNGKey(42),
         perturbed_envs: Optional[jnp.ndarray] = None,
         index: Optional[int] = None,
         start_time: Optional[float] = 0.0,
@@ -710,7 +723,7 @@ class SaturatedThrust(GPPerturbation):
         valve_max: Optional[float] = None,
     ) -> None:
         return super().register_perturbation(
-            perturbed_envs, index, start_time, valve_min, valve_max
+            key, perturbed_envs, index, start_time, valve_min, valve_max
         )
 
 
@@ -724,6 +737,7 @@ class ThrustInstability(GPPerturbation):
 
     def register_perturbation(
         self,
+        key=jax.random.PRNGKey(42),
         perturbed_envs: Optional[jnp.ndarray] = None,
         index: Optional[int] = None,
         start_time: Optional[float] = 0.0,
@@ -731,5 +745,5 @@ class ThrustInstability(GPPerturbation):
         valve_max: Optional[float] = None,
     ) -> None:
         return super().register_perturbation(
-            perturbed_envs, index, start_time, valve_min, valve_max
+            key, perturbed_envs, index, start_time, valve_min, valve_max
         )

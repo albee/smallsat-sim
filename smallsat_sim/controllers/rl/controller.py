@@ -39,7 +39,13 @@ class RLController(object):
         else:
             self._get_training_state_file_name()
 
-    def control(self, phase: int = 2, test_pd: bool = False) -> None:
+    def control(
+        self,
+        stage: str = "deployment",
+        phase: int = 2,
+        test_pd: bool = False,
+        perturbation_distribution: jnp.ndarray | None = None,
+    ) -> None:
         """
         Control the agent using the previously trained RL controller.
         If phase == 1, use extrinsics computed in sim.
@@ -73,6 +79,7 @@ class RLController(object):
         step = 0
 
         self.env.reset()
+        self.env.reset_perturbations()
         start_time = time.time()
         next_waypoint = self.planner.get_reference(self.env.get_obs())
         states = self.env.get_states(next_waypoint)
@@ -96,12 +103,24 @@ class RLController(object):
             real_time = time.time() - start_time
             sim_time = self.env.mjx_batch.time[0]
 
+            # Start perturbations after 100 steps
+            if (
+                self.deployment_len >= 100
+                and step == 100
+                and perturbation_distribution is not None
+            ):
+                self.env.apply_random_perturbations(
+                    key=jax.random.PRNGKey(42),
+                    fraction_perturbed_envs=1.0,
+                    perturbation_distribution=perturbation_distribution,
+                )
+
             if hasattr(self.env, "renderer") and self.env.renderer is not None:
                 self.env._visualize_renderer(self.planner.reference_point_list)
 
             if not test_pd:
                 actions = self.agent.get_control_input(
-                    "deployment",
+                    stage,
                     jnp.concatenate([states, ext], axis=1),  # Use un-normalized states
                 )  # No sampling/exploration noise needed
             else:

@@ -308,7 +308,7 @@ class PPO(BaseAgent):
         """
         if self.has_logger:
             tracking_error = calc_lateral_tracking_error(env.get_obs(), self.planner)
-            attitude_error = calc_orientation_error(obs_extrinsics)
+            orientation_error = calc_orientation_error(obs_extrinsics)
 
             if env.ext_dim != 0:
                 # If the extrinsics are included in the observations
@@ -328,8 +328,7 @@ class PPO(BaseAgent):
                 timestamp,
                 run_name=env.run_name,
                 stage=stage,
-                # obs_extrinsics=obs_extrinsics,
                 mean_tracking_error=tracking_error.mean(),
-                mean_attitude_error=attitude_error.mean(),
+                mean_orientation_error=orientation_error.mean(),
                 mean_extrinsic_error=extrinsic_error.mean(),
             )
