@@ -292,7 +292,7 @@ class StuckOffThrusters(Perturbation):
         )
 
         print(f"Thruster(s) stuck off.")
-        print("Thruster mask: ", Perturbation.thruster_mask)
+        # print("Thruster mask: ", Perturbation.thruster_mask)
 
     def key_callback(self, keycode: Optional[int] = None) -> None:
         # Call correct method for key callbacks
@@ -356,7 +356,7 @@ class StuckOnThrusters(Perturbation):
         )
 
         print(f"Thruster(s) stuck on.")
-        print("Thruster mask: ", Perturbation.thruster_mask)
+        # print("Thruster mask: ", Perturbation.thruster_mask)
 
     def key_callback(self, keycode: Optional[int] = None) -> None:
         # Call correct method for key callbacks

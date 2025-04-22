@@ -22,7 +22,7 @@ from smallsat_sim.controllers.rl.runners.runner_utils import (
 )
 from smallsat_sim.utils.helpers_jax import (
     train_val_split,
-    mse_loss_fn,
+    batch_mse_loss_fn,
     mae_loss_fn,
     normalize_obs,
     scale_rews,
@@ -51,6 +51,11 @@ class OnPolicyRunner(object):
 
         # Vectorize adaptation module
         self.adaptation_module = jax.vmap(self.am)
+
+        # JIT-compile the adaptation module updates
+        self.jitted_batched_am_loss_and_grad = nnx.jit(
+            nnx.value_and_grad(batch_mse_loss_fn), static_argnums=()
+        )
 
         # Path to save the checkpoints
         self.ckpt_dir = "smallsat_sim/controllers/rl/checkpoints/"
@@ -449,73 +454,75 @@ class OnPolicyRunner(object):
                 self.agent, self.ckpt_dir, self.training_state_file_name
             )
 
-    def train_adaptation_module_pretraining_data(self) -> None:
-        """
-        Train adaptation module to predict extrinsics from the history of states and actions from pretraining data.
-        NOTE: use_adaptive_approach must be set to True in the environment config.
-        """
-        if self.env.use_adaptive_approach is False:
-            return
+    # def train_adaptation_module_pretraining_data(self) -> None:
+    #     """
+    #     Train adaptation module to predict extrinsics from the history of states and actions from pretraining data.
+    #     NOTE: use_adaptive_approach must be set to True in the environment config.
+    #     """
+    #     if self.env.use_adaptive_approach is False:
+    #         return
 
-        file_path = os.path.join(self.ckpt_dir, "adapt_module_state.pkl")
-        if os.path.isfile(file_path):
-            return
+    #     file_path = os.path.join(self.ckpt_dir, "adapt_module_state.pkl")
+    #     if os.path.isfile(file_path):
+    #         return
 
-        print("Training adaptation module...\n")
+    #     print("Training adaptation module...\n")
 
-        # Generate experience if necessary and load the pretraining data
-        self._generate_experience()
-        pretraining_data = load_training_data(
-            self.ckpt_dir, self.pretraining_data_file_name
-        )  # Can use pretraining data
+    #     # Generate experience if necessary and load the pretraining data
+    #     self._generate_experience()
+    #     pretraining_data = load_training_data(
+    #         self.ckpt_dir, self.pretraining_data_file_name
+    #     )  # Can use pretraining data
 
-        # Load the data
-        obs = pretraining_data["obs"].reshape(-1, self.env.obs_dim)
-        act = pretraining_data["act"].reshape(-1, self.env.act_dim)
-        if self.env.use_adaptive_approach is True:
-            extrinsics = pretraining_data["extrinsics"].reshape(-1, self.env.ext_dim)
-        else:
-            extrinsics = jnp.empty((self.steps_per_epoch * self.env.num_envs, 0))
+    #     # Load the data
+    #     obs = pretraining_data["obs"].reshape(-1, self.env.obs_dim)
+    #     act = pretraining_data["act"].reshape(-1, self.env.act_dim)
+    #     if self.env.use_adaptive_approach is True:
+    #         extrinsics = pretraining_data["extrinsics"].reshape(-1, self.env.ext_dim)
+    #     else:
+    #         extrinsics = jnp.empty((self.steps_per_epoch * self.env.num_envs, 0))
 
-        state_action_data = jnp.concatenate([obs, act], axis=1)
+    #     state_action_data = jnp.concatenate([obs, act], axis=1)
 
-        key = jax.random.PRNGKey(42)
-        num_epochs = 100
+    #     key = jax.random.PRNGKey(42)
+    #     num_epochs = 100
 
-        # Optimizer
-        am_lr = self.env.env_cfg.control.RL.am_lr
-        self.am_optimizer = nnx.Optimizer(
-            self.am,
-            optax.adam(
-                learning_rate=am_lr,
-                eps=1e-5,
-            ),
-        )
+    #     # Optimizer
+    #     am_lr = self.env.env_cfg.control.RL.am_lr
+    #     self.am_optimizer = nnx.Optimizer(
+    #         self.am,
+    #         optax.adam(
+    #             learning_rate=am_lr,
+    #             eps=1e-5,
+    #         ),
+    #     )
 
-        # Split into training and validation sets
-        X_train, y_train, X_val, y_val = train_val_split(state_action_data, extrinsics)
+    #     # Split into training and validation sets
+    #     X_train, y_train, X_val, y_val = train_val_split(
+    #         state_action_data, extrinsics, shuffle=False
+    #     )
 
-        # Training loop
-        for epoch in range(num_epochs):
-            # Compute the loss
-            train_loss, grads = nnx.value_and_grad(mse_loss_fn)(
-                self.am,
-                X_train,
-                y_train,
-                key,
-            )
-            print(f"{train_loss = }\n")
-            self.am_optimizer.update(grads)
+    #     # Training loop
+    #     for epoch in range(num_epochs):
+    #         # Compute the loss
+    #         train_loss, grads = nnx.value_and_grad(batch_mse_loss_fn)(
+    #             self.am,
+    #             X_train,
+    #             y_train,
+    #             key,
+    #         )
+    #         print(f"{train_loss = }\n")
+    #         self.am_optimizer.update(grads)
 
-            # Periodically evaluate on the validation set (e.g., every 10 epochs)
-            if epoch % 10 == 0:
-                val_loss = mse_loss_fn(self.am, X_val, y_val, key)
-                print(
-                    f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}\n"
-                )
+    #         # Periodically evaluate on the validation set (e.g., every 10 epochs)
+    #         if epoch % 10 == 0:
+    #             val_loss = batch_mse_loss_fn(self.am, X_val, y_val, key)
+    #             print(
+    #                 f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}\n"
+    #             )
 
-        # Save the adaptation module weights
-        save_adaptation_module(self.am, self.ckpt_dir, "adapt_module_state.pkl")
+    #     # Save the adaptation module weights
+    #     save_adaptation_module(self.am, self.ckpt_dir, "adapt_module_state.pkl")
 
     def train_adaptation_module_on_policy(self) -> None:
         """
@@ -675,14 +682,23 @@ class OnPolicyRunner(object):
             # Get the data from the training loop
             data = buffer.get()
 
-            obs = data["obs"].reshape(-1, self.env.obs_dim)
-            act = data["act"].reshape(-1, self.env.act_dim)
-            if self.env.use_adaptive_approach is True:
-                extrinsics = data["extrinsics"].reshape(-1, self.env.ext_dim)
-            else:
-                extrinsics = jnp.empty((self.steps_per_epoch * self.env.num_envs, 0))
+            # obs = data["obs"].reshape(-1, self.env.obs_dim)
+            # act = data["act"].reshape(-1, self.env.act_dim)
+            # if self.env.use_adaptive_approach is True:
+            #     extrinsics = data["extrinsics"].reshape(-1, self.env.ext_dim)
+            # else:
+            #     extrinsics = jnp.empty((self.steps_per_epoch * self.env.num_envs, 0))
 
-            state_action_data = jnp.concatenate([obs, act], axis=1)
+            # state_action_data = jnp.concatenate([obs, act], axis=1)
+
+            obs = data["obs"]
+            act = data["act"]
+            if self.env.use_adaptive_approach is True:
+                extrinsics = data["extrinsics"]
+            else:
+                extrinsics = jnp.empty((self.steps_per_epoch, self.env.num_envs, 0))
+
+            state_action_data = jnp.concatenate([obs, act], axis=2)
 
             num_nn_epochs = 100
 
@@ -698,7 +714,7 @@ class OnPolicyRunner(object):
 
             # Split into training and validation sets
             X_train, y_train, X_val, y_val = train_val_split(
-                state_action_data, extrinsics
+                state_action_data, extrinsics, shuffle=False, trim_for_cnn=True
             )
 
             # Training loop
@@ -707,19 +723,18 @@ class OnPolicyRunner(object):
             )
             for nn_epoch in range(num_nn_epochs):
                 # Compute the loss
-                am_train_loss, grads = nnx.value_and_grad(mse_loss_fn)(
+                am_train_loss, grads = self.jitted_batched_am_loss_and_grad(
                     self.am,
                     X_train,
                     y_train,
-                    subkeys_nn_training[nn_epoch],
                 )
                 print(f"{am_train_loss = }\n")
                 self.am_optimizer.update(grads)
 
                 # Periodically evaluate on the validation set (e.g., every 10 nn_epoch)
                 if nn_epoch % 10 == 0:
-                    am_val_loss = mse_loss_fn(
-                        self.am, X_val, y_val, subkeys_nn_training[nn_epoch]
+                    am_val_loss, _ = self.jitted_batched_am_loss_and_grad(
+                        self.am, X_val, y_val
                     )
                     print(
                         f"Epoch {nn_epoch}: Train Loss = {am_train_loss:.4f}, Val Loss = {am_val_loss:.4f}\n"

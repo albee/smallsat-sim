@@ -232,13 +232,23 @@ def calc_extrinsic_error(
     return estimated_ext - actual_ext
 
 
-def train_val_split(X, y, val_split=0.2, key=jax.random.PRNGKey(42)):
+def train_val_split(
+    X,
+    y,
+    val_split=0.2,
+    key=jax.random.PRNGKey(42),
+    shuffle: bool = True,
+    trim_for_cnn: bool = False,
+):
     """
     Split data into training and validation set.
     """
     num_samples = X.shape[0]
     key, subkey = jax.random.split(key)
-    indices = jax.random.permutation(subkey, num_samples)
+    if shuffle:
+        indices = jax.random.permutation(subkey, num_samples)
+    else:
+        indices = jnp.arange(num_samples)
 
     val_size = int(num_samples * val_split)
     train_idx, val_idx = indices[val_size:], indices[:val_size]
@@ -246,18 +256,35 @@ def train_val_split(X, y, val_split=0.2, key=jax.random.PRNGKey(42)):
     X_train, y_train = X[train_idx], y[train_idx]
     X_val, y_val = X[val_idx], y[val_idx]
 
+    if trim_for_cnn:
+        # Trim the data to be a multiple of seq_len
+        X_train, y_train = _trim_and_reshape(X_train, y_train)
+        X_val, y_val = _trim_and_reshape(X_val, y_val)
+
     return X_train, y_train, X_val, y_val
 
 
-@nnx.jit
-def mse_loss_fn(model, X: jnp.ndarray, y: jnp.ndarray, key) -> jnp.ndarray:
+def _trim_and_reshape(X, y, seq_len=50):
+    keep = (X.shape[0] // seq_len) * seq_len  # largest multiple of seq_len ≤ n
+
+    X_trim = X[:keep]
+    y_trim = y[:keep]
+
+    X_seq = X_trim.reshape(-1, seq_len, X.shape[2])
+    y_seq = y_trim.reshape(-1, seq_len, y.shape[2])
+
+    return X_seq, y_seq
+
+
+def batch_mse_loss_fn(model, X: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
     """
     Mean squared error loss function.
     """
-    y_pred_dist, _ = model(X)
-    y_pred = y_pred_dist.sample(seed=key)
+    # TODO: implement sliding window for batch loss
+    preds = jax.vmap(lambda x: model(x), in_axes=0)(X)
+    losses = jnp.square(preds - y[:, -1, :])
 
-    return jnp.mean((y_pred - y) ** 2)
+    return jnp.mean(losses)
 
 
 @nnx.jit

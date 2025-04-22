@@ -15,6 +15,30 @@ from smallsat_sim.utils.helpers_jax import (
 )
 
 
+# Define the actor loss
+def actor_loss_fn(
+    actor_model,
+    tdres: jnp.ndarray,
+    obs_extrinsics: jnp.ndarray,
+    actions: jnp.ndarray,
+    logp: jnp.ndarray,
+    clip_ratio: float,
+):
+    _, logp_a = actor_model.forward(obs_extrinsics, actions)
+    ratio = jnp.exp(logp_a - logp)
+    clip_adv = jax.lax.clamp(1 - clip_ratio, ratio, 1 + clip_ratio)
+    return -jax.lax.min(ratio * tdres, clip_adv).mean()
+
+# Define the critic loss
+def critic_loss_fn(
+    critic_model,
+    returns: jnp.ndarray,
+    obs_extrinsics: jnp.ndarray,
+):
+    values = critic_model.forward(obs_extrinsics)
+    return jnp.mean((values - returns) ** 2)  # MSE loss
+
+
 class PPO(BaseAgent):
     """
     Proximal Policy Optimization (PPO) agent.
@@ -66,36 +90,42 @@ class PPO(BaseAgent):
             ),
         )
 
+        # Jitted loss functions
+        self.jit_actor_loss_and_grad = nnx.jit(
+            nnx.value_and_grad(actor_loss_fn),
+        )
+        self.jit_critic_loss_and_grad = nnx.jit(
+            nnx.value_and_grad(critic_loss_fn),
+        )
+
         # Set the clip ratio and the target kl divergence
         self.clip_ratio = 0.2
         self.target_kl = 0.01
 
-    # Define the actor loss
-    @partial(nnx.jit, static_argnums=(0,))
-    def jit_actor_loss_fn(
-        self,
-        actor_model,
-        tdres: jnp.ndarray,
-        obs_extrinsics: jnp.ndarray,
-        actions: jnp.ndarray,
-        logp: jnp.ndarray,
-        clip_ratio: float,
-    ):
-        _, logp_a = actor_model.forward(obs_extrinsics, actions)
-        ratio = jnp.exp(logp_a - logp)
-        clip_adv = jax.lax.clamp(1 - clip_ratio, ratio, 1 + clip_ratio)
-        return -jax.lax.min(ratio * tdres, clip_adv).mean()
+    # # Define the actor loss
+    # def actor_loss_fn(
+    #     self,
+    #     actor_model,
+    #     tdres: jnp.ndarray,
+    #     obs_extrinsics: jnp.ndarray,
+    #     actions: jnp.ndarray,
+    #     logp: jnp.ndarray,
+    #     clip_ratio: float,
+    # ):
+    #     _, logp_a = actor_model.forward(obs_extrinsics, actions)
+    #     ratio = jnp.exp(logp_a - logp)
+    #     clip_adv = jax.lax.clamp(1 - clip_ratio, ratio, 1 + clip_ratio)
+    #     return -jax.lax.min(ratio * tdres, clip_adv).mean()
 
-    # Define the critic loss
-    @partial(nnx.jit, static_argnums=(0,))
-    def jit_critic_loss_fn(
-        self,
-        critic_model,
-        returns: jnp.ndarray,
-        obs_extrinsics: jnp.ndarray,
-    ):
-        values = critic_model.forward(obs_extrinsics)
-        return jnp.mean((values - returns) ** 2)  # MSE loss
+    # # Define the critic loss
+    # def critic_loss_fn(
+    #     self,
+    #     critic_model,
+    #     returns: jnp.ndarray,
+    #     obs_extrinsics: jnp.ndarray,
+    # ):
+    #     values = critic_model.forward(obs_extrinsics)
+    #     return jnp.mean((values - returns) ** 2)  # MSE loss
 
     def update_policy_gradient(
         self,
@@ -127,7 +157,7 @@ class PPO(BaseAgent):
                 for start in range(0, self.batch_size, self.minibatch_size):
                     end = start + self.minibatch_size
 
-                    actor_loss, grads = nnx.value_and_grad(self.jit_actor_loss_fn)(
+                    actor_loss, grads = self.jit_actor_loss_and_grad(
                         self.actor,
                         shuffled_tdres[start:end],
                         shuffled_obs_extrinsics[start:end],
@@ -150,7 +180,7 @@ class PPO(BaseAgent):
                     self.actor_optimizer.update(grads)
 
             else:
-                actor_loss, grads = nnx.value_and_grad(self.jit_actor_loss_fn)(
+                actor_loss, grads = self.jit_actor_loss_and_grad(
                     self.actor,
                     tdres,
                     obs_extrinsics,
@@ -198,7 +228,7 @@ class PPO(BaseAgent):
                     mb_indices = shuffled_indices[start:end]
 
                     # Compute the critic loss
-                    critic_loss, grads = nnx.value_and_grad(self.jit_critic_loss_fn)(
+                    critic_loss, grads = self.jit_critic_loss_and_grad(
                         self.critic, returns[mb_indices], obs_extrinsics[mb_indices]
                     )
                     print(f"{critic_loss = }")
@@ -208,7 +238,7 @@ class PPO(BaseAgent):
 
             else:
                 # Compute the critic loss
-                critic_loss, grads = nnx.value_and_grad(self.jit_critic_loss_fn)(
+                critic_loss, grads = self.jit_critic_loss_and_grad(
                     self.critic, returns, obs_extrinsics
                 )
                 print(f"{critic_loss = }")
@@ -247,7 +277,7 @@ class PPO(BaseAgent):
             for start in range(0, self.batch_size, self.minibatch_size):
                 end = start + self.minibatch_size
 
-                actor_loss, grads = nnx.value_and_grad(self.jit_actor_loss_fn)(
+                actor_loss, grads = self.jit_actor_loss_and_grad(
                     self.actor,
                     shuffled_tdres[start:end],
                     shuffled_obs_extrinsics[start:end],
@@ -270,7 +300,7 @@ class PPO(BaseAgent):
                 self.actor_optimizer.update(grads)
 
                 # Compute the critic loss
-                critic_loss, grads = nnx.value_and_grad(self.jit_critic_loss_fn)(
+                critic_loss, grads = self.jit_critic_loss_and_grad(
                     self.critic,
                     shuffled_returns[start:end],
                     shuffled_obs_extrinsics[start:end],
