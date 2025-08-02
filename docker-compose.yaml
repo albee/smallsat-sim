@@ -18,17 +18,32 @@ services:
     # devices:
     #   - "/dev:/dev"
 
+  arm_64: # CPU
+    image: smallsat-sim-arm64:latest
+    profiles: ["arm64"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      ssh:
+        - 'default'
+    stdin_open: true # docker run -i
+    tty: true # docker run -t
+    working_dir: /smallsat-sim
+    volumes:
+      - ~/smallsat-sim/:/smallsat-sim
+    command: experiments/astrobee_CL.py
+
   x86_cpu:
     extends:
       service: x86_64
-    image: smallsat-sim_cpu:latest
+    image: smallsat-sim_x86_cpu:latest
     profiles: [ "x86_64_CPU" ]
     container_name: smallsat-sim_x86_cpu
 
   x86_gpu:
     extends:
       service: x86_64
-    image: smallsat-sim_gpu:latest
+    image: smallsat-sim_x86_gpu:latest
     profiles: [ "x86_64_GPU" ]
     container_name: smallsat-sim_x86_gpu
     deploy:
@@ -38,3 +53,24 @@ services:
             - driver: nvidia
               count: all
               capabilities: [ gpu ]
+
+  arm_cpu:
+    extends:
+      service: arm_64
+    image: smallsat-sim_arm_cpu:latest
+    profiles: [ "arm_64_CPU" ]
+    container_name: smallsat-sim_arm_cpu
+
+  arm_gpu:
+    extends:
+      service: x86_64
+    image: smallsat-sim_arm_gpu:latest
+    profiles: [ "arm_64_GPU" ]
+    container_name: smallsat-sim_arm_gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]      

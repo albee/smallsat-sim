@@ -1,15 +1,19 @@
 # If you update this file, you may also need to change pyproject.toml accordingly
-casadi==3.6.4
-numpy==1.26
-pyyaml==6.0.1
-mujoco==3.2.1
-mujoco-mjx==3.2.1
+casadi = "3.6.5"
+numpy = "1.26.4"
+pyyaml = "6.0.1"
+mujoco = "3.2.1"
+mujoco-mjx = "3.2.1"
 brax==0.10.5
-glfw==2.7.0 # Needed to use MuJoCo in the container
-opencv-python==4.10.0.82
-scipy==1.13.0
-control==0.10.0
-# jax[cuda12]==0.4.30 # Installed by Dockerfile directly
+glfw = "2.7.0"
+torch==2.3.1
+opencv-python = "4.10.0.82"
+scipy="1.14.0"
+control="0.10.0"
+h5py="3.11.0"
+pandas="2.2.2"
+psutil==6.0.0
+gpytorch==1.13
 optax==0.2.3
 flax==0.8.5
 tensorflow-probability==0.24.0

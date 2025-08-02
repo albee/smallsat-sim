@@ -17,6 +17,7 @@ from smallsat_sim import SMALLSAT_STEWARD_ROOT_DIR
 
 
 from argparse import Namespace
+from typing import Optional
 
 
 class BaseEnv(object):
@@ -34,7 +35,7 @@ class BaseEnv(object):
         self.perturbations_keycodes = PerturbationList([]).keycode_dict.keys()
 
         # Initialize observations
-        self.set_obs()
+        self.set_obs(v_frame=self.env_cfg.sim.obs.v_frame)
 
         # Initialize arguments
         self.args = args
@@ -43,7 +44,7 @@ class BaseEnv(object):
         self.using_rl = False
 
         # Save time of simulation start (for filenames)
-        self.sim_start_time = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+        self.sim_start_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
         # Initialize MC iterations
         self.run_id = 0
@@ -52,11 +53,31 @@ class BaseEnv(object):
         if args.log:
             self.logger = Logger(log_name=self.sim_start_time)
 
-    def reset(self) -> None:
+    def reset(self, pos: Optional[list] = None, att: Optional[list] = None) -> None:
         """
         Resets environment to a desired state.
+
+        NOTE: att is in euler angles [roll, pitch, yaw] in radians.
         """
-        pass
+
+        if pos is not None and att is not None:
+            # Reset position and attitude
+            mujoco.mj_resetData(self.model, self.data)
+            self.data.qpos[:3] = pos
+            # Need to convert att to a quaternion for MuJoCo
+            euler = np.radians(np.array(att))
+            quat = np.zeros(4)
+            
+            mujoco.mju_euler2Quat(quat, euler, "XYZ")
+        
+            self.data.qpos[3:7] = quat
+
+            mujoco.mj_forward(self.model, self.data)
+        else:
+            mujoco.mj_resetData(self.model, self.data)
+        
+        self.set_obs(v_frame= "body")
+        print("Environment reset.")
 
     def step(self, input: np.array) -> None:
         """
@@ -70,6 +91,7 @@ class BaseEnv(object):
             # Update viewer
             if substep % self.env_cfg.viewer.viewer_decimation == 0:
                 self._update_viewer()
+                pass
                 # self._update_renderer() # Moved to planner to visualize ref. as well
 
             # Step in MuJoCo engine
@@ -78,24 +100,45 @@ class BaseEnv(object):
         # Execute post physics steps
         self._post_physics_step()
 
-    def set_obs(self) -> None:
+    def set_obs(self, v_frame: str = "body") -> np.ndarray:
         """
-        Sets the (noisy) observations which can be fetched by
-        the get_obs() method.
+        Return all states
+
+        args:
+            v_frame (str): Specifies the frame of the velocity in the returned observation.
+                             - "body": Return the velocity in the body frame.
+                             - "inertial": Return the velocity in the inertial frame.
+
+        returns:
+            np.array: Array of observations containing position, orientation, velocity
+                      and angular velocity.
         """
         # obs = [r (3),
         #        q (4),
-        #        v (3), --> in BODY frame
+        #        v (3), --> in body/inertial frame
         #        omega (3)]
 
-        # Retrieve current rotation matrix
-        R = np.reshape(self.data.body("body0").xmat, (3, 3))
+        if v_frame == "body":
 
-        # Rotate intertial velocity to body velocity
-        vel_body = R.T @ self.data.qvel[:3]
+            # Retrieve current rotation matrix
+            R = np.reshape(self.data.body("body0").xmat.copy(), (3, 3))
+
+            # Rotate intertial velocity to body velocity
+            v = R.T @ self.data.qvel[:3].copy()
+
+        elif v_frame == "inertial":
+
+            # Retrieve inertial velocity from MuJoCo
+            v = self.data.qvel[:3].copy()
+
+        else:
+            raise RuntimeError(
+                f"Specified velocity frame {v_frame} not valid. "
+                "Must be either 'body' or 'inertial'."
+            )
 
         # Create array of observations
-        obs = np.concatenate((self.data.qpos, vel_body, self.data.qvel[3:]))
+        obs = np.concatenate((self.data.qpos, v, self.data.qvel[3:6]))
 
         # Save ground truth observations
         self.obs_gt = obs
@@ -226,10 +269,12 @@ class BaseEnv(object):
         )
 
         # Set default camera options
-        self.viewer.cam.distance = 3.0
+        self.viewer.cam.distance = 4.0
         self.viewer.cam.trackbodyid = 2  # tracks smallsat
-        self.viewer.cam.azimuth = 10.0
+        self.viewer.cam.azimuth = -65.0
+        self.viewer.cam.elevation = -44
         self.viewer.cam.type = 1
+        self.viewer.cam.lookat = self.data.qpos[:3]
 
     def _create_renderer(self) -> None:
         """
@@ -237,15 +282,19 @@ class BaseEnv(object):
         """
         # Create instance of MuJoCo renderer
         self.renderer = mujoco.Renderer(
-            self.model, width=self.env_cfg.renderer.width, height=1440
+            self.model,
+            width=self.env_cfg.renderer.width,
+            height=self.env_cfg.renderer.height,
         )
 
         # Set up the scene and the default camera options
         self.cam = mujoco.MjvCamera()
-        self.cam.distance = 5.0
+        self.cam.distance = 4.0
         self.cam.trackbodyid = 2  # tracks smallsat
-        self.cam.azimuth = 10.0
+        self.cam.azimuth = -65.0
+        self.cam.elevation = -44
         self.cam.type = 1
+        self.cam.lookat = self.data.qpos[:3]
 
         # Save frames to create the video
         self.frames = []
@@ -334,12 +383,16 @@ class BaseEnv(object):
         else:
             self.data.ctrl = input
 
+        # Log perturbed inputs
+        if hasattr(self, "logger"):
+            self.logger.log(self.run_id, self.data.time, u_actual=self.data.ctrl.copy())
+
     def _post_physics_step(self) -> None:
         """
         Executes actions after stepping simulation
         """
         # Fetch most recent observations
-        self.set_obs()
+        self.set_obs(v_frame=self.env_cfg.sim.obs.v_frame)
 
     def _key_callback(self, keycode) -> None:
         """

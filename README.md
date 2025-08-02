@@ -15,12 +15,20 @@ SmallSatSim is a part of the SmallSat Steward project, a collaboration between r
 Python dependencies are specified in `requirements.txt` and are installed in the steps below.
 
 ## Installation
-First, create a virtual environment with Python 3.10.11. This can be done with Visual Studio's extension *Python Environment Manager* or `pyenv`, outlined [here](https://robiokidenis.medium.com/how-to-install-multiple-python-on-your-mac-d20713740a2d).
+First, create a virtual environment with Python 3.10.11. This can be done with Visual Studio's extension *Python Environment Manager*, `pyenv`, outlined [here](https://robiokidenis.medium.com/how-to-install-multiple-python-on-your-mac-d20713740a2d).
 
+### Using install script
+
+```bash
+./install_deps.sh
+```
+
+### Using pyenv and pip
 ```bash
 pyenv install 3.10.11
 pyenv global 3.10.11  # to globally switch for your user account
 ```
+
 
 Next, create a virtual environment in `smallsat-sim`:
 
@@ -40,14 +48,12 @@ Afterwards install all necessary packages:
 pip install -e .
 ```
 
-To check if the installation was successful, try the test script:
+### Using poetry
 
 ```bash
-cd experiments
-python3 test.py
+poetry env use $(pyenv which python)
+poetry install
 ```
-
-This should show a cube with two thrusters moving periodically from the left to the right. Happy coding!
 
 ***Note for Ubuntu VMs on Mac M1!***
 
@@ -64,6 +70,17 @@ A Docker container containing all necessary packages is also provided.
 The main files to run simulations can be found in the `experiments` folder. For each smallsat, there is a choice of different planning and control algorithms. This folder also contains a training script for reinforcement learning (RL) agents. Control parameters are set in the respective configuration files of each environment.
 
 All experiments can be run by mounting the `smallsat-sim` directory on the provided Docker container. Running simulations on GPU is only possible for RL controllers and only by using the Docker container. For more information, see the instructions below.
+
+To check if the installation was successful, try the test script:
+
+```bash
+cd experiments
+python3 test.py
+```
+
+This should show a cube with two thrusters moving periodically from the left to the right. Happy coding!
+
+TODO: need Docker instructions!
 
 ### Running the Simulation Headless
 To run the simulation without the viewer, add the `--headless` flag to your command. This will result in shorter runtimes and less memory consumption.

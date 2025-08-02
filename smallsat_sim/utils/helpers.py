@@ -7,14 +7,18 @@ import argparse
 import numpy as np
 import scipy.signal
 
+import torch
+import psutil
+import os
+
+from typing import Callable
+from scipy.spatial.transform import Rotation as R
 
 # Import all base classes for typing
 from smallsat_sim.controllers.base_controller import BaseController
 from smallsat_sim.controllers.base_mpc_controller import BaseMPCController
 from smallsat_sim.envs.base_env import BaseEnv
 from smallsat_sim.planners.base_planner import BasePlanner
-
-from scipy.spatial.transform import Rotation as R
 
 
 def get_args() -> argparse.Namespace:
@@ -202,12 +206,60 @@ def calc_attitude_error(q_ref: np.ndarray, q: np.ndarray) -> float:
     to match the desired orientation (desired quaternion).
     Returned in radians. Use np.degrees() for conversion.
     """
-    # Convert the quaternions to scipy Rotation objects
-    desired_rotation = R.from_quat(q_ref)
-    actual_rotation = R.from_quat(q)
+    # Normalize the quaternions to ensure they represent valid rotations
+    q_ref_normalized = q_ref / np.linalg.norm(q_ref)
+    q_normalized = q / np.linalg.norm(q)
+    
+    # Ensure the quaternions are in the format [x, y, z, w]
+    # If they are in [w, x, y, z], reorder them
+    # Uncomment and adjust the following lines if necessary
+    # q_ref_normalized = q_ref_normalized[[1, 2, 3, 0]]
+    # q_normalized = q_normalized[[1, 2, 3, 0]]
+    
+    # Adjust quaternion signs for continuity
+    if np.dot(q_ref_normalized, q_normalized) < 0:
+        q_normalized = -q_normalized
+    
+    # Convert the quaternions to Rotation objects
+    rot_ref = R.from_quat(q_ref_normalized)
+    rot = R.from_quat(q_normalized)
+    
+    # Compute the relative rotation from q to q_ref
+    error_rotation = rot.inv() * rot_ref
+    
+    # Get the rotation vector (axis-angle representation)
+    error_rotvec = error_rotation.as_rotvec()
+    
+    # Compute the angle (magnitude of the rotation vector)
+    error_angle = np.linalg.norm(error_rotvec)
+    
+    # Ensure the angle is within [0, pi]
+    if error_angle > np.pi:
+        error_angle = 2 * np.pi - error_angle
+    
+    # Convert to degrees if requested
+    error_angle = np.degrees(error_angle)
+    
+    return error_angle
 
-    # Calculate the relative rotation (error quaternion)
-    error_rotation = desired_rotation * actual_rotation.inv()
 
-    # Extract the angle of the error quaternion
-    return error_rotation.magnitude()
+def calc_model_error(
+    obs: np.ndarray, x_past: np.ndarray, u_past: np.ndarray, f_int: Callable
+) -> np.ndarray:
+
+    model_error = (
+        torch.from_numpy(obs - f_int(x_past, u_past).squeeze(-1))
+        .to(torch.float64)
+        .unsqueeze(-1)
+    )
+
+    return model_error
+
+
+def get_memory_usage():
+    """
+    Returns current memory usage of Python (on CPU)
+    """
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    return mem_info.rss

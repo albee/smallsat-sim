@@ -14,6 +14,9 @@ class BaseMPCController(BaseController):
 
         super().__init__(env, planner, ctrl_cfg)
 
+        # Save symbolic model here too
+        self.symbolic_model = env.symbolic_model
+
     @abstractmethod
     def get_control_input(self, env: BaseEnv) -> None:
         """

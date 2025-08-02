@@ -14,8 +14,8 @@ authors = [ "Alexander Hansson <ahansson@ethz.ch>",
 
 [tool.poetry.dependencies] # If you update the dependencies, you may also need to change requirements.txt accordingly
 python = "^3.10"  # Specify your Python version requirement here
-casadi = "3.6.4"
-numpy = "1.26"
+casadi = "3.6.5"
+numpy = "1.26.4"
 pyyaml = "6.0.1"
 mujoco = "3.2.1"
 mujoco-mjx = "3.2.1"
@@ -31,3 +31,9 @@ distrax = "0.1.5"
 h5py="3.11.0"
 pandas="2.2.2"
 wandb="0.17.8"
+psutil = "6.0.0"
+gpytorch = "1.13"
+pyqt6 = "^6.7.1"
+
+[tool.poetry.group.dev.dependencies]
+ipykernel = "^6.29.5"

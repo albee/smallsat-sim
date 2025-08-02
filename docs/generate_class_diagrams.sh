@@ -15,4 +15,8 @@ check_for_package "pylint"
 
 # Generate useful class diagrams for a sim overview
 pyreverse -o png -p SmallSatSim ../smallsat_sim/
-pyreverse -o png -p Experiemnts ../experiments/
+pyreverse -o png -p Experiments ../experiments/
+
+# Also make .dot
+pyreverse -o dot -p SmallSatSim ../smallsat_sim/
+pyreverse -o dot -p Experiments ../experiments/

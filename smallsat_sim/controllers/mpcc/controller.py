@@ -59,7 +59,7 @@ class NominalMPCCController(BaseMPCController):
         else:
             self._visualize_prediction_renderer = lambda *args, **kwargs: None
 
-    def _generate_solver(self, env) -> None:
+    def _generate_solver(self, env: BaseEnv) -> None:
         """
         This method generates the necessary solver C code
         """
@@ -108,7 +108,6 @@ class NominalMPCCController(BaseMPCController):
         q_l = self.ctrl_cfg.cost.q_l
         Q_c = self.ctrl_cfg.cost.Q_c
         Q_omega = self.ctrl_cfg.cost.Q_omega
-        r_d_theta = self.ctrl_cfg.cost.r_d_theta
         q_theta = self.ctrl_cfg.cost.q_theta
         Q_q = self.ctrl_cfg.cost.Q_q
 
@@ -119,7 +118,8 @@ class NominalMPCCController(BaseMPCController):
         # Extract states for ease of use
         r = model.x[0:3]
         q = model.x[3:7]
-        omega = model.x[7:10]
+        v = model.x[7:10]
+        omega = model.x[10:13]
 
         # Calculate errors
         e = r - g
@@ -164,18 +164,24 @@ class NominalMPCCController(BaseMPCController):
         )
 
         # We only want to minimize eps part of error quaternion
-        e_q = e_q[1:4]
+        e_q_vec = e_q - ca.DM([1, 0, 0, 0])
 
         # Setup cost
         ocp.cost.cost_type = "EXTERNAL"
         ocp.model.cost_expr_ext_cost = (
             q_l * e_l * e_l
             + e_c.T @ Q_c @ e_c
-            + e_q.T @ Q_q @ e_q
+            + e_q_vec.T @ (Q_q) @ e_q_vec
             + omega.T @ Q_omega @ omega
             + (model.u.T) @ R @ (model.u)
-            + r_d_theta * d_theta**2
-            - q_theta * theta
+            - q_theta * d_theta
+        )
+
+        # Create a casadi cost function for numerical evaluation
+        self.cost_function = ca.Function(
+            "cost_function",
+            [acados_model.x, acados_model.u, p_start, t, theta_start, q_des],
+            [ocp.model.cost_expr_ext_cost],
         )
 
         # Nonlinear constraint
@@ -183,47 +189,97 @@ class NominalMPCCController(BaseMPCController):
         ocp.constraints.lh = np.array([0.0])
         ocp.constraints.uh = np.array([1.0 * 1.0])
 
+        # Terminal constraint
+        acados_model.con_h_expr_e = acados_model.con_h_expr
+        ocp.constraints.lh_e = np.array([0.0])
+        ocp.constraints.uh_e = np.array([1.0 * 1.0])
+
         # Set OCP dimensions
         nx = acados_model.x.size()[0]  # number of states
         nu = acados_model.u.size()[0]  # number of inputs
         ocp.dims.nx = nx
+        ocp.dims.nsbx = nx
         ocp.dims.nu = nu
         ocp.dims.np = p.size()[0]  # number of parameters
         ocp.dims.N = self.ctrl_cfg.N  # prediction horizon length
+
+        # Nonlinear constraints
         if acados_model.con_h_expr is not None:
             ocp.dims.nh = acados_model.con_h_expr.size()[0]
+            ocp.dims.nsh = 1
         else:
             ocp.dims.nh = 0
+            ocp.dims.nsh = 0
+        ocp.constraints.idxsh = np.array(range(ocp.dims.nsh))
 
+        # Terminal nonlinear constraints
         if acados_model.con_h_expr_e is not None:
             ocp.dims.nh_e = acados_model.con_h_expr_e.size()[0]
+            ocp.dims.nsh_e = 1
         else:
             ocp.dims.nh_e = 0
+            ocp.dims.nsh_e = 0
+
+        # Total number of slacks at stages (1, N-1)
+        ocp.dims.ns = nx + ocp.dims.nsh
 
         # Define state constraints
-        # Lower and Upper bound constraints for intermediate stages
+        # Lower bound constraints for intermediate stages
         ocp.constraints.lbx = np.array(
             [
-                -100,
-                -100,
-                -100,
-                -1.1,
-                -1.1,
-                -1.1,
-                -1.1,
-                -0.4,
-                -0.4,
-                -0.4,
-                -0.5,
-                -0.5,
-                -0.5,
-                0,
+                -100,  # x
+                -100,  # y
+                -100,  # z
+                -1.0,  # q[0]
+                -1.0,  # q[1]
+                -1.0,  # q[2]
+                -1.0,  # q[3]
+                -0.25,  # vx
+                -0.25,  # vy
+                -0.25,  # vz
+                -0.1,  # omega_x
+                -0.1,  # omega_y
+                -0.1,  # omega_z
+                0,  # theta
             ]
         )
+
+        # Upper bound constraints for intermediate stages
         ocp.constraints.ubx = np.array(
-            [100, 100, 100, 1.1, 1.1, 1.1, 1.1, 0.4, 0.4, 0.4, 0.5, 0.5, 0.5, 1000]
+            [
+                100,  # x
+                100,  # y
+                100,  # z
+                1.0,  # q[0]
+                1.0,  # q[1]
+                1.0,  # q[2]
+                1.0,  # q[3]
+                0.25,  # vx
+                0.25,  # vy
+                0.25,  # vz
+                0.1,  # omega_x
+                0.1,  # omega_y
+                0.1,  # omega_z
+                1000,  # theta
+            ]
         )
+
+        # Indexes of the state variables to which the constraints apply
         ocp.constraints.idxbx = np.arange(nx)
+
+        # Slacks on lower/upper bounds
+        ocp.constraints.lsbx = np.zeros(ocp.dims.nsbx)
+        ocp.constraints.usbx = np.zeros(ocp.dims.nsbx)
+        ocp.constraints.usbx[7:10] = 0.05
+        ocp.constraints.usbx[7:10] = -0.05
+        ocp.constraints.usbx[10:13] = 0.02
+        ocp.constraints.usbx[10:13] = -0.02
+        ocp.constraints.idxsbx = np.arange(nx)
+
+        ocp.cost.Zl = 5e02 * np.ones(ocp.dims.ns)
+        ocp.cost.Zu = 5e02 * np.ones(ocp.dims.ns)
+        ocp.cost.zl = 5e03 * np.ones(ocp.dims.ns)
+        ocp.cost.zu = 5e03 * np.ones(ocp.dims.ns)
 
         # Define input constraints
         # Fetch thurster limits from the model configuration
@@ -232,12 +288,16 @@ class NominalMPCCController(BaseMPCController):
         ]
         ocp.constraints.lbu = np.array([forces[0] for forces in thruster_forces])
         ocp.constraints.ubu = np.array([forces[1] for forces in thruster_forces])
-        ocp.constraints.idxbu = np.arange(nu - 1)
+
+        # Attach dtheta constraints
+        ocp.constraints.lbu = np.append(ocp.constraints.lbu, 0.0)
+        ocp.constraints.ubu = np.append(ocp.constraints.ubu, 0.2)
+        ocp.constraints.idxbu = np.arange(nu)
 
         # Set intial condition
-        ocp.constraints.idxbx_0 = np.arange(nx - 1)
-        ocp.constraints.lbx_0 = env.obs[0:13].copy()
-        ocp.constraints.ubx_0 = env.obs[0:13].copy()
+        ocp.constraints.idxbx_0 = np.arange(nx)
+        ocp.constraints.lbx_0 = ocp.constraints.lbx
+        ocp.constraints.ubx_0 = ocp.constraints.ubx
         ocp.parameter_values = np.zeros(ocp.dims.np)
 
         # Configure solver options
@@ -268,19 +328,39 @@ class NominalMPCCController(BaseMPCController):
         """
 
         # Retrieve closest point on track (relevant for theta)
-        _, theta_init = self.planner.closest_point_on_trajectory(env.obs[0:3])
+        _, theta_init = self.planner.closest_point_on_trajectory(env.get_obs()[0:3])
 
         # Array to store previous theta
         self.theta_prev = [theta_init for i in range(self.ctrl_cfg.N + 1)]
 
         # Warm start solver
         # Initial condition and Warm start
+        v_init = 0.00
+        Ts = self.ctrl_cfg.Ts
+        distance_on_track = theta_init
         x_guess = np.zeros((14, 1))
-        x_guess[0:13, 0] = env.obs[0:13].copy()
-        x_guess[-1, 0] = theta_init
+        u_guess = np.random.uniform(low=0.0, high=0.3, size=(13, 1))
 
-        [self.ocp_solver.set(i, "x", x_guess) for i in range(self.ctrl_cfg.N + 1)]
-        [self.ocp_solver.set(i, "u", np.zeros((13, 1))) for i in range(self.ctrl_cfg.N)]
+        for i in range(self.ctrl_cfg.N + 1):
+            curr_vel = (0.05 - v_init) * i / self.ctrl_cfg.N + v_init
+            distance_on_track += curr_vel * Ts
+
+            point = self.planner.trajectory.get_intermediate_reference(
+                distance_on_track
+            )
+
+            x_guess[0:13, 0] = env.get_obs()
+            x_guess[0:3, 0] = point.position
+            x_guess[3:7, 0] = point.attitude
+            x_guess[7, 0] = -curr_vel
+            x_guess[-1] = distance_on_track
+
+            u_guess[-1] = (0.05 - v_init) / self.ctrl_cfg.N
+
+            self.ocp_solver.set(i, "x", x_guess)
+
+            if i < self.ctrl_cfg.N:
+                self.ocp_solver.set(i, "u", u_guess)
 
     def get_control_input(self, env: BaseEnv) -> np.ndarray:
         """
@@ -292,21 +372,26 @@ class NominalMPCCController(BaseMPCController):
             self._initialize_solver(env)
 
         # Set parameters
-        self._set_params()
+        self._set_params(env.get_obs())
 
         # Solve for the first control input in receding horizon fashion
+        xinit = np.append(env.get_obs(), self.theta_prev[1])
         u0 = self.ocp_solver.solve_for_x0(
-            env.obs[0:13], print_stats_on_failure=True, fail_on_nonzero_status=False
+            xinit, print_stats_on_failure=True, fail_on_nonzero_status=False
         )
         self._visualize_prediction()
 
+        self.planner.get_reference(env.obs)  # always update reference for bookeeping
+
         if hasattr(self, "renderer") and self.renderer is not None:
-            _, _ = self.planner.get_reference(env.obs)
             self._visualize_prediction_renderer()
 
         if False:
             solve_time = self.ocp_solver.get_stats("time_tot")
             print(f"Solve time: {solve_time}")
+
+        # Save current observation and input
+        self.u_past = u0
 
         # Save theta for next iteration
         for i in range(self.ctrl_cfg.N + 1):
@@ -315,9 +400,9 @@ class NominalMPCCController(BaseMPCController):
         # Log quantities
         self._log(run_id=env.run_id, timestamp=env.data.time, env=env)
 
-        return u0[0:12]
+        return u0[0:12].copy()
 
-    def _set_params(self) -> None:
+    def _set_params(self, obs: np.ndarray) -> None:
         """
         Sets the parameters of the solver at runtime
         """
@@ -370,7 +455,17 @@ class NominalMPCCController(BaseMPCController):
             solve_time = self.ocp_solver.get_stats("time_tot")
 
             # Track cost value of current solution
-            mpc_cost = self.ocp_solver.get_cost()
+            mpc_cost = self.cost_function(self.ocp_solver.get(0, "x"),
+                                          self.ocp_solver.get(0, "u"),
+                                          self.ocp_solver.get(0, "p")[0:3].copy(),
+                                          self.ocp_solver.get(0, "p")[3:6].copy(),
+                                          self.ocp_solver.get(0, "p")[6].copy(),
+                                          self.ocp_solver.get(0, "p")[7:11].copy()).full()
+                                          # TODO(kalbee): these terms are used on nominal mpcc runs!
+                                        #   self.ocp_solver.get(0, "pi")[0:3].copy(),
+                                        #   self.ocp_solver.get(0, "pi")[3:6].copy(),
+                                        #   self.ocp_solver.get(0, "pi")[6].copy(),
+                                        #   self.ocp_solver.get(0, "pi")[7:11].copy()).full()
 
             # Log quantities
             self.logger.log(
@@ -378,9 +473,11 @@ class NominalMPCCController(BaseMPCController):
                 timestamp=timestamp,
                 tracking_error=tracking_error,
                 attitude_error=attitude_error,
-                solve_time = solve_time,
-                mpc_cost = mpc_cost
-            )
+                solve_time=solve_time,
+                mpc_cost=mpc_cost,
+                u_demanded=self.u_past,
+                pos = obs_gt[0:3]
+            )  
 
     def _visualize_prediction(self) -> None:
         """

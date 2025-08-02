@@ -1,5 +1,6 @@
 from smallsat_sim.controllers.base_mpc_controller import BaseMPCController
 from smallsat_sim.envs.base_env import BaseEnv
+from smallsat_sim.utils.helpers import calc_lateral_tracking_error, calc_attitude_error
 
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
 
@@ -213,8 +214,8 @@ class NominalMPCController(BaseMPCController):
 
         # Set intial condition
         ocp.constraints.idxbx_0 = np.arange(13)
-        ocp.constraints.lbx_0 = env.obs[0:13].copy()
-        ocp.constraints.ubx_0 = env.obs[0:13].copy()
+        ocp.constraints.lbx_0 = env.get_obs()[0:13].copy()
+        ocp.constraints.ubx_0 = env.get_obs()[0:13].copy()
         ocp.parameter_values = np.zeros(ocp.dims.np)
 
         # Configure solver options
@@ -243,7 +244,7 @@ class NominalMPCController(BaseMPCController):
         """
         Initializes the solver. Also known as "warm start".
         """
-        xinit = env.obs[0:13]
+        xinit = env.get_obs()
         x_guess = np.concatenate((xinit, xinit))
 
         [self.ocp_solver.set(i, "x", x_guess) for i in range(self.ctrl_cfg.N + 1)]
@@ -259,7 +260,7 @@ class NominalMPCController(BaseMPCController):
             self._initialize_solver(env)
 
         # Set the reference position
-        ref_pos, ref_quat = self.planner.get_reference(env.obs)
+        ref_pos, ref_quat = self.planner.get_reference(env.get_obs())
         ref_vel = np.zeros((3, 1))
         ref_omega = np.zeros((3, 1))
         ref = np.concatenate((ref_pos, ref_quat, ref_vel, ref_omega))
@@ -268,12 +269,18 @@ class NominalMPCController(BaseMPCController):
 
         # Solve for the first control input in receding horizon fashion
         u0 = self.ocp_solver.solve_for_x0(
-            env.obs[0:13], print_stats_on_failure=True, fail_on_nonzero_status=False
+            env.get_obs()[0:13], print_stats_on_failure=True, fail_on_nonzero_status=False
         )
         self._visualize_prediction()
         if hasattr(self, "renderer") and self.renderer is not None:
-            _, _ = self.planner.get_reference(env.obs)
+            _, _ = self.planner.get_reference(env.get_obs())
             self._visualize_prediction_renderer()
+
+        # Save current observation and input
+        self.u_past = u0
+
+        # Log quantities
+        self._log(run_id=env.run_id, timestamp=env.data.time, env=env)
 
         return u0
 
@@ -281,9 +288,41 @@ class NominalMPCController(BaseMPCController):
         """
         Logs desired quantities if flag is enabled
         """
-        raise NotImplementedError(
-            f"The _log method is not implemented for the class {self.__class__.__name__}"
-        )
+        if self.has_logger:
+            obs_gt = (
+                env.get_obs()
+            )  # TODO: Change this to get GT obs, once MR has been merged
+
+            # Tracking error
+            tracking_error = calc_lateral_tracking_error(
+                obs=obs_gt, planner=self.planner
+            )
+
+            # Attitude error
+            _, curr_arc_length = self.planner.closest_point_on_trajectory(
+                point=obs_gt[:3]
+            )
+            q_ref = self.planner.trajectory.get_intermediate_reference(
+                curr_arc_length
+            ).attitude
+
+            attitude_error = calc_attitude_error(q_ref=q_ref, q=obs_gt[3:7])
+
+            # Track solve time
+            solve_time = self.ocp_solver.get_stats("time_tot")
+
+            # Log quantities
+            self.logger.log(
+                run_id=run_id,
+                timestamp=timestamp,
+                tracking_error=tracking_error,
+                attitude_error=attitude_error,
+                solve_time=solve_time,
+                u_demanded=self.u_past,
+                pos = obs_gt[0:3]
+            )
+
+            # note: no cost function logging!!
 
     def _visualize_prediction(self) -> None:
         """
