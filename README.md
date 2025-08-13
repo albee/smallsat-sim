@@ -8,22 +8,20 @@ The future home of SmallSatSim, a MuJoCo-based simulation environment for microg
 - interfacing with MuJoCo's high-fidelity dynamics and visualization utilities
 - differentiable custom dynamics for some scenarios, such as the free-flyer dynamics using CasADi
 
-SmallSatSim is a part of the SmallSat Steward project, a collaboration between researchers at Caltech's Jet Propulsion Laboratory and the University of Michigan's Space Systems Laboratory. This project is open-sourced under an Apache 2.0 license.
+SmallSatSim emerged from the SmallSat Steward project, a collaboration between researchers at Caltech's Jet Propulsion Laboratory (now University of Southern California) and the University of Michigan's Space Systems Laboratory. This project is open-sourced under an Apache 2.0 license.
 
-## Dependencies
-
-Python dependencies are specified in `requirements.txt` and are installed in the steps below.
+---
 
 ## Installation
 First, create a virtual environment with Python 3.10.11. This can be done with Visual Studio's extension *Python Environment Manager*, `pyenv`, outlined [here](https://robiokidenis.medium.com/how-to-install-multiple-python-on-your-mac-d20713740a2d).
 
-### Using install script
+### (Option 1) Using install script
 
 ```bash
 ./install_deps.sh
 ```
 
-### Using pyenv and pip
+### (Option 2) Using pyenv and poetry manually
 ```bash
 pyenv install 3.10.11
 pyenv global 3.10.11  # to globally switch for your user account
@@ -48,7 +46,7 @@ Afterwards install all necessary packages:
 pip install -e .
 ```
 
-### Using poetry
+Now, install remaining packages with poetry:
 
 ```bash
 poetry env use $(pyenv which python)
@@ -60,14 +58,16 @@ poetry install
 You will need to load the correct OpenGL interface libraries for visualization to work. Add the following lines to your `~.bashrc`:
 
 ```bash
-  export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libGLEW.so:/usr/lib/aarch64-linux-gnu/libGLX_mesa.so.0
+export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libGLEW.so:/usr/lib/aarch64-linux-gnu/libGLX_mesa.so.0
 ```
 
 A Docker container containing all necessary packages is also provided.
 
+---
 
 ## Usage
-The main files to run simulations can be found in the `experiments` folder. For each smallsat, there is a choice of different planning and control algorithms. This folder also contains a training script for reinforcement learning (RL) agents. Control parameters are set in the respective configuration files of each environment.
+
+The main files to run simulations can be found in the `experiments` folder. For each satellite, there is a choice of different planning and control algorithms. This folder also contains a training script for reinforcement learning (RL) agents. Control parameters are set in the respective configuration files of each environment.
 
 All experiments can be run by mounting the `smallsat-sim` directory on the provided Docker container. Running simulations on GPU is only possible for RL controllers and only by using the Docker container. For more information, see the instructions below.
 
@@ -104,22 +104,18 @@ TODO
 A container runtime environment must be installed to build the Docker image and run containers. An alternative to Docker Desktop is [Colima](https://github.com/abiosoft/colima).
 
 To build the docker image, run:
-```
+
+```bash
 docker compose build x86_gpu  # Or x86_cpu depending on the platform
 ```
 
 To run an experiment on the resulting Docker container, run:
-```
+
+```bash
 docker compose up x86_gpu /path/to/experiment --headless
 ```
+
 The Docker container is only compatible with headless mode for now.
-
-
-## Development Practices
-
-The project uses a [git flow](https://www.atlassian.com/git/tutorials/comparing-workflows/gitflow-workflow) style branching off of main for feature adds.
-
-Please develop significant features on separate branches named `feature/FEATURE_NAME`, branching off of `main`. For small changes, committing directly to `main` is fine; for larger changes merqe requests are encouraged.
 
 
 ## License
