@@ -1,0 +1,18 @@
+# syntax=docker/dockerfile:1
+ARG BASE_IMAGE
+FROM $BASE_IMAGE as base
+
+# Define the folder /code as the main working directory
+WORKDIR /code
+
+ADD src /code/src
+ADD pyproject.toml /code
+
+#COPY . .
+ENV LD_PRELOAD="/usr/local/lib/python3.10/dist-packages/torch.libs/libgomp-f3febf51.so.1.0.0 /lib/aarch64-linux-gnu/libGLdispatch.so.0"
+ENV MUJOCO_GL=glfw
+
+RUN pip install -e /code
+
+# ==== Voxel Only
+ENV DISPLAY=""

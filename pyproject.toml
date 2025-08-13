@@ -1,39 +1,37 @@
 [build-system]
-requires = ["poetry>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
 
-[tool.poetry]
-name = "smallsat_sim"
+[project]
+name = "smallsat_sim"  # Replace with your package name
 version = "1.0.0"
 description = "SmallSatSim"
-authors = [ "Alexander Hansson <ahansson@ethz.ch>",
-            "Markus H. Iversflaten <markus.h.iversflaten@ntnu.no>",
-            "David Schwartz <dschwartz@ethz.ch>",
-            "David Sternberg <david.c.sternberg@jpl.nasa.gov>",
-            "Keenan Albee <keenan.albee@jpl.nasa.gov>"]
 
-[tool.poetry.dependencies] # If you update the dependencies, you may also need to change requirements.txt accordingly
-python = "^3.10"  # Specify your Python version requirement here
-casadi = "3.6.5"
-numpy = "1.26.4"
-pyyaml = "6.0.1"
-mujoco = "3.2.1"
-mujoco-mjx = "3.2.1"
-brax = "0.10.5"
-glfw = "2.7.0"
-opencv-python = "4.10.0.82"
-scipy = "1.14.0"
-control = "0.10.0"
-optax = "0.2.3"
-flax = "0.8.5"
-tensorflow-probability = "0.24.0"
-distrax = "0.1.5"
-h5py="3.11.0"
-pandas="2.2.2"
-wandb="0.17.8"
-psutil = "6.0.0"
-gpytorch = "1.13"
-pyqt6 = "^6.7.1"
+dependencies = [
+    "casadi==3.6.7",
+    "numpy==1.26.4",
+    "pyyaml==6.0.1",
+    "mujoco==3.2.1",
+    "mujoco-mjx==3.2.1",
+    "glfw==2.8.0",
+    "opencv-python==4.10.0.82",
+    "scipy==1.14.1",
+    "control==0.10.0",
+    "h5py==3.12.1",
+    "pandas==2.2.2",
+    "torch==2.5.1",
+    "psutil==6.1.0",
+    "gpytorch==1.13", 
+    "pytest",
+    "brax = "0.10.5",
+    "optax = "0.2.3",
+    "flax = "0.8.5"
+    "tensorflow-probability = "0.24.0",
+    "wandb="0.17.8",
+    "pyqt6 = "^6.7.1"
+]
 
-[tool.poetry.group.dev.dependencies]
-ipykernel = "^6.29.5"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+where = ["src"]  # Source directory for the package

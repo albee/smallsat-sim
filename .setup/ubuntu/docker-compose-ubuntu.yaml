@@ -1,0 +1,47 @@
+version: '3'
+name: "smallsat"
+services:
+  smallsat:
+    image: smallsat
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        DISPLAY: ":0"
+    container_name: smallsat
+    volumes:
+      - .:/code
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /dev:/dev:rw
+    devices:
+      - /dev/dri:/dev/dri
+    environment:
+      - DISPLAY=$DISPLAY
+      # - DISPLAY=:0
+      # - DBUS_SESSION_BUS_ADDRESS=/dev/null
+      - QT_X11_NO_MITSHM=1
+      - XAUTHORITY=/tmp/.docker.xauth
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+    expose:
+      - "20210-20230/udp"
+      - "33300-33400/udp"
+      - "5005:5005/udp"
+      - "5006:5006/udp"
+    ports:
+      - "20210-20230:20210-20230/udp"
+      - "33300-33400:33300-33400/udp"
+    extra_hosts:
+      - "host.docker.internal:172.17.0.1"
+
+  # Starts a local NTP server so other machines can sync time.
+  ntp:
+    image: cturra/ntp
+    container_name: ntp
+    restart: always
+    ports:
+      - 123:123/udp
+    environment:
+      # Serve local time source
+      - NTP_SERVERS=127.127.1.1
+      - LOG_LEVEL=0

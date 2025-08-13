@@ -1,0 +1,14 @@
+casadi==3.6.7
+numpy==1.26.4
+pyyaml==6.0.1
+mujoco==3.2.6
+mujoco-mjx==3.2.6
+glfw==2.8.0
+opencv-python==4.10.0.82
+scipy==1.14.1
+control==0.10.0
+h5py==3.12.1
+pandas==2.2.2
+torch==2.5.1
+psutil==6.1.0
+gpytorch==1.13

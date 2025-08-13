@@ -2,23 +2,11 @@
 
 # syntax=docker/dockerfile:1
 # Use ubuntu 20.04 as base image for arm64
-# FROM --platform=linux/arm64 ubuntu:20.04
-FROM nvidia/cuda:12.1.0-devel-ubuntu20.04
-
-# Set environment variables for CUDA and cuDNN
-ENV CUDA_HOME=/usr/local/cuda \
-    CUDA_PATH=/usr/local/cuda \
-    LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
-
-# Choose a Python image
-FROM python:3.10-bookworm
+FROM --platform=linux/arm64 ubuntu:20.04
+# FROM ubuntu:20.04
 
 # Define the folder /code as the main working directory
 WORKDIR /code
-
-# NVIDIA container runtime
-ENV NVIDIA_VISIBLE_DEVICES ${NVIDIA_VISIBLE_DEVICES:-all}
-ENV NVIDIA_DRIVER_CAPABILITIES ${NVIDIA_DRIVER_CAPABILITIES:+$NVIDIA_DRIVER_CAPABILITIES,}graphics,video,compute,utility
 
 # ===============================
 # Install Python3.10 
@@ -61,10 +49,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get install -y \
     libgomp1 \
     libglfw3 \
     xvfb \
-    x11vnc \
-    ffmpeg \
-    libsm6 \
-    libxext6 
+    x11vnc \ 
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ===============================
@@ -81,29 +66,40 @@ RUN pip install --upgrade pip setuptools
 
 # Install dependencies and PyTorch
 RUN pip install torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu
-RUN pip install -U "jax[cuda12]"
 
 # Copy the current directory contents into the container at /code
-COPY . .
+# COPY . .
 
 # Install dependencies and the package in editable mode
 RUN pip install --upgrade pip
-RUN pip install -e .
+# RUN pip install -e .
 
+COPY .setup .setup
 # Compile and install acados
 RUN ./.setup/ubuntu/install_acados.sh
+RUN ./.setup/ubuntu/install_casadi.sh
 ENV ACADOS_SOURCE_DIR="/acados"
 ENV LD_LIBRARY_PATH="/acados/lib:$LD_LIBRARY_PATH"
+
+
+# Compile and install l4acados
+# COPY .setup/ubuntu/install_l4acados.sh .setup/ubuntu/install_l4acados.sh
+# RUN ./.setup/ubuntu/install_l4acados.sh
+# ENV ACADOS_SOURCE_DIR="l4acados/external/acados"
+# ENV LD_LIBRARY_PATH="$ACADOS_SOURCE_DIR/lib"
 
 # Setup the Tera renderer on Arm machines
 RUN ./.setup/ubuntu/install_tera_renderer.sh
 
-# Compile and install l4acados
-RUN ./.setup/ubuntu/install_l4acados.sh
-# ENV ACADOS_SOURCE_DIR="/acados"
-# ENV LD_LIBRARY_PATH="/acados/lib:$LD_LIBRARY_PATH"
-
-# Only set for arm64
 # ENV LD_PRELOAD="/usr/local/lib/python3.10/dist-packages/torch.libs/libgomp-f3febf51.so.1.0.0 /lib/aarch64-linux-gnu/libGLdispatch.so.0"
 # ENV MUJOCO_GL=glfw
 
+# # ==== Voxel Only
+# # ENV DISPLAY=""
+
+# # Local PC
+# ENV DISPLAY=""
+
+# # Expose ports for UDP
+# EXPOSE 5005/udp
+# EXPOSE 5006/udp

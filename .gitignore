@@ -37,10 +37,10 @@ videos/
 # logs
 *.pkl
 logs/
-<<<<<<< HEAD
 wandb/
-=======
+*.csv
+*.png
+# logs/
 
 # external libraries during development
 external/
->>>>>>> feature/gp-mpc

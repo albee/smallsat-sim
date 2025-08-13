@@ -40,15 +40,11 @@ args = get_args()
 model = mujoco.MjModel.from_xml_string(xml)
 data = mujoco.MjData(model)
 
-
-with mujoco.viewer.launch_passive(model, data) as viewer:
-
-    # Close the viewer automatically after 30 wall-seconds.
+if(args.headless): # run without visualization
+    print("Running headless. Press Ctrl+C to stop.")
     start_time = time.time()
-
-    while viewer.is_running():
+    while(True):
         real_time = time.time() - start_time
-
         sim_time = data.time
 
         if sim_time < real_time:
@@ -62,5 +58,32 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
             # Step simulation
             mujoco.mj_step(model,data)
 
-            # Update renderer
-            viewer.sync()
+
+else: # Run with visualization
+    with mujoco.viewer.launch_passive(model, data) as viewer:
+
+        # Close the viewer automatically after 30 wall-seconds.
+        start_time = time.time()
+
+        while viewer.is_running():
+            real_time = time.time() - start_time
+
+            sim_time = data.time
+
+            if sim_time < real_time:
+            # example control
+                force = np.cos(sim_time)
+
+                # apply force to the actuator
+                actuator_index = model.actuator('cube_thruster').id
+                data.ctrl[actuator_index] = force
+
+                # Step simulation
+                mujoco.mj_step(model,data)
+
+                # Update renderer
+                viewer.sync()
+ 
+
+# Stop the virtual display when done
+# display.stop()
