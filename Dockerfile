@@ -1,30 +1,36 @@
 # syntax=docker/dockerfile:experimental
 
-# syntax=docker/dockerfile:1
 # Use ubuntu 20.04 as base image for arm64
-# FROM --platform=linux/arm64 ubuntu:20.04
-FROM nvidia/cuda:12.1.0-devel-ubuntu20.04
+FROM ubuntu:20.04
 
-# Set environment variables for CUDA and cuDNN
+# TODO(dschwartz): verify CUDA/jax support
+# how to portably support different CUDA versions on host?
+FROM nvidia/cuda:12.4.0-devel-ubuntu20.04
+
+Set environment variables for CUDA and cuDNN
 ENV CUDA_HOME=/usr/local/cuda \
     CUDA_PATH=/usr/local/cuda \
-    LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
-
-# Choose a Python image
-FROM python:3.10-bookworm
-
-# Define the folder /code as the main working directory
-WORKDIR /code
+    LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH \
+    TZ=US \
+    DEBIAN_FRONTEND=noninteractive
 
 # NVIDIA container runtime
 ENV NVIDIA_VISIBLE_DEVICES ${NVIDIA_VISIBLE_DEVICES:-all}
 ENV NVIDIA_DRIVER_CAPABILITIES ${NVIDIA_DRIVER_CAPABILITIES:+$NVIDIA_DRIVER_CAPABILITIES,}graphics,video,compute,utility
 
+# Manually set timezone  
+ENV TZ=US \
+    DEBIAN_FRONTEND=noninteractive
+
+# Define the folder /code as the main working directory
+WORKDIR /code
+
 # ===============================
 # Install Python3.10 
 # ===============================
 # Install python3.10. Since ubuntu 20.04 only has python3.8 by default, we need to add some addtional ppa's to install python3.10
-RUN apt-get update && apt install -y software-properties-common
+RUN apt-get update && apt install -y software-properties-common 
+
 # Add deadsnakes ppa which contains python3.10 for ubuntu 20.04
 RUN add-apt-repository -y ppa:deadsnakes/ppa
 # Install python3.10
@@ -64,7 +70,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get install -y \
     x11vnc \
     ffmpeg \
     libsm6 \
-    libxext6 
+    libxext6 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ===============================
@@ -79,10 +85,6 @@ RUN rm get-pip.py
 # This is to make sure the newest version of cffi is installed (for some reason it will install 1.14.0, which is an old version).
 RUN pip install --upgrade pip setuptools 
 
-# Install dependencies and PyTorch
-RUN pip install torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu
-RUN pip install -U "jax[cuda12]"
-
 # Copy the current directory contents into the container at /code
 COPY . .
 
@@ -90,12 +92,16 @@ COPY . .
 RUN pip install --upgrade pip
 RUN pip install -e .
 
+# Install additional dependencies and PyTorch
+RUN pip install torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu
+RUN pip install -U "jax[cuda11]"
+
 # Compile and install acados
 RUN ./.setup/ubuntu/install_acados.sh
 ENV ACADOS_SOURCE_DIR="/acados"
 ENV LD_LIBRARY_PATH="/acados/lib:$LD_LIBRARY_PATH"
 
-# Setup the Tera renderer on Arm machines
+# Setup the Tera renderer
 RUN ./.setup/ubuntu/install_tera_renderer.sh
 
 # Compile and install l4acados

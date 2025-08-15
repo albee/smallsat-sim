@@ -23,12 +23,12 @@ dependencies = [
     "psutil==6.1.0",
     "gpytorch==1.13", 
     "pytest",
-    "brax = "0.10.5",
-    "optax = "0.2.3",
-    "flax = "0.8.5"
-    "tensorflow-probability = "0.24.0",
-    "wandb="0.17.8",
-    "pyqt6 = "^6.7.1"
+    "brax==0.10.5",
+    "optax==0.2.3",
+    "flax==0.8.5",
+    "tensorflow-probability==0.24.0",
+    "wandb==0.17.8",
+    "pyqt6>=6.7.1"
 ]
 
 requires-python = ">=3.10"

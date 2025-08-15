@@ -16,6 +16,7 @@ printf "installing smallsat docker...\n"
 if [[ -f docker-compose-macos.yaml ]]; then
     sudo install ../smallsat /usr/local/bin
 	ln -sf $PWD/docker-compose-macos.yaml ../../docker-compose.yaml
+    docker pull cturra/ntp  # used for NTP sync server
 else
     printf "Cannot run the setup in this folder! Change to the correct setup sub-folder.\n"
     exit 1
