@@ -1,5 +1,4 @@
 import numpy as np
-import jax.numpy as jnp
 import mujoco
 import mujoco.viewer
 import cv2
@@ -14,7 +13,6 @@ from smallsat_sim.envs.disturbances import DisturbanceList
 from smallsat_sim.envs.perturbations import PerturbationList
 from smallsat_sim.utils.logger import Logger
 from smallsat_sim import SMALLSAT_STEWARD_ROOT_DIR
-
 
 from argparse import Namespace
 from typing import Optional

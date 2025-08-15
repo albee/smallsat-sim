@@ -14,11 +14,12 @@ class AstrobeeEnv(BaseEnv):
         super().__init__(args=args)
 
         # Instantiate perturbations
-        self.perturbations = PerturbationList([StuckOffThrusters(self.model_cfg),   #0
-                                               StuckOnThrusters(self.model_cfg),    #1
-                                               FaultyValve(self.model_cfg),         #2
-                                               SaturatedThrust(self.model_cfg),     #3
-                                               ThrustInstability(self.model_cfg)])  #4
+        self.perturbations = PerturbationList([
+            StuckOffThrusters(self.model_cfg),   #0
+            StuckOnThrusters(self.model_cfg),    #1
+            FaultyValve(self.model_cfg),         #2
+            SaturatedThrust(self.model_cfg),     #3
+            ThrustInstability(self.model_cfg)])  #4
 
         # Instantiate disturbances
         #self.disturbances = DisturbanceList([ConstantForceDisturbance(0.05, np.array([1, 1, 1]))])

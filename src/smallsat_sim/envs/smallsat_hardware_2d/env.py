@@ -14,7 +14,12 @@ class SmallsatHardware2DEnv(BaseEnv2D):
         super().__init__(args=args)
 
         # Instantiate perturbations
-        self.perturbations = PerturbationList([StuckOffThrusters(self.model_cfg), StuckOnThrusters(self.model_cfg), SamplePerturbation(self.model_cfg, 10.0), FaultyValve(self.model_cfg), SaturatedThrust(self.model_cfg)])
+        self.perturbations = PerturbationList([
+            StuckOffThrusters(self.model_cfg),
+            StuckOnThrusters(self.model_cfg),
+            SamplePerturbation(self.model_cfg, 10.0),
+            FaultyValve(self.model_cfg),
+            SaturatedThrust(self.model_cfg)])
 
         # Instantiate disturbances
         #self.disturbances = DisturbanceList([ConstantForceDisturbance(0.05, np.array([1, 1, 1]))])

@@ -132,7 +132,7 @@ def generate_mujoco_xml_flat_bed(env_config, model_config, free_floating: bool =
 
         <!-- Ground plane as a 1m x 1m box -->
         <body name="floor" pos="0 0 0">
-            <geom name="ground" type="plane" size="1.5 1.5 0.1" pos="0 0 0" rgba="0.8 0.8 0.8 1" />
+            <geom name="ground" type="plane" size="1.5 1.5 0.1" pos="0 0 -0.3" rgba="0.8 0.8 0.8 1" />
              <!-- X-axis (Red) -->
             <geom name="x_axis_ground" type="cylinder" fromto="0 0 0.02 0.2 0 0.02" size="0.002" rgba="1 0 0 1"/>
             

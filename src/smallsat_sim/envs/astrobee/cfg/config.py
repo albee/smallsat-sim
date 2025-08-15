@@ -69,7 +69,7 @@ def randomize_initial_state() -> tuple[np.ndarray, np.ndarray]:
         [0, -90, 0],  # Point 22
         [0, -90, 0],  # Point 23
         [0, -45, 90],  # Point 24
-    ])
+    ]
 
     # Define random integer
     idx = random.randint(0, 23)

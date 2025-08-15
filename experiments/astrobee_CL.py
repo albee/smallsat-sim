@@ -26,14 +26,14 @@ ctrl = NominalMPCCController(env, planner)
 # Define start time
 start_time = time.time()
 
-env.env_cfg.sim.sim_time = 100
+env.env_cfg.sim.sim_time = 0
 
 # Simulation loop
 while env.data.time <= env.env_cfg.sim.max_sim_time:
 
     real_time = time.time() - start_time
-
     sim_time = env.data.time
+    print("sim_time: ", sim_time)
 
     if True:
         # Calculate control action (open-loop)
