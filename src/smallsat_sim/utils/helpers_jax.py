@@ -1,10 +1,4 @@
-# This file includes various helper functions
-# Can be included at the beginning of a file the following way:
-# from utils.helpers import "function name"
-
-# Parsing
 import argparse
-import numpy as np
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -68,12 +62,12 @@ def refModel3(x_d, v_d, a_d, r, wn_d, zeta_d, v_max, sampleTime):
     a_d += sampleTime * j_d  # desired acceleration
 
     # Limit the desired velocity
-    np.clip(v_d, -v_max, v_max, out=v_d)
+    v_d = jnp.clip(v_d, -v_max, v_max)
 
     return x_d, v_d, a_d
 
 
-def Tquat(q: np.ndarray) -> np.ndarray:
+def Tquat(q: jnp.ndarray) -> jnp.ndarray:
     """Tq = Tquat(q) computes the quaternion transformation matrix Tq of
     dimension 4 x 3 for attitude such that q_dot = Tq * w
     """
@@ -83,7 +77,7 @@ def Tquat(q: np.ndarray) -> np.ndarray:
         eps2 = q[2]
         eps3 = q[3]
 
-        T = 0.5 * np.array(
+        T = 0.5 * jnp.array(
             [
                 [-eps1, -eps2, -eps3],
                 [eta, -eps3, eps2],
@@ -181,48 +175,80 @@ def combined_shape(len, shape=None):
     if shape is None:
         return (len,)
 
-    return (len, shape) if np.isscalar(shape) else (len, *shape)
+    return (len, shape) if jnp.isscalar(shape) else (len, *shape)
 
 
-def calc_lateral_tracking_error(obs: np.ndarray, planner: BasePlanner) -> float:
+def calc_lateral_tracking_error(obs: jnp.ndarray, planner: BasePlanner) -> jnp.ndarray:
     """
     Computes the lateral tracking error at a given point
     """
-    current_pos = obs[:3]
-
     # Compute the closest point
-    closest_point, _ = planner.closest_point_on_trajectory(point=obs[:3])
+    closest_points = planner.closest_point_on_trajectory(obs)
 
-    # Compute l2 distance (is orthogonal already)
-    return np.linalg.norm(closest_point - current_pos)
+    # Compute L2 distance (is orthogonal already)
+    return jnp.linalg.norm(closest_points - obs[:, :3])
 
 
-def calc_attitude_error(q_ref: np.ndarray, q: np.ndarray) -> float:
+def calc_orientation_error(states: jnp.ndarray) -> jnp.ndarray:
+    """Compute the orientation error (3 DOF case)."""
+    return states[:, 2]
+
+
+def calc_attitude_error(q_ref: jnp.ndarray, q: jnp.ndarray) -> jnp.ndarray:
     """
-    Computes the attitude error as rotation angle.
-    The angle error is the smallest angle by which you would need to rotate
-    the object (or frame of reference) from its current orientation (actual quaternion)
-    to match the desired orientation (desired quaternion).
-    Returned in radians. Use np.degrees() for conversion.
+    Computes the attitude error as rotation angle. The angle error is the smallest angle by
+    which you would need to rotate the spacecraft (or frame of reference) from its current
+    orientation (actual quaternion) to match the desired orientation (desired quaternion).
+    Returned in radians. Use jnp.degrees() for conversion.
     """
-    # Convert the quaternions to scipy Rotation objects
-    desired_rotation = R.from_quat(q_ref)
-    actual_rotation = R.from_quat(q)
+    # Normalize the quaternions to ensure they represent valid rotations
+    q_ref_normalized = q_ref / jnp.linalg.norm(q_ref, axis=1)
+    q_normalized = q / jnp.linalg.norm(q, axis=1)
 
-    # Calculate the relative rotation (error quaternion)
-    error_rotation = desired_rotation * actual_rotation.inv()
+    # Compute the error quaternion using JAX operations
+    # Compute the conjugate of q_normalized in a vectorized manner
+    q_conj = jnp.concatenate([q_normalized[:, :1], -q_normalized[:, 1:]], axis=1)
 
-    # Extract the angle of the error quaternion
-    return error_rotation.magnitude()
+    # Compute the error quaternion: q_err = q_ref_normalized * q_conj
+    q_err = jax.vmap(quat_multiply)(q_ref_normalized, q_conj)
+    q_err = q_err / jnp.linalg.norm(q_err, axis=1, keepdims=True)
+
+    # For a quaternion q = [w, x, y, z], the rotation angle is given by 2*arccos(|w|)
+    w = jnp.clip(q_err[:, 0], -1.0, 1.0)
+    error_angle = 2 * jnp.arccos(jnp.abs(w))
+
+    # Ensure the angle is within [0, pi]
+    error_angle = jnp.where(error_angle > jnp.pi, 2 * jnp.pi - error_angle, error_angle)
+
+    return error_angle
 
 
-def train_val_split(X, y, val_split=0.2, key=jax.random.PRNGKey(42)):
+def calc_extrinsic_error(
+    actual_ext: jnp.ndarray, estimated_ext: jnp.ndarray
+) -> jnp.ndarray:
+    """
+    Computes the error between the actual and estimated thruster ratios in all environments.
+    """
+    return estimated_ext - actual_ext
+
+
+def train_val_split(
+    X,
+    y,
+    val_split=0.2,
+    key=jax.random.PRNGKey(42),
+    shuffle: bool = True,
+    trim_for_cnn: bool = False,
+):
     """
     Split data into training and validation set.
     """
     num_samples = X.shape[0]
     key, subkey = jax.random.split(key)
-    indices = jax.random.permutation(subkey, num_samples)
+    if shuffle:
+        indices = jax.random.permutation(subkey, num_samples)
+    else:
+        indices = jnp.arange(num_samples)
 
     val_size = int(num_samples * val_split)
     train_idx, val_idx = indices[val_size:], indices[:val_size]
@@ -230,18 +256,35 @@ def train_val_split(X, y, val_split=0.2, key=jax.random.PRNGKey(42)):
     X_train, y_train = X[train_idx], y[train_idx]
     X_val, y_val = X[val_idx], y[val_idx]
 
+    if trim_for_cnn:
+        # Trim the data to be a multiple of seq_len
+        X_train, y_train = _trim_and_reshape(X_train, y_train)
+        X_val, y_val = _trim_and_reshape(X_val, y_val)
+
     return X_train, y_train, X_val, y_val
 
 
-@nnx.jit
-def mse_loss_fn(model, X: jnp.ndarray, y: jnp.ndarray, key) -> jnp.ndarray:
+def _trim_and_reshape(X, y, seq_len=50):
+    keep = (X.shape[0] // seq_len) * seq_len  # largest multiple of seq_len ≤ n
+
+    X_trim = X[:keep]
+    y_trim = y[:keep]
+
+    X_seq = X_trim.reshape(-1, seq_len, X.shape[2])
+    y_seq = y_trim.reshape(-1, seq_len, y.shape[2])
+
+    return X_seq, y_seq
+
+
+def batch_mse_loss_fn(model, X: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
     """
     Mean squared error loss function.
     """
-    y_pred_dist, _ = model.forward(X)
-    y_pred = y_pred_dist.sample(seed=key)
+    # TODO: implement sliding window for batch loss
+    preds = jax.vmap(lambda x: model(x), in_axes=0)(X)
+    losses = jnp.square(preds - y[:, -1, :])
 
-    return jnp.mean((y_pred - y) ** 2)
+    return jnp.mean(losses)
 
 
 @nnx.jit
@@ -259,10 +302,9 @@ def normalize_obs(obs: jnp.ndarray, ep_obs: jnp.ndarray, step: int) -> jnp.ndarr
     """
     Normalize the observations along a trajectory.
     """
-    return obs
-    # return (obs - ep_obs[:, : step + 1, :].mean(axis=1)) / (
-    #     ep_obs[:, : step + 1, :].std(axis=1) + 1e-8
-    # )
+    return (obs - ep_obs[:, : step + 1, :].mean(axis=1)) / (
+        ep_obs[:, : step + 1, :].std(axis=1) + 1e-8
+    )
 
 
 def scale_rews(rews: jnp.ndarray, ep_rets: jnp.ndarray, step: int) -> jnp.ndarray:

@@ -3,8 +3,6 @@
 # Use ubuntu 20.04 as base image for arm64
 FROM ubuntu:20.04
 
-# TODO(dschwartz): verify CUDA/jax support
-# how to portably support different CUDA versions on host?
 FROM nvidia/cuda:12.4.0-devel-ubuntu20.04
 
 Set environment variables for CUDA and cuDNN
@@ -94,7 +92,7 @@ RUN pip install -e .
 
 # Install additional dependencies and PyTorch
 RUN pip install torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu
-RUN pip install -U "jax[cuda11]"
+RUN pip install -U "jax[cuda12]"
 
 # Compile and install acados
 RUN ./.setup/ubuntu/install_acados.sh

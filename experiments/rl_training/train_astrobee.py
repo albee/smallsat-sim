@@ -10,12 +10,8 @@ from smallsat_sim.planners.mission.mission import MissionPlanner
 
 
 # Set flags to improve XLA performance on GPU
-os.environ['XLA_FLAGS'] = (
-    '--xla_gpu_enable_triton_softmax_fusion=true '
-    '--xla_gpu_triton_gemm_any=True '
-    # '--xla_gpu_enable_async_collectives=true '
-    # '--xla_gpu_enable_latency_hiding_scheduler=true '
-    # '--xla_gpu_enable_highest_priority_async_stream=true '
+os.environ["XLA_FLAGS"] = (
+    "--xla_gpu_enable_triton_softmax_fusion=true " "--xla_gpu_triton_gemm_any=True "
 )
 
 # Get arguments for script execution
@@ -25,7 +21,7 @@ args = get_args()
 env = AstrobeeEnvVectorized(args=args)
 
 # Create planner
-planner = OraclePlanner(env)
+planner = OraclePlannerRL(env, radius=0.0)
 
 # Create runner
 runner = OnPolicyRunner(env, planner)
@@ -35,6 +31,9 @@ runner.pretrain()
 
 # Learning
 runner.learn()
+
+# Adaptation module training
+runner.train_adaptation_module_on_policy()
 
 # Evaluation
 runner.evaluate()

@@ -8,7 +8,16 @@ class ReplayBuffer(object):
     Replay buffer to store trajectories. Inspired from https://spinningup.openai.com/en/latest/algorithms/vpg.html.
     """
 
-    def __init__(self, num_envs, obs_dim, act_dim, size, gamma, lam) -> None:
+    def __init__(
+        self,
+        num_envs,
+        obs_dim,
+        act_dim,
+        ext_dim,
+        size,
+        gamma,
+        lam,
+    ) -> None:
         self.obs_buf = jnp.zeros(combined_shape(size, (num_envs, obs_dim)))
         self.act_buf = jnp.zeros(combined_shape(size, (num_envs, act_dim)))
         self.tdres_buf = jnp.zeros((size, num_envs))
@@ -16,6 +25,7 @@ class ReplayBuffer(object):
         self.ret_buf = jnp.zeros((size, num_envs))
         self.val_buf = jnp.zeros((size, num_envs))
         self.logp_buf = jnp.zeros((size, num_envs))
+        self.extrinsics_buf = jnp.zeros(combined_shape(size, (num_envs, ext_dim)))
         self.gamma = gamma
         self.lam = lam
         self.ptr = 0
@@ -29,6 +39,7 @@ class ReplayBuffer(object):
         rew: jnp.ndarray,
         val: jnp.ndarray,
         logp: jnp.ndarray,
+        extrinsics: jnp.ndarray,
     ):
         """
         Append a single timestep to the buffer at each environment update in each environment.
@@ -42,6 +53,7 @@ class ReplayBuffer(object):
         self.rew_buf = self.rew_buf.at[self.ptr].set(rew)
         self.val_buf = self.val_buf.at[self.ptr].set(val)
         self.logp_buf = self.logp_buf.at[self.ptr].set(logp)
+        self.extrinsics_buf = self.extrinsics_buf.at[self.ptr].set(extrinsics)
 
         # Update pointer
         self.ptr += 1
@@ -102,6 +114,7 @@ class ReplayBuffer(object):
             ret=self.ret_buf,
             tdres=self.tdres_buf,
             logp=self.logp_buf,
+            extrinsics=self.extrinsics_buf,
         )
 
         return {k: v for k, v in data.items()}

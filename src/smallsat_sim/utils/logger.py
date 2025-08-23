@@ -90,10 +90,15 @@ class Logger(object):
         if isinstance(folder, str):
             folder = os.path.join(self.base_log_dir, folder)
         elif folder is None:
+        if isinstance(folder, str):
+            folder = os.path.join(self.base_log_dir, folder)
+        elif folder is None:
             folder = self._get_most_recent_log_dir()
+
 
         if folder is None:
             return []
+
 
         print(f"Loading log files from directory: {folder}")
 
@@ -102,12 +107,15 @@ class Logger(object):
         return [os.path.join(folder, f) for f in pkl_files]
 
     def load_log(
-        self, folder: Optional[str] = None, run_id: Optional[int] = None, 
+        self,
+        folder: Optional[str] = None,
+        run_id: Optional[int] = None,
     ) -> pd.DataFrame:
         """
         Load the saved log data from all pickle files in the most recent log directory, concatenating them into a single DataFrame.
         If run_id is specified, filter the DataFrame by that run_id.
         """
+        pkl_files = self._get_all_pickle_files(folder=folder)
         pkl_files = self._get_all_pickle_files(folder=folder)
 
         if not pkl_files:
@@ -117,6 +125,42 @@ class Logger(object):
 
         # Load and concatenate all DataFrames
         df_list = [pd.read_pickle(file) for file in pkl_files]
+        df = pd.concat(df_list, ignore_index=True)
+
+        if run_id is not None:
+            df = df[df["RunID"] == run_id]
+
+        return df
+
+    def load_all_logs(self, run_id: int | None = None) -> pd.DataFrame:
+        """
+        Load all saved log data from every log directory in the base log directory, concatenating them 
+        into a single DataFrame. If run_id is specified, filter the DataFrame by that run_id.
+        """
+        df_list = []
+        # Iterate over each subfolder in the base log directory
+        subfolders = [
+            os.path.join(self.base_log_dir, folder)
+            for folder in os.listdir(self.base_log_dir)
+            if os.path.isdir(os.path.join(self.base_log_dir, folder))
+        ]
+        if not subfolders:
+            raise FileNotFoundError(
+                "No log directories found in the base log directory."
+            )
+
+        for folder in subfolders:
+            pkl_files = [
+                os.path.join(folder, file)
+                for file in os.listdir(folder)
+                if file.endswith(".pkl")
+            ]
+            for file in pkl_files:
+                df_list.append(pd.read_pickle(file))
+
+        if not df_list:
+            raise FileNotFoundError("No log files found in any log directories.")
+
         df = pd.concat(df_list, ignore_index=True)
 
         if run_id is not None:

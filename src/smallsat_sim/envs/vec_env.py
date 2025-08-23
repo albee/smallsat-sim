@@ -1,5 +1,4 @@
 from argparse import Namespace
-from typing import Optional
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -27,15 +26,28 @@ class VecEnv(BaseEnv):
         # Number of environments running in parallel
         self.num_envs = self.env_cfg.control.RL.num_envs
 
+        # Flag to decide whether to used the pretrained actor and critic networks
+        self.use_pretrained = self.env_cfg.control.RL.use_pretrained
+
+        # Flag to decide whether to use the adaptation module
+        self.use_adaptive_approach = self.env_cfg.control.RL.use_adaptive_approach
+
         super().__init__(args)
 
         # Observation and action spaces
-        self.obs_dim = 12
-        self.act_dim = 12
+        self.obs_dim = 6
+        self.act_dim = 8
+        if self.use_adaptive_approach is True:
+            self.ext_dim = self.act_dim
+        else:
+            self.ext_dim = 0
 
         # Initial position and velocity
         self.init_qpos = self.mjx_batch.qpos
         self.init_qvel = self.mjx_batch.qvel
+
+        # Max. offset from the initial position at the start
+        self.max_start_offset = self.env_cfg.Bodies.max_start_offset
 
         # Perform a Just In Time compilation of mjx.step() so that it runs efficiently on GPU
         self.jit_step = jax.jit(jax.vmap(mjx.step, in_axes=(None, 0)))
@@ -59,7 +71,12 @@ class VecEnv(BaseEnv):
                 qpos=jnp.concatenate(
                     [
                         self.mjx_data.qpos[0:2]
-                        + jax.random.uniform(rng, (2,), minval=-2.0, maxval=2.0),
+                        + jax.random.uniform(
+                            rng,
+                            (2,),
+                            minval=-self.max_start_offset,
+                            maxval=self.max_start_offset,
+                        ),
                         self.mjx_data.qpos[2].reshape(-1),
                         self._get_random_quaternion(rng),
                     ]
@@ -74,7 +91,7 @@ class VecEnv(BaseEnv):
         self,
         actions: jnp.ndarray,
         states: jnp.ndarray,
-        iter: Optional[int] = None,
+        iter: int | None = None,
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         """
         Apply input action on the environment. Returns the rewards and wether the terminal state has been reached.
@@ -89,9 +106,9 @@ class VecEnv(BaseEnv):
         squared_attitude_dev = states[:, 2] ** 2
         squared_vel = states[:, 3] ** 2 + states[:, 4] ** 2
         squared_angvel = states[:, 5] ** 2
-        control_effort = jnp.sum(actions ** 2)
+        control_effort = jnp.sum(actions**2)
 
-        # Curriculum-based training # TODO: tune weights
+        # Curriculum-based training
         if (
             iter is not None and iter < 25
         ):  # Assumption: train for more than this many epochs
@@ -209,7 +226,7 @@ class VecEnv(BaseEnv):
             (self.num_envs, 3), next_waypoint
         )
 
-        # Compute the attitude error
+        # Compute the orientation/attitude error
         ref_orientation = jnp.full(self.num_envs, 0)
         delta_orientation = rot_angle - ref_orientation
 
@@ -226,6 +243,81 @@ class VecEnv(BaseEnv):
 
 
         return states
+
+    def apply_random_perturbations(
+        self,
+        key,
+        fraction_perturbed_envs: float,
+        perturbation_distribution: jnp.ndarray = jnp.array(
+            [0.5, 0.05, 0.15, 0.15, 0.15]
+        ),
+    ) -> None:
+        """
+        Apply a perturbation scenario to a subset of the environments (one per environment).
+        NOTE: the thrusters are picked at random and the default times are 0.0 for now.
+        """
+        # Calculate number of environments to perturb
+        num_perturbed = int(self.num_envs * fraction_perturbed_envs)
+        if num_perturbed == 0:
+            return
+
+        # Split the key for permutation and for subkeys for perturbations
+        perm_key, subkeys_key = jax.random.split(key, 2)
+        subkeys = jax.random.split(subkeys_key, 5)
+
+        # Get a random permutation of all environment indices
+        env_indices = jnp.arange(self.num_envs)
+        permuted_indices = jax.random.permutation(perm_key, env_indices)
+        selected_indices = permuted_indices[:num_perturbed]
+
+        # Determine number of environments for each perturbation based on distribution
+        total_weight = jnp.sum(perturbation_distribution)  # should be 1.0
+        base_counts = jnp.floor(
+            num_perturbed * perturbation_distribution / total_weight
+        ).astype(jnp.int32)
+        count_sum = int(jnp.sum(base_counts))
+        remainder = num_perturbed - count_sum
+
+        # Compute fractional parts for extra allocation
+        fractional_parts = (
+            num_perturbed * perturbation_distribution / total_weight
+        ) - base_counts
+        sorted_indices = jnp.argsort(-fractional_parts)  # indices in descending order
+        if remainder > 0:
+            base_counts = base_counts.at[sorted_indices[:remainder]].add(1)
+
+        # Partition the selected indices by counts into index arrays
+        cumulative = 0
+        indices_list = []
+        for count in base_counts.tolist():
+            indices_for_perturbation = selected_indices[cumulative : cumulative + count]
+            cumulative += count
+            indices_list.append(indices_for_perturbation)
+
+        (
+            stuck_off_thruster_envs,
+            stuck_on_thruster_envs,
+            faulty_valve_envs,
+            saturated_thrust_envs,
+            thrust_instability_envs,
+        ) = indices_list
+
+        # Apply the perturbations with respective subkeys
+        self.perturbations.perturbations[0].stuck_off_thruster(
+            subkeys[0], stuck_off_thruster_envs
+        )
+        self.perturbations.perturbations[1].stuck_on_thruster(
+            subkeys[1], stuck_on_thruster_envs
+        )
+        self.perturbations.perturbations[2].register_perturbation(
+            subkeys[2], faulty_valve_envs
+        )
+        self.perturbations.perturbations[3].register_perturbation(
+            subkeys[3], saturated_thrust_envs
+        )
+        self.perturbations.perturbations[4].register_perturbation(
+            subkeys[4], thrust_instability_envs
+        )
 
     def _create_viewer(self, args) -> None:
         """

@@ -3,7 +3,6 @@ import jax.numpy as jnp
 from flax import nnx
 import optax
 from functools import partial
-from typing import Optional
 
 from smallsat_sim.envs.base_env import BaseEnv
 from smallsat_sim.controllers.rl.algorithms.base_agent import BaseAgent
@@ -28,17 +27,25 @@ class VPG(BaseAgent):
             self.critic, optax.adam(learning_rate=self.critic_lr, eps=1e-5)
         )
 
+        # Jitted loss functions
+        self.jit_actor_loss_and_grad = nnx.jit(
+            nnx.value_and_grad(self.actor_loss_fn),
+            static_argnums=(0,),
+        )
+        self.jit_critic_loss_and_grad = nnx.jit(
+            nnx.value_and_grad(self.critic_loss_fn),
+            static_argnums=(0,),
+        )
+
     # Define the actor loss
-    @partial(nnx.jit, static_argnums=(0,))
-    def jit_actor_loss_fn(
+    def actor_loss_fn(
         self, actor_model, tdres: jnp.ndarray, obs: jnp.ndarray, actions: jnp.ndarray
     ):
         _, logp_a = actor_model.forward(obs, actions)
         return -jnp.sum(tdres * logp_a)
 
     # Define the critic loss
-    @partial(nnx.jit, static_argnums=(0,))
-    def jit_critic_loss_fn(self, critic_model, returns: jnp.ndarray, obs: jnp.ndarray):
+    def critic_loss_fn(self, critic_model, returns: jnp.ndarray, obs: jnp.ndarray):
         values = critic_model.forward(obs)
         return jnp.mean((values - returns) ** 2)  # MSE loss
 
@@ -49,16 +56,14 @@ class VPG(BaseAgent):
         actions: jnp.ndarray,
         tdres: jnp.ndarray,
         logp: jnp.ndarray,
-        minibatch: Optional[bool] = True,
+        minibatch: bool = True,
     ) -> jnp.ndarray:
         """
         Update the policy gradient.
         """
 
         # Compute the actor loss
-        actor_loss, grads = nnx.value_and_grad(self.jit_actor_loss_fn)(
-            self.actor, tdres
-        )
+        actor_loss, grads = self.jit_actor_loss_and_grad(self.actor, tdres)
         print(f"{actor_loss = }")
 
         # Update the gradients
@@ -71,7 +76,7 @@ class VPG(BaseAgent):
         key,
         obs: jnp.ndarray,
         returns: jnp.ndarray,
-        minibatch: Optional[bool] = True,
+        minibatch: bool = True,
     ) -> jnp.ndarray:
         """
         Update the value function.
@@ -79,9 +84,7 @@ class VPG(BaseAgent):
 
         for _ in range(100):
             # Compute the critic loss
-            critic_loss, grads = nnx.value_and_grad(self.jit_critic_loss_fn)(
-                self.critic, returns
-            )
+            critic_loss, grads = self.jit_critic_loss_and_grad(self.critic, returns)
             print(f"{critic_loss = }")
 
             # Update the gradients

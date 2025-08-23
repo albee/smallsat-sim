@@ -4,10 +4,39 @@ import jax.numpy as jnp
 from flax import nnx
 import optax
 from functools import partial
-from typing import Optional
 
-from smallsat_sim.envs.base_env import BaseEnv
+from smallsat_sim.envs.vec_env import VecEnv
 from smallsat_sim.controllers.rl.algorithms.base_agent import BaseAgent
+from smallsat_sim.utils.helpers_jax import (
+    calc_lateral_tracking_error,
+    calc_orientation_error,
+    calc_attitude_error,
+    calc_extrinsic_error,
+)
+
+
+# Define the actor loss
+def actor_loss_fn(
+    actor_model,
+    tdres: jnp.ndarray,
+    obs_extrinsics: jnp.ndarray,
+    actions: jnp.ndarray,
+    logp: jnp.ndarray,
+    clip_ratio: float,
+):
+    _, logp_a = actor_model.forward(obs_extrinsics, actions)
+    ratio = jnp.exp(logp_a - logp)
+    clip_adv = jax.lax.clamp(1 - clip_ratio, ratio, 1 + clip_ratio)
+    return -jax.lax.min(ratio * tdres, clip_adv).mean()
+
+# Define the critic loss
+def critic_loss_fn(
+    critic_model,
+    returns: jnp.ndarray,
+    obs_extrinsics: jnp.ndarray,
+):
+    values = critic_model.forward(obs_extrinsics)
+    return jnp.mean((values - returns) ** 2)  # MSE loss
 
 
 class PPO(BaseAgent):
@@ -24,13 +53,14 @@ class PPO(BaseAgent):
         # Set the number of training epochs
         self.actor_training_epochs = 100
         self.critic_training_epochs = 100
+        self.actor_critic_training_epochs = 100
 
         # Total batch size
         self.batch_size = self.env.num_envs * self.steps_per_epoch
 
         # Define the size of each mini-batch
         self.num_minibatches = 16
-        self.minibatch_size = int(self.batch_size / self.num_minibatches)
+        self.minibatch_size = int(np.ceil(self.batch_size / self.num_minibatches))
 
         # Compute the total number of steps
         actor_total_steps = int(
@@ -40,7 +70,7 @@ class PPO(BaseAgent):
             self.epochs * self.critic_training_epochs * self.num_minibatches
         )
 
-        # Initialize an ADAM optimizers for the actor and critic networks with linear lr decay
+        # Initialize an ADAM optimizers for the actor, critic and encoder networks with linear lr decay
         self.actor_optimizer = nnx.Optimizer(
             self.actor,
             optax.adam(
@@ -60,40 +90,51 @@ class PPO(BaseAgent):
             ),
         )
 
+        # Jitted loss functions
+        self.jit_actor_loss_and_grad = nnx.jit(
+            nnx.value_and_grad(actor_loss_fn),
+        )
+        self.jit_critic_loss_and_grad = nnx.jit(
+            nnx.value_and_grad(critic_loss_fn),
+        )
+
         # Set the clip ratio and the target kl divergence
         self.clip_ratio = 0.2
         self.target_kl = 0.01
 
-    # Define the actor loss
-    @partial(nnx.jit, static_argnums=(0,))
-    def jit_actor_loss_fn(
-        self,
-        actor_model,
-        tdres: jnp.ndarray,
-        obs: jnp.ndarray,
-        actions: jnp.ndarray,
-        logp: jnp.ndarray,
-        clip_ratio: float,
-    ):
-        _, logp_a = actor_model.forward(obs, actions)
-        ratio = jnp.exp(logp_a - logp)
-        clip_adv = jax.lax.clamp(1 - clip_ratio, ratio, 1 + clip_ratio)
-        return -jax.lax.min(ratio * tdres, clip_adv).mean()
+    # # Define the actor loss
+    # def actor_loss_fn(
+    #     self,
+    #     actor_model,
+    #     tdres: jnp.ndarray,
+    #     obs_extrinsics: jnp.ndarray,
+    #     actions: jnp.ndarray,
+    #     logp: jnp.ndarray,
+    #     clip_ratio: float,
+    # ):
+    #     _, logp_a = actor_model.forward(obs_extrinsics, actions)
+    #     ratio = jnp.exp(logp_a - logp)
+    #     clip_adv = jax.lax.clamp(1 - clip_ratio, ratio, 1 + clip_ratio)
+    #     return -jax.lax.min(ratio * tdres, clip_adv).mean()
 
-    # Define the critic loss
-    @partial(nnx.jit, static_argnums=(0,))
-    def jit_critic_loss_fn(self, critic_model, returns: jnp.ndarray, obs: jnp.ndarray):
-        values = critic_model.forward(obs)
-        return jnp.mean((values - returns) ** 2)  # MSE loss
+    # # Define the critic loss
+    # def critic_loss_fn(
+    #     self,
+    #     critic_model,
+    #     returns: jnp.ndarray,
+    #     obs_extrinsics: jnp.ndarray,
+    # ):
+    #     values = critic_model.forward(obs_extrinsics)
+    #     return jnp.mean((values - returns) ** 2)  # MSE loss
 
     def update_policy_gradient(
         self,
         key,
-        obs: jnp.ndarray,
+        obs_extrinsics: jnp.ndarray,
         actions: jnp.ndarray,
         tdres: jnp.ndarray,
         logp: jnp.ndarray,
-        minibatch: Optional[bool] = True,
+        minibatch: bool = True,
     ) -> jnp.ndarray:
         """
         Update the policy gradient.
@@ -104,19 +145,22 @@ class PPO(BaseAgent):
 
         # Compute the actor loss
         for i in range(self.actor_training_epochs):
-            shuffled_obs = jax.random.permutation(keys[i], obs)
-            shuffled_actions = jax.random.permutation(keys[i], actions)
-            shuffled_tdres = jax.random.permutation(keys[i], tdres)
-            shuffled_logp = jax.random.permutation(keys[i], logp)
+            shuffled_indices = jax.random.permutation(
+                keys[i], jnp.arange(self.batch_size)
+            )
+            shuffled_obs_extrinsics = obs_extrinsics[shuffled_indices]
+            shuffled_actions = actions[shuffled_indices]
+            shuffled_tdres = tdres[shuffled_indices]
+            shuffled_logp = logp[shuffled_indices]
 
             if minibatch:
                 for start in range(0, self.batch_size, self.minibatch_size):
                     end = start + self.minibatch_size
 
-                    actor_loss, grads = nnx.value_and_grad(self.jit_actor_loss_fn)(
+                    actor_loss, grads = self.jit_actor_loss_and_grad(
                         self.actor,
                         shuffled_tdres[start:end],
-                        shuffled_obs[start:end],
+                        shuffled_obs_extrinsics[start:end],
                         shuffled_actions[start:end],
                         shuffled_logp[start:end],
                         self.clip_ratio,
@@ -124,7 +168,7 @@ class PPO(BaseAgent):
                     print(f"{actor_loss = }")
 
                     _, logp_a = self.actor.forward(
-                        shuffled_obs[start:end], shuffled_actions[start:end]
+                        shuffled_obs_extrinsics[start:end], shuffled_actions[start:end]
                     )
 
                     kl = (shuffled_logp[start:end] - logp_a).mean()
@@ -136,17 +180,17 @@ class PPO(BaseAgent):
                     self.actor_optimizer.update(grads)
 
             else:
-                actor_loss, grads = nnx.value_and_grad(self.jit_actor_loss_fn)(
+                actor_loss, grads = self.jit_actor_loss_and_grad(
                     self.actor,
                     tdres,
-                    obs,
+                    obs_extrinsics,
                     actions,
                     logp,
                     self.clip_ratio,
                 )
                 print(f"{actor_loss = }")
 
-                _, logp_a = self.actor.forward(obs, actions)
+                _, logp_a = self.actor.forward(obs_extrinsics, actions)
 
                 kl = (logp - logp_a).mean()
                 if kl > 1.5 * self.target_kl:
@@ -161,9 +205,9 @@ class PPO(BaseAgent):
     def update_value_function(
         self,
         key,
-        obs: jnp.ndarray,
+        obs_extrinsics: jnp.ndarray,
         returns: jnp.ndarray,
-        minibatch: Optional[bool] = True,
+        minibatch: bool = True,
     ) -> jnp.ndarray:
         """
         Update the value function.
@@ -184,8 +228,8 @@ class PPO(BaseAgent):
                     mb_indices = shuffled_indices[start:end]
 
                     # Compute the critic loss
-                    critic_loss, grads = nnx.value_and_grad(self.jit_critic_loss_fn)(
-                        self.critic, returns[mb_indices], obs[mb_indices]
+                    critic_loss, grads = self.jit_critic_loss_and_grad(
+                        self.critic, returns[mb_indices], obs_extrinsics[mb_indices]
                     )
                     print(f"{critic_loss = }")
 
@@ -194,8 +238,8 @@ class PPO(BaseAgent):
 
             else:
                 # Compute the critic loss
-                critic_loss, grads = nnx.value_and_grad(self.jit_critic_loss_fn)(
-                    self.critic, returns, obs
+                critic_loss, grads = self.jit_critic_loss_and_grad(
+                    self.critic, returns, obs_extrinsics
                 )
                 print(f"{critic_loss = }")
 
@@ -203,6 +247,70 @@ class PPO(BaseAgent):
                 self.critic_optimizer.update(grads)
 
         return critic_loss
+
+    def update_actor_critic_minibatch(
+        self,
+        key,
+        obs_extrinsics: jnp.ndarray,
+        actions: jnp.ndarray,
+        tdres: jnp.ndarray,
+        logp: jnp.ndarray,
+        returns: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """
+        Update the policy gradient and the value function (both at each minibatch, as opposed to doing it sequentially).
+        """
+        # Create PRNG keys
+        keys = jax.random.split(key, num=self.actor_critic_training_epochs)
+
+        # Compute the actor loss
+        for i in range(self.actor_critic_training_epochs):
+            shuffled_indices = jax.random.permutation(
+                keys[i], jnp.arange(self.batch_size)
+            )
+            shuffled_obs_extrinsics = obs_extrinsics[shuffled_indices]
+            shuffled_actions = actions[shuffled_indices]
+            shuffled_tdres = tdres[shuffled_indices]
+            shuffled_logp = logp[shuffled_indices]
+            shuffled_returns = returns[shuffled_indices]
+
+            for start in range(0, self.batch_size, self.minibatch_size):
+                end = start + self.minibatch_size
+
+                actor_loss, grads = self.jit_actor_loss_and_grad(
+                    self.actor,
+                    shuffled_tdres[start:end],
+                    shuffled_obs_extrinsics[start:end],
+                    shuffled_actions[start:end],
+                    shuffled_logp[start:end],
+                    self.clip_ratio,
+                )
+                print(f"{actor_loss = }")
+
+                _, logp_a = self.actor.forward(
+                    shuffled_obs_extrinsics[start:end], shuffled_actions[start:end]
+                )
+
+                kl = (shuffled_logp[start:end] - logp_a).mean()
+                if kl > 1.5 * self.target_kl:
+                    print("Early stopping at step %d due to reaching max kl" % i)
+                    break
+
+                # Update the gradients
+                self.actor_optimizer.update(grads)
+
+                # Compute the critic loss
+                critic_loss, grads = self.jit_critic_loss_and_grad(
+                    self.critic,
+                    shuffled_returns[start:end],
+                    shuffled_obs_extrinsics[start:end],
+                )
+                print(f"{critic_loss = }")
+
+                # Update the gradients
+                self.critic_optimizer.update(grads)
+
+        return actor_loss, critic_loss
 
     def _load_ppo_hyperparams(self) -> None:
         """
@@ -216,10 +324,41 @@ class PPO(BaseAgent):
         self.actor_lr = self.env.env_cfg.control.RL.PPO.actor_lr
         self.critic_lr = self.env.env_cfg.control.RL.PPO.critic_lr
 
-    def _log(self, run_id: int, timestamp: float, env: BaseEnv) -> None:
+    def _log(
+        self,
+        run_id: int,
+        timestamp: float,
+        stage: str,
+        env: VecEnv,
+        ctrl_input: jnp.ndarray,
+        obs_extrinsics: jnp.ndarray,
+    ) -> None:
         """
         Logs desired quantities if flag is enabled
         """
-        raise NotImplementedError(
-            f"The _log method is not implemented for the class {self.__class__.__name__}"
-        )
+        if self.has_logger:
+            tracking_error = calc_lateral_tracking_error(env.get_obs(), self.planner)
+            orientation_error = calc_orientation_error(obs_extrinsics)
+
+            if env.ext_dim != 0:
+                # If the extrinsics are included in the observations
+                extrinsics = obs_extrinsics[:, env.obs_dim :]
+            else:
+                # If the extrinsics are not included in the observations
+                # NOTE: they are still logged but not need to plot them
+                extrinsics = jnp.zeros((env.num_envs, env.act_dim))
+
+            extrinsic_error = calc_extrinsic_error(
+                extrinsics,
+                env.mjx_batch.ctrl
+                / (ctrl_input + 1e-8 * jnp.ones_like(env.mjx_batch.ctrl)),
+            )
+            self.logger.log(
+                run_id,
+                timestamp,
+                run_name=env.run_name,
+                stage=stage,
+                mean_tracking_error=tracking_error.mean(),
+                mean_orientation_error=orientation_error.mean(),
+                mean_extrinsic_error=extrinsic_error.mean(),
+            )
