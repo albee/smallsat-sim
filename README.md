@@ -29,7 +29,7 @@ bash setup.sh
 ```
 
 ### Loading a prebuilt image
-The `smallsat.tar`file contains the pre-built image. You can load this image by running
+The `smallsat.tar` file contains the pre-built image. You can load this image by running
 
 ```bash
 docker load -i smallsat.tar
@@ -57,6 +57,8 @@ docker buildx build --platform="linux/arm64" -t smallsat:latest --build-arg BASE
 If you are not using an `arm64` base, make sure to change the `platform`. \
 Save built image as .tar: `docker save -o smallsat.tar smallsat:latest`\
 Run docker container: `docker run -it --rm -v .:/code smallsat:latest`
+
+To use GPU accelerated containers, you must have a CUDA version of 12.1 or above installed.
 
 ### Running Docker
 Build the docker
