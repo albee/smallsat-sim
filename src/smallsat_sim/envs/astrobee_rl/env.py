@@ -1,7 +1,7 @@
 import jax.numpy as jnp
 
 from smallsat_sim.envs.vec_env import VecEnv
-from smallsat_sim.envs.perturbations import (
+from smallsat_sim.envs.perturbations_rl import (
     PerturbationList,
     StuckOffThrusters,
     StuckOnThrusters,
@@ -16,7 +16,7 @@ class AstrobeeEnvVectorized(VecEnv):
     def __init__(
         self,
         args,
-        run_name: str | None = None,
+        run_name: str = "default",
         init_pos: jnp.ndarray | None = None,
         max_start_offset: float | None = None,
         use_pretrained: bool | None = None,
@@ -27,7 +27,7 @@ class AstrobeeEnvVectorized(VecEnv):
 
         # Load necessary config files
         self.env_cfg, self.model_cfg = self._load_cfg(
-            env_name="astrobee_rl", model_name="astrobee"
+            env_name="astrobee_rl", model_name=None
         )
         if init_pos is not None:
             self.env_cfg.Bodies.bodies_list[0].pos = init_pos
@@ -40,29 +40,34 @@ class AstrobeeEnvVectorized(VecEnv):
         super().__init__(args=args)
 
         # Instantiate perturbations
+        perturbation_keys = self.next_rng_keys(5)
         self.perturbations = PerturbationList(
             [
-                StuckOffThrusters(self.env_cfg, self.model_cfg),  # 0
-                StuckOnThrusters(self.env_cfg, self.model_cfg),  # 1
-                FaultyValve(self.env_cfg, self.model_cfg),  # 2
-                SaturatedThrust(self.env_cfg, self.model_cfg),  # 3
-                ThrustInstability(self.env_cfg, self.model_cfg),  # 4
+                StuckOffThrusters(self.env_cfg, self.model_cfg, perturbation_keys[0]),  # 0
+                StuckOnThrusters(self.env_cfg, self.model_cfg, perturbation_keys[1]),  # 1
+                FaultyValve(self.env_cfg, self.model_cfg, perturbation_keys[2]),  # 2
+                SaturatedThrust(self.env_cfg, self.model_cfg, perturbation_keys[3]),  # 3
+                ThrustInstability(self.env_cfg, self.model_cfg, perturbation_keys[4]),  # 4
             ]
         )
 
         # Instantiate disturbances
-        self.disturbances = DisturbanceList([ConstantForceDisturbance(self.env_cfg)])
+        disturbance_key = self.next_rng_keys(1)[0]
+        self.disturbances = DisturbanceList(
+            [ConstantForceDisturbance(self.env_cfg, disturbance_key)]
+        )
 
     def reset_perturbations(self) -> None:
         """
         Resets the perturbations.
         """
+        perturbation_keys = self.next_rng_keys(5)
         self.perturbations = PerturbationList(
             [
-                StuckOffThrusters(self.env_cfg, self.model_cfg),  # 0
-                StuckOnThrusters(self.env_cfg, self.model_cfg),  # 1
-                FaultyValve(self.env_cfg, self.model_cfg),  # 2
-                SaturatedThrust(self.env_cfg, self.model_cfg),  # 3
-                ThrustInstability(self.env_cfg, self.model_cfg),  # 4
+                StuckOffThrusters(self.env_cfg, self.model_cfg, perturbation_keys[0]),  # 0
+                StuckOnThrusters(self.env_cfg, self.model_cfg, perturbation_keys[1]),  # 1
+                FaultyValve(self.env_cfg, self.model_cfg, perturbation_keys[2]),  # 2
+                SaturatedThrust(self.env_cfg, self.model_cfg, perturbation_keys[3]),  # 3
+                ThrustInstability(self.env_cfg, self.model_cfg, perturbation_keys[4]),  # 4
             ]
         )

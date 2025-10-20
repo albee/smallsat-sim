@@ -7,7 +7,7 @@ import optax
 import wandb
 
 from smallsat_sim.envs.vec_env import VecEnv
-from smallsat_sim.planners.base_planner import BasePlanner
+from smallsat_sim.planners.oracle.oracle_rl import OraclePlannerRL
 from smallsat_sim.controllers.pd.vectorized_controller import VectorizedPDController
 from smallsat_sim.controllers.rl.algorithms.vpg import VPG
 from smallsat_sim.controllers.rl.algorithms.ppo import PPO
@@ -27,7 +27,6 @@ from smallsat_sim.utils.helpers_jax import (
     normalize_obs,
     scale_rews,
     calc_lateral_tracking_error,
-    calc_orientation_error,
     calc_attitude_error,
     calc_extrinsic_error,
 )
@@ -39,13 +38,17 @@ class OnPolicyRunner(object):
     On-policy runner for training and evaluation. Inspired from https://spinningup.openai.com/en/latest/algorithms/vpg.html.
     """
 
-    def __init__(self, env: VecEnv, planner: BasePlanner) -> None:
+    def __init__(self, env: VecEnv, planner: OraclePlannerRL) -> None:
         # Initialize the environment and agent
         self.env = env
         self.planner = planner
-        self.agent = PPO(self.env, planner)
+        base_key = self.env.next_rng_keys(1)[0]
+        self._rng, agent_key = jax.random.split(base_key)
+        self.agent = PPO(self.env, planner, rng_key=agent_key)
         self.am = AdaptationModule(50, env.obs_dim + env.act_dim, env.ext_dim)
-        self.reference_point = planner.reference_points[0]
+        self.reference_point = planner.get_reference(
+            self.env.get_obs()
+        )  # Is re-used in every episode
         self.pd_ctrl = VectorizedPDController(env, planner)
         self._load_rl_hyperparams()
 
@@ -58,7 +61,7 @@ class OnPolicyRunner(object):
         )
 
         # Path to save the checkpoints
-        self.ckpt_dir = "smallsat_sim/controllers/rl/checkpoints/"
+        self.ckpt_dir = "src/smallsat_sim/controllers/rl/checkpoints/"
 
         # Checkpoint file names
         self._create_checkpoint_file_names()
@@ -82,6 +85,18 @@ class OnPolicyRunner(object):
                     "n_evals": self.n_evals,
                 },
             )
+
+    def _take_keys(self, count: int = 1):
+        """
+        Consume ``count`` RNG keys from the runner seed.
+        """
+        if count < 1:
+            raise ValueError("count must be >= 1")
+        splits = jax.random.split(self._rng, count + 1)
+        self._rng = splits[0]
+        if count == 1:
+            return splits[1]
+        return splits[1:]
 
     def pretrain(self, strategy: str = "supervised_learning") -> None:
         """
@@ -110,23 +125,30 @@ class OnPolicyRunner(object):
         else:
             extrinsics = jnp.empty((self.steps_per_epoch * self.env.num_envs, 0))
 
+        # Clip the actions to the highest upper bound on the force range of the thrusters
+        act_clipped = jnp.where(act > 0.6, 0.6, act)
+
         # Pretrain the policy network
         if strategy == "supervised_learning":
-            # Clip the actions to the highest upper bound on the force range of the thrusters
-            act_clipped = jnp.where(act > 0.6, 0.6, act)
-
             # Optimizer to pretrain the policy network
             actor_optimizer = nnx.Optimizer(
                 self.agent.actor, optax.adam(learning_rate=1e-2, eps=1e-5)
             )
 
             # Split into training and validation sets
-            X_train, y_train, X_val, y_val = train_val_split(
-                jnp.concatenate([obs, extrinsics], axis=1), act_clipped
+            split_key = self._take_keys()
+            (
+                X_train,
+                y_train,
+                X_val,
+                y_val,
+                _,
+            ) = train_val_split(
+                jnp.concatenate([obs, extrinsics], axis=1),
+                act_clipped,
+                key=split_key,
             )
 
-            actor_losses = []
-            actor_val_losses = []
             num_epochs = 80
             num_batches = 256
             batch_size = int(jnp.ceil(obs.shape[0] / num_batches))
@@ -134,7 +156,7 @@ class OnPolicyRunner(object):
             num_val_samples = X_val.shape[0]
 
             # Create PRNG keys
-            subkeys_pretrain = jax.random.split(jax.random.PRNGKey(42), num=num_epochs)
+            subkeys_pretrain = self._take_keys(num_epochs)
 
             # Training loop
             for epoch in range(num_epochs):
@@ -145,6 +167,8 @@ class OnPolicyRunner(object):
                 X_train = X_train[indices]
                 y_train = y_train[indices]
 
+                epoch_train_loss_sum = jnp.array(0.0)
+                num_train_batches = 0
                 for i in range(0, num_train_samples, batch_size):
                     batch_X = X_train[i : i + batch_size]
                     batch_y = y_train[i : i + batch_size]
@@ -153,12 +177,17 @@ class OnPolicyRunner(object):
                     actor_loss, grads = nnx.value_and_grad(mae_loss_fn)(
                         self.agent.actor, batch_X, batch_y, subkeys_pretrain[epoch]
                     )
-                    actor_losses.append(actor_loss)
                     actor_optimizer.update(grads)
+                    epoch_train_loss_sum = epoch_train_loss_sum + actor_loss
+                    num_train_batches += 1
+
+                avg_train_loss = epoch_train_loss_sum / max(num_train_batches, 1)
                 print(
-                    f"Epoch: {epoch+1:2} avg. actor training loss: {sum(actor_losses)/len(actor_losses)}\n"
+                    f"Epoch: {epoch+1:2} avg. actor training loss: {avg_train_loss}\n"
                 )
 
+                epoch_val_loss_sum = jnp.array(0.0)
+                num_val_batches = 0
                 for i in range(0, num_val_samples, batch_size):
                     batch_X_val = X_val[i : i + batch_size]
                     batch_y_val = y_val[i : i + batch_size]
@@ -170,21 +199,23 @@ class OnPolicyRunner(object):
                         batch_y_val,
                         subkeys_pretrain[epoch],
                     )
-                    actor_val_losses.append(actor_val_loss)
+                    epoch_val_loss_sum = epoch_val_loss_sum + actor_val_loss
+                    num_val_batches += 1
+
+                avg_val_loss = epoch_val_loss_sum / max(num_val_batches, 1)
                 print(
-                    f"Epoch: {epoch+1:2} avg. actor evaluation loss: {sum(actor_val_losses)/len(actor_val_losses)}\n"
+                    f"Epoch: {epoch+1:2} avg. actor evaluation loss: {avg_val_loss}\n"
                 )
                 if self.env.use_wandb:
                     wandb.log(
                         {
-                            "training_loss": sum(actor_losses) / len(actor_losses),
-                            "validation_loss": sum(actor_val_losses)
-                            / len(actor_val_losses),
+                            "training_loss": float(avg_train_loss),
+                            "validation_loss": float(avg_val_loss),
                         }
                     )
         elif strategy == "rl":
             self.agent.update_policy_gradient(
-                jax.random.PRNGKey(42), obs, act_clipped, tdres, logp
+                self._take_keys(), obs, act_clipped, tdres, logp
             )
         else:
             raise Exception(
@@ -193,10 +224,9 @@ class OnPolicyRunner(object):
 
         # Pretrain the base network
         self.agent.update_value_function(
-            jax.random.PRNGKey(42),
+            self._take_keys(),
             jnp.concatenate([obs, extrinsics], axis=1),
             ret,
-            minibatch=False,
         )
 
         # Save the trained actor and critic network weights
@@ -253,15 +283,17 @@ class OnPolicyRunner(object):
             ext = jnp.empty((self.env.num_envs, 0))
 
         # Create PRNG keys
-        subkeys_train = jax.random.split(jax.random.PRNGKey(42), num=self.epochs)
+        subkeys_train = self._take_keys(self.epochs)
 
         # Main training loop
         for epoch in range(self.epochs):
             if epoch >= self.epochs // 2:
+                ramp_duration = max(self.epochs // 2, 1)
+                ramp_progress = min((epoch - ramp_duration) / ramp_duration, 1.0)
                 self.env.apply_random_perturbations(
                     key=subkeys_train[epoch],
                     fraction_perturbed_envs=0.05
-                    + ((0.5 - 0.05) / self.epochs // 2) * (epoch - self.epochs // 2),
+                    + (0.5 - 0.05) * max(ramp_progress, 0.0),
                 )
 
             ep_returns = jnp.zeros((self.env.num_envs, self.steps_per_epoch))
@@ -271,9 +303,7 @@ class OnPolicyRunner(object):
             ep_mean_tracking_error = jnp.zeros(
                 (self.env.num_envs, self.steps_per_epoch)
             )
-            ep_mean_orientation_error = jnp.zeros(
-                (self.env.num_envs, self.steps_per_epoch)
-            )
+            ep_mean_angle_error = jnp.zeros((self.env.num_envs, self.steps_per_epoch))
             ep_mean_extrinsic_error = jnp.zeros(
                 (self.env.num_envs, self.steps_per_epoch)
             )
@@ -282,27 +312,20 @@ class OnPolicyRunner(object):
                     jnp.concatenate([states, ext], axis=1), log=True
                 )  # Use un-normalized states
 
-                # Calculate the errors
-                tracking_error = calc_lateral_tracking_error(
-                    self.env.get_obs(), self.planner
+                obs = self.env.get_obs()
+                tracking_mean, angle_mean, extrinsic_mean = self._compute_mean_errors(
+                    obs, a, ext
                 )
                 ep_mean_tracking_error = ep_mean_tracking_error.at[:, t].set(
-                    tracking_error.mean()
+                    tracking_mean
                 )
-                orientation_error = calc_orientation_error(
-                    jnp.concatenate([states, ext], axis=1)
-                )
-                ep_mean_orientation_error = ep_mean_orientation_error.at[:, t].set(
-                    orientation_error.mean()
-                )
-                if self.env.use_adaptive_approach is True:
-                    extrinsic_error = calc_extrinsic_error(
-                        ext,
-                        self.env.mjx_batch.ctrl
-                        / (a + 1e-8 * jnp.ones_like(self.env.mjx_batch.ctrl)),
-                    )
+                ep_mean_angle_error = ep_mean_angle_error.at[:, t].set(angle_mean)
+                if (
+                    self.env.use_adaptive_approach is True
+                    and extrinsic_mean is not None
+                ):
                     ep_mean_extrinsic_error = ep_mean_extrinsic_error.at[:, t].set(
-                        extrinsic_error.mean()
+                        extrinsic_mean
                     )
 
                 r, terminal = self.env.transition(a, states, epoch)
@@ -429,6 +452,7 @@ class OnPolicyRunner(object):
                         "critic_loss": critic_loss,
                         "num_terminal": jnp.sum(terminal),
                         "mean_log_std": self.agent.actor.log_std.value.mean(),
+                        "mean_std": jnp.exp(self.agent.actor.log_std.value).mean(),
                     }
                 )
 
@@ -444,8 +468,9 @@ class OnPolicyRunner(object):
                     critic_loss=critic_loss,
                     num_terminal=jnp.sum(terminal),
                     mean_log_std=self.agent.actor.log_std.value.mean(),
+                    mean_std=jnp.exp(self.agent.actor.log_std.value).mean(),
                     mean_tracking_error=ep_mean_tracking_error.mean(),
-                    mean_orientation_error=ep_mean_orientation_error.mean(),
+                    mean_angle_error=ep_mean_angle_error.mean(),
                     mean_extrinsic_error=ep_mean_extrinsic_error.mean(),
                 )
 
@@ -484,7 +509,6 @@ class OnPolicyRunner(object):
 
     #     state_action_data = jnp.concatenate([obs, act], axis=1)
 
-    #     key = jax.random.PRNGKey(42)
     #     num_epochs = 100
 
     #     # Optimizer
@@ -580,14 +604,15 @@ class OnPolicyRunner(object):
             ext = jnp.empty((self.env.num_envs, 0))
 
         # Create PRNG keys
-        subkeys_train = jax.random.split(jax.random.PRNGKey(42), num=self.epochs)
+        subkeys_train = self._take_keys(self.epochs)
 
         # Main training loop
         for epoch in range(self.epochs):
+            ramp_duration = max(self.epochs // 2, 1)
+            ramp_progress = min((epoch - ramp_duration) / ramp_duration, 1.0)
             self.env.apply_random_perturbations(
                 key=subkeys_train[epoch],
-                fraction_perturbed_envs=0.05
-                + ((0.5 - 0.05) / self.epochs // 2) * (epoch - self.epochs // 2),
+                fraction_perturbed_envs=0.05 + (0.5 - 0.05) * max(ramp_progress, 0.0),
             )
 
             ep_obs = jnp.zeros(
@@ -596,38 +621,29 @@ class OnPolicyRunner(object):
             ep_mean_tracking_error = jnp.zeros(
                 (self.env.num_envs, self.steps_per_epoch)
             )
-            ep_mean_orientation_error = jnp.zeros(
-                (self.env.num_envs, self.steps_per_epoch)
-            )
+            ep_mean_angle_error = jnp.zeros((self.env.num_envs, self.steps_per_epoch))
             ep_mean_extrinsic_error = jnp.zeros(
                 (self.env.num_envs, self.steps_per_epoch)
             )
             for t in range(self.steps_per_epoch):
                 a = self.agent.get_control_input(
-                    "am_training", jnp.concatenate([states, ext], axis=1)
+                    self.env, "am_training", jnp.concatenate([states, ext], axis=1)
                 )  # Use un-normalized states
 
-                # Calculate the errors
-                tracking_error = calc_lateral_tracking_error(
-                    self.env.get_obs(), self.planner
+                obs = self.env.get_obs()
+                tracking_mean, angle_mean, extrinsic_mean = self._compute_mean_errors(
+                    obs, a, ext
                 )
                 ep_mean_tracking_error = ep_mean_tracking_error.at[:, t].set(
-                    tracking_error.mean()
+                    tracking_mean
                 )
-                orientation_error = calc_orientation_error(
-                    jnp.concatenate([states, ext], axis=1)
-                )
-                ep_mean_orientation_error = ep_mean_orientation_error.at[:, t].set(
-                    orientation_error.mean()
-                )
-                if self.env.use_adaptive_approach is True:
-                    extrinsic_error = calc_extrinsic_error(
-                        ext,
-                        self.env.mjx_batch.ctrl
-                        / (a + 1e-8 * jnp.ones_like(self.env.mjx_batch.ctrl)),
-                    )
+                ep_mean_angle_error = ep_mean_angle_error.at[:, t].set(angle_mean)
+                if (
+                    self.env.use_adaptive_approach is True
+                    and extrinsic_mean is not None
+                ):
                     ep_mean_extrinsic_error = ep_mean_extrinsic_error.at[:, t].set(
-                        extrinsic_error.mean()
+                        extrinsic_mean
                     )
 
                 _, terminal = self.env.transition(a, states, epoch)
@@ -644,11 +660,9 @@ class OnPolicyRunner(object):
                 ep_obs = ep_obs.at[:, t, :].set(states)
                 states_normalized = normalize_obs(states, ep_obs, t)
 
-                state_action = jnp.expand_dims(
-                    jnp.concatenate([states, a], axis=1), axis=1
-                )
-                state_action_history = jnp.concatenate(
-                    [state_action_history[:, 1:, :], state_action], axis=1
+                state_action_history = jnp.roll(state_action_history, shift=-1, axis=1)
+                state_action_history = state_action_history.at[:, -1, :].set(
+                    jnp.concatenate([states, a], axis=1)
                 )
 
                 if self.env.use_adaptive_approach is True:
@@ -713,14 +727,22 @@ class OnPolicyRunner(object):
             )
 
             # Split into training and validation sets
-            X_train, y_train, X_val, y_val = train_val_split(
-                state_action_data, extrinsics, shuffle=False, trim_for_cnn=True
+            split_key = self._take_keys()
+            (
+                X_train,
+                y_train,
+                X_val,
+                y_val,
+                _,
+            ) = train_val_split(
+                state_action_data,
+                extrinsics,
+                key=split_key,
+                shuffle=False,
+                trim_for_cnn=True,
             )
 
             # Training loop
-            subkeys_nn_training = jax.random.split(
-                jax.random.PRNGKey(42), num=num_nn_epochs
-            )
             for nn_epoch in range(num_nn_epochs):
                 # Compute the loss
                 am_train_loss, grads = self.jitted_batched_am_loss_and_grad(
@@ -759,7 +781,7 @@ class OnPolicyRunner(object):
                     am_train_loss=am_train_loss,
                     am_val_loss=am_val_loss,
                     mean_tracking_error=ep_mean_tracking_error.mean(),
-                    mean_orientation_error=ep_mean_orientation_error.mean(),
+                    mean_angle_error=ep_mean_angle_error.mean(),
                     mean_extrinsic_error=ep_mean_extrinsic_error.mean(),
                 )
 
@@ -791,7 +813,8 @@ class OnPolicyRunner(object):
             raise Exception("Not all necessary modules have been trained yet.\n")
 
         # PRNG keys for each eval
-        subkeys_eval = jax.random.split(jax.random.PRNGKey(42), num=self.n_evals)
+        subkeys_eval = self._take_keys(self.n_evals)
+        subkeys_eval = jnp.atleast_2d(subkeys_eval)
 
         returns = jnp.zeros((self.env.num_envs, self.n_evals))
 
@@ -815,7 +838,7 @@ class OnPolicyRunner(object):
             ep_obs = jnp.zeros((self.env.num_envs, self.episode_len, self.env.obs_dim))
             terminal = jnp.zeros(self.env.num_envs, dtype=bool)
             ep_mean_tracking_error = jnp.zeros((self.env.num_envs, self.episode_len))
-            ep_mean_orientation_error = jnp.zeros((self.env.num_envs, self.episode_len))
+            ep_mean_angle_error = jnp.zeros((self.env.num_envs, self.episode_len))
             ep_mean_extrinsic_error = jnp.zeros((self.env.num_envs, self.episode_len))
 
             # Start perturbations halfway through the evaluation
@@ -827,41 +850,32 @@ class OnPolicyRunner(object):
 
             for ep in range(self.episode_len):
                 actions = self.agent.get_control_input(
-                    "evaluation", jnp.concatenate([states, ext], axis=1)
+                    self.env, "evaluation", jnp.concatenate([states, ext], axis=1)
                 )  # Use un-normalized states
 
-                # Calculate the errors
-                tracking_error = calc_lateral_tracking_error(
-                    self.env.get_obs(), self.planner
+                obs = self.env.get_obs()
+                tracking_mean, angle_mean, extrinsic_mean = self._compute_mean_errors(
+                    obs, actions, ext
                 )
                 ep_mean_tracking_error = ep_mean_tracking_error.at[:, ep].set(
-                    tracking_error.mean()
+                    tracking_mean
                 )
-                orientation_error = calc_orientation_error(
-                    jnp.concatenate([states, ext], axis=1)
-                )
-                ep_mean_orientation_error = ep_mean_orientation_error.at[:, ep].set(
-                    orientation_error.mean()
-                )
-                if self.env.use_adaptive_approach is True:
-                    extrinsic_error = calc_extrinsic_error(
-                        ext,
-                        self.env.mjx_batch.ctrl
-                        / (actions + 1e-8 * jnp.ones_like(self.env.mjx_batch.ctrl)),
-                    )
+                ep_mean_angle_error = ep_mean_angle_error.at[:, ep].set(angle_mean)
+                if (
+                    self.env.use_adaptive_approach is True
+                    and extrinsic_mean is not None
+                ):
                     ep_mean_extrinsic_error = ep_mean_extrinsic_error.at[:, ep].set(
-                        extrinsic_error.mean()
+                        extrinsic_mean
                     )
 
                 states = self.env.get_states(self.reference_point)
                 ep_obs = ep_obs.at[:, ep, :].set(states)
                 states_normalized = normalize_obs(states, ep_obs, ep)
 
-                state_action = jnp.expand_dims(
-                    jnp.concatenate([states, actions], axis=1), axis=1
-                )
-                state_action_history = jnp.concatenate(
-                    [state_action_history[:, 1:, :], state_action], axis=1
+                state_action_history = jnp.roll(state_action_history, shift=-1, axis=1)
+                state_action_history = state_action_history.at[:, -1, :].set(
+                    jnp.concatenate([states, actions], axis=1)
                 )
 
                 if self.env.use_adaptive_approach is True:
@@ -897,7 +911,7 @@ class OnPolicyRunner(object):
                     mean_scaled_episodic_returns=ep_ret.mean(),
                     num_terminal=jnp.sum(terminal),
                     mean_tracking_error=ep_mean_tracking_error.mean(),
-                    mean_orientation_error=ep_mean_orientation_error.mean(),
+                    mean_angle_error=ep_mean_angle_error.mean(),
                     mean_extrinsic_error=ep_mean_extrinsic_error.mean(),
                 )
 
@@ -1005,16 +1019,50 @@ class OnPolicyRunner(object):
         data = buffer.get()
         save_training_data(self.ckpt_dir, self.pretraining_data_file_name, data)
 
+    def _compute_mean_errors(
+        self,
+        obs: jnp.ndarray,
+        ctrl_input: jnp.ndarray,
+        ext: jnp.ndarray,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray | None]:
+        """
+        Compute mean tracking, attitude, and extrinsic errors for the current step.
+        """
+
+        tracking = calc_lateral_tracking_error(obs, self.planner)
+        attitude = jnp.degrees(calc_attitude_error(obs))
+
+        tracking_mean = tracking.mean()
+        attitude_mean = attitude.mean()
+
+        extrinsic_mean = None
+        if self.env.use_adaptive_approach:
+            ctrl_ratio = self.env.mjx_batch.ctrl / (
+                ctrl_input + 1e-8 * jnp.ones_like(self.env.mjx_batch.ctrl)
+            )
+            extrinsic_error = calc_extrinsic_error(ext, ctrl_ratio)
+            extrinsic_mean = extrinsic_error.mean()
+
+        return tracking_mean, attitude_mean, extrinsic_mean
+
     def _load_rl_hyperparams(self) -> None:
         """
         Load the relevant hyperparams from the config file.
         """
         if isinstance(self.agent, VPG):
-            VPG._load_vpg_hyperparams(self)
+            self.agent._load_vpg_hyperparams()
         elif isinstance(self.agent, PPO):
-            PPO._load_ppo_hyperparams(self)
+            self.agent._load_ppo_hyperparams()
         else:
             raise Exception("Agent has not been implemented.")
+
+        # Mirror agent hyperparameters locally for convenience
+        self.steps_per_epoch = self.agent.steps_per_epoch
+        self.epochs = self.agent.epochs
+        self.max_ep_len = self.agent.max_ep_len
+        self.gamma = self.agent.gamma
+        self.lam = self.agent.lam
+
         self.episode_len = self.env.env_cfg.control.RL.episode_len
         self.n_evals = self.env.env_cfg.control.RL.n_evals
 

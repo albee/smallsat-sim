@@ -1,3 +1,4 @@
+from typing import TypeVar
 import numpy as np
 import mujoco
 import mujoco.viewer
@@ -18,8 +19,18 @@ from argparse import Namespace
 from typing import Optional
 
 
+T = TypeVar("T", np.ndarray, jnp.ndarray)
+
+
 class BaseEnv(object):
     def __init__(self, args: Namespace) -> None:
+        # Initialize arguments
+        self.args = args
+
+        # Global PRNG stream derived from configuration seed
+        self._rng = jax.random.PRNGKey(self.env_cfg.sim.seed)
+        self._rng, self._noise_key = jax.random.split(self._rng)
+
         # Setup simulation environment
         self._setup_sim(args)
 
@@ -35,9 +46,6 @@ class BaseEnv(object):
         # Initialize observations
         self.set_obs(v_frame=self.env_cfg.sim.obs.v_frame)
 
-        # Initialize arguments
-        self.args = args
-
         # Flag to know whether VecEnv is being used
         self.using_rl = False
 
@@ -51,33 +59,38 @@ class BaseEnv(object):
         if args.log:
             self.logger = Logger(log_name=self.sim_start_time)
 
-    def reset(self, pos: Optional[list] = None, att: Optional[list] = None) -> None:
+    def reset(self) -> None:
+        """
+        Resets environment.
+        """
+        mujoco.mj_resetData(self.model, self.data)
+
+        self.set_obs(v_frame="body")
+        print("Environment reset.")
+
+    def reset_to_state(self, pos: np.ndarray, att: np.ndarray) -> None:
         """
         Resets environment to a desired state.
 
         NOTE: att is in euler angles [roll, pitch, yaw] in radians.
         """
 
-        if pos is not None and att is not None:
-            # Reset position and attitude
-            mujoco.mj_resetData(self.model, self.data)
-            self.data.qpos[:3] = pos
-            # Need to convert att to a quaternion for MuJoCo
-            euler = np.radians(np.array(att))
-            quat = np.zeros(4)
-            
-            mujoco.mju_euler2Quat(quat, euler, "XYZ")
-        
-            self.data.qpos[3:7] = quat
+        # Reset position and attitude
+        mujoco.mj_resetData(self.model, self.data)
+        self.data.qpos[:3] = pos
+        # Need to convert att to a quaternion for MuJoCo
+        euler = np.array(att, dtype=float)
+        quat = np.zeros(4)
+        mujoco.mju_euler2Quat(quat, euler, "XYZ")
 
-            mujoco.mj_forward(self.model, self.data)
-        else:
-            mujoco.mj_resetData(self.model, self.data)
-        
-        self.set_obs(v_frame= "body")
+        self.data.qpos[3:7] = quat
+
+        mujoco.mj_forward(self.model, self.data)
+
+        self.set_obs(v_frame="body")
         print("Environment reset.")
 
-    def step(self, input: np.array) -> None:
+    def step(self, input: np.ndarray) -> None:
         """
         Simulate environment for one timestep.
         """
@@ -98,7 +111,7 @@ class BaseEnv(object):
         # Execute post physics steps
         self._post_physics_step()
 
-    def set_obs(self, v_frame: str = "body") -> np.ndarray:
+    def set_obs(self, v_frame: str = "body") -> None:
         """
         Return all states
 
@@ -122,7 +135,7 @@ class BaseEnv(object):
             R = np.reshape(self.data.body("body0").xmat.copy(), (3, 3))
 
             # Rotate intertial velocity to body velocity
-            v =  R.T @ self.data.cvel[-1, 3:6]
+            v = R.T @ self.data.cvel[-1, 3:6]
 
         elif v_frame == "inertial":
 
@@ -135,7 +148,9 @@ class BaseEnv(object):
                 "Must be either 'body' or 'inertial'."
             )
 
-        obs = np.concatenate((self.data.xpos[-1], self.data.xquat[-1], v,  self.data.qvel[3:6]))
+        obs = np.concatenate(
+            (self.data.xpos[-1], self.data.xquat[-1], v, self.data.qvel[3:6])
+        )
 
         # Save ground truth observations
         self.obs_gt = obs
@@ -143,26 +158,24 @@ class BaseEnv(object):
         # Apply noise to observations
         self.obs = self._apply_obs_noise(obs)
 
-    def get_obs(self) -> np.ndarray | jnp.ndarray:
+    def get_obs(self) -> T:
         """
         Returns the current (noisy) observations
         """
         return self.obs.copy()
 
-    def get_obs_gt(self) -> np.ndarray | jnp.ndarray:
+    def get_obs_gt(self) -> T:
         """
         Return the GT observations. Use this method for
         visualization and for evaluations.
         """
         return self.obs_gt.copy()
 
-    def _apply_obs_noise(
-        self, obs: np.ndarray | jnp.ndarray
-    ) -> np.ndarray | jnp.ndarray:
+    def _apply_obs_noise(self, obs: T) -> T:
         """
         Applies additive Gaussian noise on top of observations.
         For MuJoCo: obs are of type np.ndarray
-        For MJX: obs are of type
+        For MJX: obs are of type jnp.ndarray
         """
         if self.env_cfg.sim.noise.add_obs_noise:
             # Single agent in MuJoCo
@@ -182,27 +195,27 @@ class BaseEnv(object):
             # Multiple agents in MJX
             else:
                 # Set the PRNG keys
-                key = jax.random.PRNGKey(42)
-
-                # Calculate noise for each environment
                 num_envs = obs.shape[0]
+                self._noise_key, *noise_subkeys = jax.random.split(
+                    self._noise_key, num=5
+                )
                 noise_r = jax.random.multivariate_normal(
-                    key,
+                    noise_subkeys[0],
                     jnp.zeros((num_envs, 3)),
                     self.env_cfg.sim.noise.sigma_r * jnp.identity(3),
                 )
                 noise_q = jax.random.multivariate_normal(
-                    key,
+                    noise_subkeys[1],
                     jnp.zeros((num_envs, 4)),
                     self.env_cfg.sim.noise.sigma_q * jnp.identity(4),
                 )
                 noise_v = jax.random.multivariate_normal(
-                    key,
+                    noise_subkeys[2],
                     jnp.zeros((num_envs, 3)),
                     self.env_cfg.sim.noise.sigma_v * jnp.identity(3),
                 )
                 noise_w = jax.random.multivariate_normal(
-                    key,
+                    noise_subkeys[3],
                     jnp.zeros((num_envs, 3)),
                     self.env_cfg.sim.noise.sigma_w * jnp.identity(3),
                 )
@@ -296,7 +309,7 @@ class BaseEnv(object):
         # Save frames to create the video
         self.frames = []
 
-    def _load_cfg(self, env_name: str, model_name: str) -> dict:
+    def _load_cfg(self, env_name: str, model_name: str | None = None) -> tuple:
         """
         Loads and returns the following config files:
             - env config file
@@ -310,9 +323,17 @@ class BaseEnv(object):
         module = __import__(f"smallsat_sim.envs.{env_name}.cfg", fromlist=["config"])
         env_cfg = module.config.EnvConfig()
 
-        # Dynamically import the correct model config module
-        module = __import__(f"smallsat_sim.model.{model_name}.cfg", fromlist=["config"])
+        model_module_name = model_name or getattr(env_cfg, "model", None)
+        if model_module_name is None:
+            raise ValueError(
+                "Model name not provided and environment config does not define 'model'."
+            )
+
+        module = __import__(
+            f"smallsat_sim.model.{model_module_name}.cfg", fromlist=["config"]
+        )
         model_cfg = module.config.ModelConfig()
+
         return env_cfg, model_cfg
 
     def _setup_sim(self, args: Namespace) -> None:
@@ -347,7 +368,9 @@ class BaseEnv(object):
         """
         Updates the viewer
         """
+        print("Updating viewer...")
         self.viewer.sync()
+        print("Viewer updated.")
 
     def _update_renderer(self) -> None:
         """
@@ -357,7 +380,33 @@ class BaseEnv(object):
         sim_img = self.renderer.render().copy()
         self.frames.append(sim_img)
 
-    def _pre_physics_step(self, input: np.ndarray) -> None:
+    def close(self) -> None:
+        """
+        Release viewer/renderer resources if they exist.
+        """
+        try:
+            if self.viewer is not None:
+                self.viewer.close()
+        except Exception:
+            pass
+        finally:
+            self.viewer = None
+
+        try:
+            if self.renderer is not None:
+                self.renderer.close()
+        except Exception:
+            pass
+        finally:
+            self.renderer = None
+
+        self._update_viewer = lambda *args, **kwargs: None
+        self._update_renderer = lambda *args, **kwargs: None
+
+    def __del__(self):
+        self.close()
+
+    def _pre_physics_step(self, input: T) -> None:
         """
         Prepares the environment for the simulation step in MuJoCo.
         This includes:

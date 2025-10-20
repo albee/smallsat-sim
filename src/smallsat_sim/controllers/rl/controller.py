@@ -25,7 +25,9 @@ class RLController(object):
         # Initialize the environment and agent
         self.env = env
         self.planner = planner
-        self.agent = PPO(self.env, planner)
+        base_key = self.env.next_rng_keys(1)[0]
+        self._rng, agent_key = jax.random.split(base_key)
+        self.agent = PPO(self.env, planner, rng_key=agent_key)
         self.am = AdaptationModule(50, env.obs_dim + env.act_dim, env.ext_dim)
         self.pd_ctrl = VectorizedPDController(env, planner)
 
@@ -33,11 +35,23 @@ class RLController(object):
         self.deployment_len = self.env.env_cfg.control.RL.deployment_len
 
         # Path to the saved checkpoints
-        self.ckpt_dir = "smallsat_sim/controllers/rl/checkpoints/"
+        self.ckpt_dir = "src/smallsat_sim/controllers/rl/checkpoints/"
         if ckpt_name is not None:
             self.ckpt_filename = ckpt_name
         else:
             self._get_training_state_file_name()
+
+    def _take_keys(self, count: int = 1):
+        """
+        Consume ``count`` RNG keys from the runner seed.
+        """
+        if count < 1:
+            raise ValueError("count must be >= 1")
+        splits = jax.random.split(self._rng, count + 1)
+        self._rng = splits[0]
+        if count == 1:
+            return splits[1]
+        return splits[1:]
 
     def control(
         self,
@@ -110,7 +124,7 @@ class RLController(object):
                 and perturbation_distribution is not None
             ):
                 self.env.apply_random_perturbations(
-                    key=jax.random.PRNGKey(42),
+                    key=self._take_keys(),
                     fraction_perturbed_envs=1.0,
                     perturbation_distribution=perturbation_distribution,
                 )
@@ -120,6 +134,7 @@ class RLController(object):
 
             if not test_pd:
                 actions = self.agent.get_control_input(
+                    self.env,
                     stage,
                     jnp.concatenate([states, ext], axis=1),  # Use un-normalized states
                 )  # No sampling/exploration noise needed

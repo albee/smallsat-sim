@@ -5,6 +5,8 @@ import jax.numpy as jnp
 import mujoco
 import mujoco.viewer
 from mujoco import mjx
+
+# from mujoco.mjx import viewer
 import wandb
 
 from smallsat_sim.envs.base_env import BaseEnv
@@ -17,9 +19,6 @@ class VecEnv(BaseEnv):
     """
 
     def __init__(self, args) -> None:
-        # Flag to know whether VecEnv is being used
-        self.using_rl = True
-
         # Flag to know whether Weights & Biases should be used
         self.use_wandb = args.wandb
 
@@ -34,9 +33,12 @@ class VecEnv(BaseEnv):
 
         super().__init__(args)
 
+        # Flag to know whether VecEnv is being used
+        self.using_rl = True
+
         # Observation and action spaces
-        self.obs_dim = 6
-        self.act_dim = 8
+        self.obs_dim = 12
+        self.act_dim = int(self.model.nu)
         if self.use_adaptive_approach is True:
             self.ext_dim = self.act_dim
         else:
@@ -54,6 +56,16 @@ class VecEnv(BaseEnv):
         self.jit_forward = jax.jit(jax.vmap(mjx.forward, in_axes=(None, 0)))
         self.reset()
 
+    def next_rng_keys(self, count: int = 1) -> jnp.ndarray:
+        """
+        Draw ``count`` fresh PRNG keys from the environment stream.
+        """
+        if count < 1:
+            raise ValueError("count must be >= 1")
+        splits = jax.random.split(self._rng, count + 1)
+        self._rng = splits[0]
+        return splits[1:]
+
     def reset(self) -> None:
         """
         Reset the agent in all the environment instances, while randomizing the initial position.
@@ -62,27 +74,22 @@ class VecEnv(BaseEnv):
 
         # Updating only qpos and qvel, not resetting all of mj_data
         self.mjx_data = self.mjx_data.replace(qpos=self.init_qpos[0])
-        rng = jax.random.PRNGKey(
-            np.random.randint(0, 9999)
-        )  # Have a different config at every reset
-        rng = jax.random.split(rng, self.num_envs)
-        tmp_batch = jax.vmap(
-            lambda rng: self.mjx_data.replace(
-                qpos=jnp.concatenate(
-                    [
-                        self.mjx_data.qpos[0:2]
-                        + jax.random.uniform(
-                            rng,
-                            (2,),
-                            minval=-self.max_start_offset,
-                            maxval=self.max_start_offset,
-                        ),
-                        self.mjx_data.qpos[2].reshape(-1),
-                        self._get_random_quaternion(rng),
-                    ]
-                )
+        rng = self.next_rng_keys(self.num_envs)
+
+        def _randomize_state(rng_key):
+            pos_key, quat_key = jax.random.split(rng_key)
+            random_pos = self.mjx_data.qpos[:3] + jax.random.uniform(
+                pos_key,
+                (3,),
+                minval=-self.max_start_offset,
+                maxval=self.max_start_offset,
             )
-        )(rng)
+            random_quat = self._get_random_quaternion(quat_key)
+            return self.mjx_data.replace(
+                qpos=jnp.concatenate([random_pos, random_quat])
+            )
+
+        tmp_batch = jax.vmap(_randomize_state)(rng)
         self.mjx_batch = self.mjx_batch.replace(qpos=tmp_batch.qpos)
         self.mjx_batch = self.mjx_batch.replace(qvel=self.init_qvel)
         self.mjx_batch = self.jit_forward(self.mjx_model, self.mjx_batch)
@@ -100,29 +107,37 @@ class VecEnv(BaseEnv):
 
         # Reward shaping
         rewards = jnp.zeros(self.num_envs)
-        squared_euclid_dist2goal = states[:, 0] ** 2 + states[:, 1] ** 2
-        manhattan_dist2goal = jnp.abs(states[:, 0]) + jnp.abs(states[:, 1])
-        attitude_dev = jnp.exp(-1.0 * states[:, 2] ** 2)
-        squared_attitude_dev = states[:, 2] ** 2
-        squared_vel = states[:, 3] ** 2 + states[:, 4] ** 2
-        squared_angvel = states[:, 5] ** 2
-        control_effort = jnp.sum(actions**2)
+
+        pos_error = states[:, 0:3]
+        att_error_vec = states[:, 3:6]
+        body_vel = states[:, 6:9]
+        ang_vel = states[:, 9:12]
+
+        squared_pos_error = jnp.sum(pos_error**2, axis=1)
+        manhattan_dist2goal = jnp.sum(jnp.abs(pos_error), axis=1)
+        attitude_error_norm = jnp.linalg.norm(att_error_vec, axis=1)
+        attitude_dev = jnp.exp(-1.0 * attitude_error_norm**2)
+        squared_body_vel = jnp.sum(body_vel**2, axis=1)
+        squared_angvel = jnp.sum(ang_vel**2, axis=1)
+        control_effort = jnp.sum(actions**2, axis=1)
 
         # Curriculum-based training
         if (
             iter is not None and iter < 25
         ):  # Assumption: train for more than this many epochs
             shaping = (
-                -3 * squared_euclid_dist2goal
+                -3 * squared_pos_error
                 - 2 * manhattan_dist2goal
+                - 0.5 * squared_body_vel
                 - 1 * squared_angvel
                 + 0.1 * attitude_dev
                 - 0.01 * control_effort
             )
         else:
             shaping = (
-                -3 * squared_euclid_dist2goal
+                -3 * squared_pos_error
                 - 2 * manhattan_dist2goal
+                - 0.5 * squared_body_vel
                 - 1 * squared_angvel
                 + 0.1 * attitude_dev
                 - 0.01 * control_effort
@@ -141,7 +156,8 @@ class VecEnv(BaseEnv):
         terminal = is_terminal(states)
 
         # If the agent is in the terminal set, they should stop
-        shaping += jnp.where(terminal, 0.1 * squared_vel, 0)
+        linear_speed_sq = jnp.sum(body_vel**2, axis=1)
+        shaping += jnp.where(terminal, 0.1 * linear_speed_sq, 0)
 
         if self.prev_shaping is not None:
             rewards = shaping - self.prev_shaping
@@ -203,7 +219,7 @@ class VecEnv(BaseEnv):
 
     def get_states(self, next_waypoint: jnp.ndarray) -> jnp.ndarray:
         """
-        Return all states.
+        Return state vector relative to the provided reference.
         """
         # Retrieve current rotation matrix
         R = self.mjx_batch.xmat[:, 1, :, :]
@@ -215,32 +231,32 @@ class VecEnv(BaseEnv):
         def multiply_transpose_velocity(R, vel):
             return jnp.matmul(R, vel)  # Shape (3,)
 
-        # Rotate intertial velocity to body velocity
+        # Rotate inertial velocity to body velocity
         vel_body = multiply_transpose_velocity(R, self.mjx_batch.qvel[:, :3])
 
-        # Compute rotation angle
-        rot_angle = jnp.arctan2(R[:, 1, 0], R[:, 0, 0])
+        # Ensure reference tensors have correct shape
+        reference = jnp.asarray(next_waypoint)
+        if reference.ndim == 1:
+            reference = jnp.broadcast_to(reference, (self.num_envs, reference.shape[0]))
 
-        # Compute the distance on each axis to the reference point
-        delta_pos = self.mjx_batch.qpos[:, 0:3] - jnp.full(
-            (self.num_envs, 3), next_waypoint
-        )
+        # Extract position and quaternion reference
+        ref_pos = reference[:, :3]
+        ref_quat = reference[:, 3:7]
 
-        # Compute the orientation/attitude error
-        ref_orientation = jnp.full(self.num_envs, 0)
-        delta_orientation = rot_angle - ref_orientation
+        delta_pos = self.mjx_batch.qpos[:, 0:3] - ref_pos
 
-        # Create array of observations
+        get_error_quat = jax.vmap(self._get_error_quaternion, in_axes=(0, 0))
+        attitude_error = get_error_quat(self.mjx_batch.qpos[:, 3:7], ref_quat)
+
         states = jnp.concatenate(
             (
-                delta_pos[:, 0:2],
-                delta_orientation.reshape(-1, 1),
-                vel_body[:, 0:2],
-                self.mjx_batch.qvel[:, 5].reshape(-1, 1),
+                delta_pos,
+                attitude_error,
+                vel_body,
+                self.mjx_batch.qvel[:, 3:6],
             ),
             axis=1,
         )
-
 
         return states
 
@@ -338,9 +354,10 @@ class VecEnv(BaseEnv):
         """
         Creates a renderer to visualize the experiments (to later save them to a video).
         """
+        print("BUG HERE") # TODO
         # Create instance of MuJoCo renderer
         self.renderer = mujoco.Renderer(
-            self.model, width=self.env_cfg.renderer.width, height=1440
+            self.model, width=self.env_cfg.renderer.width, height=self.env_cfg.renderer.height,
         )
 
         # Set up the scene and the default camera options
@@ -364,16 +381,17 @@ class VecEnv(BaseEnv):
         # Create model and data instances
         self.model = mujoco.MjModel.from_xml_string(xml)
         self.data = mujoco.MjData(self.model)
-        self.mjx_model = mjx.put_model(self.model)
-        self.mjx_data = mjx.put_data(self.model, self.data)
+        self.mjx_model = mjx.put_model(
+            self.model
+        )  # impl='warp', warp requires a CUDA device & mujoco-mjx[warp]
+        self.mjx_data = mjx.put_data(self.model, self.data)  # impl='warp'
 
         # Check that MJX puts the JAX arrays on GPU (it should do so automatically)
         print("Devices available to JAX: ", jax.devices())
         print("Device used by JAX: ", self.mjx_data.qpos.devices(), "\n")
 
         # Batch the data and randomize the starting position
-        rng = jax.random.PRNGKey(0)
-        rng = jax.random.split(rng, self.num_envs)
+        rng = self.next_rng_keys(self.num_envs)
         self.mjx_batch = jax.vmap(  # The initial position is randomized when the env is reset (at init and after each epoch)
             lambda rng: self.mjx_data.replace(qpos=self.mjx_data.qpos)
         )(
@@ -384,7 +402,10 @@ class VecEnv(BaseEnv):
 
         # Launch the viewer
         if not args.headless:
-            self._create_viewer(args)
+            raise Exception(
+                "Viewer is not supported in vectorized environments. Run simulation in headless mode."
+            )
+            # self._create_viewer(args)
         else:
             # If sim is run in headless mode, set the update_viewer method
             # to a lambda function which essentially does nothing
@@ -464,11 +485,21 @@ class VecEnv(BaseEnv):
         else:
             self.mjx_batch = self.mjx_batch.replace(ctrl=input)
 
-    def _in_terminal_set(self, delta_pos: jnp.ndarray) -> bool:
+    def _in_terminal_set(self, states: jnp.ndarray) -> jnp.ndarray:
         """
         Returns one if in terminal set, zero otherwise.
         """
-        return jnp.sqrt(delta_pos[0] ** 2 + delta_pos[1] ** 2) <= 0.2
+        pos_error = states[0:3]
+        eps = states[3:6]
+        eps_norm = jnp.linalg.norm(eps)
+        quat_scalar = jnp.sqrt(jnp.maximum(1.0 - jnp.minimum(1.0, eps_norm**2), 0.0))
+        angle_error = 2 * jnp.arctan2(eps_norm, quat_scalar + 1e-8)
+        pos_threshold = 0.2
+        att_threshold = 0.05  # radians (approx 2.9 degrees)
+        return jnp.logical_and(
+            jnp.linalg.norm(pos_error) <= pos_threshold,
+            angle_error <= att_threshold,
+        )
 
     def _get_error_quaternion(self, q: jnp.ndarray, q_des: jnp.ndarray) -> jnp.ndarray:
         """
@@ -476,12 +507,8 @@ class VecEnv(BaseEnv):
         """
         # Quaternion error
         q_conj = jnp.array([q[0], -q[1], -q[2], -q[3]])
-        e_q = jnp.array(
+        e_q_vec = jnp.array(
             [
-                q_des[0] * q_conj[0]
-                - q_des[1] * q_conj[1]
-                - q_des[2] * q_conj[2]
-                - q_des[3] * q_conj[3],
                 q_des[0] * q_conj[1]
                 + q_des[1] * q_conj[0]
                 + q_des[2] * q_conj[3]
@@ -497,10 +524,7 @@ class VecEnv(BaseEnv):
             ]
         )
 
-        # We only want to minimize eps part of error quaternion
-        e_q = e_q[1:4]
-
-        return e_q
+        return e_q_vec
 
     def _get_random_quaternion(self, rng) -> jnp.ndarray:
         """
@@ -528,5 +552,6 @@ class VecEnv(BaseEnv):
         ) * jnp.sin(theta2) * jnp.cos(theta3)
 
         quaternion = jnp.array([w, x, y, z]).reshape(-1)
+        quaternion = quaternion / jnp.linalg.norm(quaternion)
 
         return quaternion

@@ -3,6 +3,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
+from smallsat_sim.envs.base_env import BaseEnv
 from smallsat_sim.envs.vec_env import VecEnv
 from smallsat_sim.controllers.base_controller import BaseController
 from smallsat_sim.controllers.rl.modules.base_network import Critic
@@ -14,7 +15,14 @@ class BaseAgent(BaseController):
     Base implementation for actor-critic agents.
     """
 
-    def __init__(self, env, planner, activation=nnx.tanh, adaptive=False) -> None:
+    def __init__(
+        self,
+        env,
+        planner,
+        rng_key: jnp.ndarray,
+        activation=nnx.tanh,
+        adaptive=False,
+    ) -> None:
         self.ctrl_cfg = env.env_cfg.control.RL
         super().__init__(env, planner, self.ctrl_cfg)
 
@@ -24,11 +32,12 @@ class BaseAgent(BaseController):
 
         self.num_layers = 2
         self.layer_width = 64
-        hidden_sizes = [self.layer_width] * self.num_layers
+        hidden_sizes = ([self.layer_width] * self.num_layers)[0]
         self.actor = Actor(
             env.obs_dim, env.act_dim, hidden_sizes, activation, env.ext_dim
         )
         self.critic = Critic(env.obs_dim, hidden_sizes, activation, env.ext_dim)
+        self.key = rng_key
 
     def act(
         self, states_ext: jnp.ndarray, log: bool = False
@@ -37,17 +46,25 @@ class BaseAgent(BaseController):
         Return actions, value functions, and log-likelihood of chosen actions for given states.
         """
         pi, _ = self.actor.forward(states_ext)
-        key = jax.random.PRNGKey(42)
-        actions = pi.sample(seed=key)
+        self.key, subkey = jax.random.split(self.key)
+        actions = pi.sample(seed=subkey)
         values = self.critic.forward(states_ext)
-        logp = self.actor._log_prob_from_dist(pi, actions)
+        logp = jnp.asarray(self.actor._log_prob_from_dist(pi, actions))
 
         return actions, values, logp
 
-    def get_control_input(self, stage: str, obs_extrinsics: jnp.ndarray) -> jnp.ndarray:
+    def get_control_input(
+        self,
+        env: BaseEnv,
+        stage: str | None = None,
+        obs_extrinsics: jnp.ndarray | None = None,
+    ) -> jnp.ndarray:
         """
         Calculate the control input based on current observations for each environment.
         """
+        if stage is None or obs_extrinsics is None:
+            raise ValueError("stage and obs_extrinsics must be provided")
+
         ctrl_input = self.actor.mu_net(obs_extrinsics)
 
         if stage != "am_training" and stage != "evaluation":
@@ -66,7 +83,7 @@ class BaseAgent(BaseController):
     def update_policy_gradient(
         self,
         key,
-        obs: jnp.ndarray,
+        obs_extrinsics: jnp.ndarray,
         actions: jnp.ndarray,
         tdres: jnp.ndarray,
         logp: jnp.ndarray,
@@ -81,7 +98,7 @@ class BaseAgent(BaseController):
     def update_value_function(
         self,
         key,
-        obs: jnp.ndarray,
+        obs_extrinsics: jnp.ndarray,
         returns: jnp.ndarray,
         minibatch: bool = True,
     ) -> jnp.ndarray:
@@ -90,7 +107,7 @@ class BaseAgent(BaseController):
         """
         pass
 
-    def _log(self, run_id: int, timestamp: float, env: VecEnv) -> None:
+    def _log(self, run_id: int, timestamp: float, env: BaseEnv) -> None:
         """
         Logs desired quantities if flag is enabled
         """

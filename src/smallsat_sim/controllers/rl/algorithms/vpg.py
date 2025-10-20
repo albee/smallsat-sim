@@ -13,8 +13,14 @@ class VPG(BaseAgent):
     Vanilla Policy Gradient (with Generalized Advantage Estimation) agent.
     """
 
-    def __init__(self, env, planner, activation=nnx.tanh) -> None:
-        super().__init__(env, planner, activation)
+    def __init__(
+        self,
+        env,
+        planner,
+        rng_key: jnp.ndarray,
+        activation=nnx.tanh,
+    ) -> None:
+        super().__init__(env, planner, rng_key=rng_key, activation=activation)
 
         # Load the hyperparams
         self._load_vpg_hyperparams()
@@ -52,7 +58,7 @@ class VPG(BaseAgent):
     def update_policy_gradient(
         self,
         key,
-        obs: jnp.ndarray,
+        obs_extrinsics: jnp.ndarray,
         actions: jnp.ndarray,
         tdres: jnp.ndarray,
         logp: jnp.ndarray,
@@ -74,7 +80,7 @@ class VPG(BaseAgent):
     def update_value_function(
         self,
         key,
-        obs: jnp.ndarray,
+        obs_extrinsics: jnp.ndarray,
         returns: jnp.ndarray,
         minibatch: bool = True,
     ) -> jnp.ndarray:
