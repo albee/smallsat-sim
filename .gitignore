@@ -47,4 +47,4 @@ external/
 
 
 # wandb API key
-smallsat_sim/utils/wandb_config.py
+src/smallsat_sim/utils/wandb_config.py
