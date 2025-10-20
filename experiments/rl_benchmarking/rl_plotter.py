@@ -12,13 +12,17 @@ def plot_results(logger: Logger, run_name: str) -> None:
     # Load **all** the logs
     df = logger.load_all_logs(run_id=0)
 
+    if "run_name" not in df.columns:
+        print("Column 'run_name' not found in DataFrame")
+        return None
+
     # Get the logs for the current run
-    if "run_name" in df.columns:
-        df_run = df[df["run_name"] == run_name]
-        # Check that the data for this run exists
-        if df_run.empty:
-            print(f"No data found for run name: {run_name}")
-            return
+    df_run = df[df["run_name"] == run_name]
+    
+    # Check that the data for this run exists
+    if df_run.empty:
+        print(f"No data found for run name: {run_name}")
+        return
 
     # Define output directory
     dir_name = "experiments/rl_results/"
@@ -27,7 +31,7 @@ def plot_results(logger: Logger, run_name: str) -> None:
     stage_metrics_train = {
         "policy_training": [
             "mean_tracking_error",
-            "mean_orientation_error",
+            "mean_angle_error",
             "mean_extrinsic_error",
             "mean_scaled_episodic_returns",
             "mean_scaled_rewards",
@@ -35,17 +39,18 @@ def plot_results(logger: Logger, run_name: str) -> None:
             "critic_loss",
             "num_terminal",
             "mean_log_std",
+            "mean_std",
         ],
         "am_training": [
             "mean_tracking_error",
-            "mean_orientation_error",
+            "mean_angle_error",
             "mean_extrinsic_error",
             "am_train_loss",
             "am_val_loss",
         ],
         "evaluation": [
             "mean_tracking_error",
-            "mean_orientation_error",
+            "mean_angle_error",
             "mean_extrinsic_error",
             "mean_scaled_episodic_returns",
             "num_terminal",
@@ -60,14 +65,16 @@ def plot_results(logger: Logger, run_name: str) -> None:
                 print(f"No rows with stage '{stage_name}' found. Nothing to plot.")
             else:
                 for metric in metrics:
-                    plot_metric(stage_data, metric, dir_name, run_name, stage_name, "Epoch")
+                    plot_metric(
+                        stage_data, metric, dir_name, run_name, stage_name, "Epoch"
+                    )
 
-    errors = ["mean_tracking_error", "mean_orientation_error", "mean_extrinsic_error"]
+    errors = ["mean_tracking_error", "mean_angle_error", "mean_extrinsic_error"]
     stage_metrics_test = {
         "deployment": errors,
         "stuck_off_deployment": errors,
         "stuck_on_deployment": errors,
-        "stuck_faulty_valve_deployment": errors,
+        "faulty_valve_deployment": errors,
         "saturated_thrust_deployment": errors,
         "thrust_instability_deployment": errors,
     }
@@ -80,10 +87,19 @@ def plot_results(logger: Logger, run_name: str) -> None:
                 print(f"No rows with stage '{stage_name}' found. Nothing to plot.")
             else:
                 for metric in metrics:
-                    plot_metric(stage_data, metric, dir_name, run_name, stage_name, "Step")
+                    plot_metric(
+                        stage_data, metric, dir_name, run_name, stage_name, "Step"
+                    )
 
 
-def plot_metric(df: pd.DataFrame, metric_name: str, dir_name: str, run_name: str, stage_name: str, xlabel: str) -> None:
+def plot_metric(
+    df: pd.DataFrame,
+    metric_name: str,
+    dir_name: str,
+    run_name: str,
+    stage_name: str,
+    xlabel: str,
+) -> None:
     """
     Generate and save the plot of a given metric.
     """
@@ -102,6 +118,7 @@ def plot_metric(df: pd.DataFrame, metric_name: str, dir_name: str, run_name: str
     filename = run_name + "_" + stage_name + "_" + metric_name
     plt.savefig(dir_name + filename + ".svg", format="svg")
     plt.savefig(dir_name + filename + ".pdf", format="pdf")
+
 
 def main():
     """

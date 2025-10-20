@@ -240,7 +240,7 @@ class NominalMPCController(BaseMPCController):
 
         print("Solver generated successfully.")
 
-    def _initialize_solver(self, env: BaseEnv) -> np.ndarray:
+    def _initialize_solver(self, env: BaseEnv) -> None:
         """
         Initializes the solver. Also known as "warm start".
         """

@@ -14,8 +14,8 @@ def mlp(
     sizes,
     activation,
     output_activation=None,
-    std=jnp.sqrt(2),
-    last_layer_std=jnp.sqrt(2),
+    std=jnp.sqrt(2).item(),
+    last_layer_std=jnp.sqrt(2).item(),
 ):
     """
     Basic multilayer perceptron architecture.

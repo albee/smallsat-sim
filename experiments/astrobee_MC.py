@@ -208,7 +208,7 @@ for i in range(start_MC, num_MC):
     pos, att = randomize_initial_state()
 
     # Reset sim state
-    env.reset(pos=pos, att=att)
+    env.reset_to_state(pos, att)
 
     # Randomize perturbations
     env.reset_perturbations()

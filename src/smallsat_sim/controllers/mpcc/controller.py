@@ -5,13 +5,18 @@ from smallsat_sim.utils.helpers import calc_lateral_tracking_error, calc_attitud
 
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
 
+from typing import TypeVar
 import numpy as np
+import jax.numpy as jnp
 import os
 import casadi as ca
 import mujoco
 import time
 
 from casadi import SX
+
+
+T = TypeVar("T", np.ndarray, jnp.ndarray)
 
 
 class NominalMPCCController(BaseMPCController):
@@ -323,7 +328,7 @@ class NominalMPCCController(BaseMPCController):
 
         print("Solver generated successfully.")
 
-    def _initialize_solver(self, env: BaseEnv) -> np.ndarray:
+    def _initialize_solver(self, env: BaseEnv) -> None:
         """
         Initializes the solver. Also known as "warm start".
         """
@@ -410,7 +415,7 @@ class NominalMPCCController(BaseMPCController):
 
         return u0[0:12].copy()
 
-    def _set_params(self, obs: np.ndarray) -> None:
+    def _set_params(self, obs: T) -> None:
         """
         Sets the parameters of the solver at runtime
         """
@@ -465,12 +470,14 @@ class NominalMPCCController(BaseMPCController):
             ctrl_input_callback_time = self.ctrl_input_callback_time
 
             # Track cost value of current solution
-            mpc_cost = self.cost_function(self.ocp_solver.get(0, "x"),
-                                          self.ocp_solver.get(0, "u"),
-                                          self.ocp_solver.get(0, "p")[0:3].copy(),
-                                          self.ocp_solver.get(0, "p")[3:6].copy(),
-                                          self.ocp_solver.get(0, "p")[6].copy(),
-                                          self.ocp_solver.get(0, "p")[7:11].copy()).full()
+            mpc_cost = self.cost_function(
+                self.ocp_solver.get(0, "x"),
+                self.ocp_solver.get(0, "u"),
+                self.ocp_solver.get(0, "p")[0:3].copy(),
+                self.ocp_solver.get(0, "p")[3:6].copy(),
+                self.ocp_solver.get(0, "p")[6].copy(),
+                self.ocp_solver.get(0, "p")[7:11].copy(),
+            ).full()
 
             # Log quantities
             self.logger.log(
@@ -482,8 +489,8 @@ class NominalMPCCController(BaseMPCController):
                 ctrl_input_callback_time=ctrl_input_callback_time,
                 mpc_cost=mpc_cost,
                 u_demanded=self.u_past,
-                pos = obs_gt[0:3]
-            )  
+                pos=obs_gt[0:3],
+            )
 
     def _visualize_prediction(self) -> None:
         """

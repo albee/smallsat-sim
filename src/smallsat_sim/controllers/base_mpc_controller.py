@@ -22,14 +22,14 @@ class BaseMPCController(BaseController):
         self.solve_time = 0
 
     @abstractmethod
-    def get_control_input(self, env: BaseEnv) -> None:
+    def get_control_input(self, env: BaseEnv) -> np.ndarray:
         """
         Returns the control input
         """
         pass
 
     @abstractmethod
-    def _log(self, run_id: int, timestamp: float, obs: np.ndarray) -> None:
+    def _log(self, run_id: int, timestamp: float, env: BaseEnv) -> None:
         """
         Logs desired quantities if flag is enabled
         """

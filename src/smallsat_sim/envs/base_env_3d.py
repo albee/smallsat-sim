@@ -1,3 +1,4 @@
+from typing import TypeVar
 import numpy as np
 import mujoco
 import mujoco.viewer
@@ -18,8 +19,18 @@ from smallsat_sim import SMALLSAT_STEWARD_ROOT_DIR
 from argparse import Namespace
 
 
+T = TypeVar("T", np.ndarray, jnp.ndarray)
+
+
 class BaseEnv3D(object):
     def __init__(self, args: Namespace) -> None:
+        # Initialize arguments
+        self.args = args
+
+        # Global PRNG stream derived from configuration seed
+        self._rng = jax.random.PRNGKey(self.env_cfg.sim.seed)
+        self._rng, self._noise_key = jax.random.split(self._rng)
+
         # Setup simulation environment
         self._setup_sim(args)
 
@@ -34,9 +45,6 @@ class BaseEnv3D(object):
 
         # Initialize observations
         self.set_obs(v_frame=self.env_cfg.sim.obs.v_frame)
-
-        # Initialize arguments
-        self.args = args
 
         # Save time of simulation start (for filenames)
         self.sim_start_time = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
@@ -98,7 +106,7 @@ class BaseEnv3D(object):
             R = np.reshape(self.data.body("body0").xmat.copy(), (3, 3))
 
             # Rotate intertial velocity to body velocity
-            v =  R.T @ self.data.cvel[-1, 3:6]
+            v = R.T @ self.data.cvel[-1, 3:6]
 
         elif v_frame == "inertial":
 
@@ -111,7 +119,9 @@ class BaseEnv3D(object):
                 "Must be either 'body' or 'inertial'."
             )
 
-        obs = np.concatenate((self.data.xpos[-1], self.data.xquat[-1], v,  self.data.qvel[3:6]))
+        obs = np.concatenate(
+            (self.data.xpos[-1], self.data.xquat[-1], v, self.data.qvel[3:6])
+        )
 
         # Save ground truth observations
         self.obs_gt = obs
@@ -119,22 +129,20 @@ class BaseEnv3D(object):
         # Apply noise to observations
         self.obs = self._apply_obs_noise(obs)
 
-    def get_obs(self) -> np.ndarray | jnp.ndarray:
+    def get_obs(self) -> T:
         """
         Returns the current (noisy) observations
         """
         return self.obs.copy()
 
-    def get_obs_gt(self) -> np.ndarray | jnp.ndarray:
+    def get_obs_gt(self) -> T:
         """
         Return the GT observations. Use this method for
         visualization and for evaluations.
         """
         return self.obs_gt.copy()
 
-    def _apply_obs_noise(
-        self, obs: np.ndarray | jnp.ndarray
-    ) -> np.ndarray | jnp.ndarray:
+    def _apply_obs_noise(self, obs: T) -> T:
         """
         Applies additive Gaussian noise on top of observations.
         For MuJoCo: obs are of type np.ndarray
@@ -157,28 +165,28 @@ class BaseEnv3D(object):
 
             # Multiple agents in MJX
             else:
-                # Fix a random seed for the PRNG key and set the key
-                random_seed = np.random.randint(0, high=9999, size=4)
-
                 # Calculate noise for each environment
                 num_envs = obs.shape[0]
+                self._noise_key, *noise_subkeys = jax.random.split(
+                    self._noise_key, num=5
+                )
                 noise_r = jax.random.multivariate_normal(
-                    jax.random.PRNGKey(random_seed[0]),
+                    noise_subkeys[0],
                     jnp.zeros((num_envs, 3)),
                     self.env_cfg.sim.noise.sigma_r * jnp.identity(3),
                 )
                 noise_q = jax.random.multivariate_normal(
-                    jax.random.PRNGKey(random_seed[0]),
+                    noise_subkeys[1],
                     jnp.zeros((num_envs, 4)),
                     self.env_cfg.sim.noise.sigma_q * jnp.identity(4),
                 )
                 noise_v = jax.random.multivariate_normal(
-                    jax.random.PRNGKey(random_seed[0]),
+                    noise_subkeys[2],
                     jnp.zeros((num_envs, 3)),
                     self.env_cfg.sim.noise.sigma_v * jnp.identity(3),
                 )
                 noise_w = jax.random.multivariate_normal(
-                    jax.random.PRNGKey(random_seed[0]),
+                    noise_subkeys[3],
                     jnp.zeros((num_envs, 3)),
                     self.env_cfg.sim.noise.sigma_w * jnp.identity(3),
                 )
@@ -268,7 +276,7 @@ class BaseEnv3D(object):
         # Save frames to create the video
         self.frames = []
 
-    def _load_cfg(self, env_name: str, model_name: str) -> dict:
+    def _load_cfg(self, env_name: str, model_name: str | None = None) -> tuple:
         """
         Loads and returns the following config files:
             - env config file
@@ -282,8 +290,15 @@ class BaseEnv3D(object):
         module = __import__(f"smallsat_sim.envs.{env_name}.cfg", fromlist=["config"])
         env_cfg = module.config.EnvConfig()
 
-        # Dynamically import the correct model config module
-        module = __import__(f"smallsat_sim.model.{model_name}.cfg", fromlist=["config"])
+        model_module_name = model_name or getattr(env_cfg, "model", None)
+        if model_module_name is None:
+            raise ValueError(
+                "Model name not provided and environment config does not define 'model'."
+            )
+
+        module = __import__(
+            f"smallsat_sim.model.{model_module_name}.cfg", fromlist=["config"]
+        )
         model_cfg = module.config.ModelConfig()
         return env_cfg, model_cfg
 
@@ -329,7 +344,7 @@ class BaseEnv3D(object):
         sim_img = self.renderer.render().copy()
         self.frames.append(sim_img)
 
-    def _pre_physics_step(self, input: np.ndarray) -> None:
+    def _pre_physics_step(self, input: T) -> None:
         """
         Prepares the environment for the simulation step in MuJoCo.
         This includes:

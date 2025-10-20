@@ -4,7 +4,6 @@ import gpytorch
 import torch
 from matplotlib import pyplot as plt
 from dataclasses import dataclass
-from typing import List
 
 
 @dataclass
@@ -145,7 +144,7 @@ def gp_derivative_data_from_model_and_path(gp_model, likelihood, x_path, num_sam
 
 
 def plot_gp_data(
-    gp_data_list: List[GPlotData],
+    gp_data_list: list[GPlotData],
     marker_size_lim=[5, 100],
     marker_size_reldiff_zero=1e-3,
     marker_style="x",

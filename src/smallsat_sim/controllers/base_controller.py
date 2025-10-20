@@ -1,8 +1,13 @@
+from typing import TypeVar
 from abc import abstractmethod, ABC
 import numpy as np
+import jax.numpy as jnp
 
 from smallsat_sim.envs.base_env import BaseEnv
 from smallsat_sim.planners.base_planner import BasePlanner
+
+
+T = TypeVar("T", np.ndarray, jnp.ndarray)
 
 
 class BaseController(ABC):
@@ -22,14 +27,14 @@ class BaseController(ABC):
             self.has_logger = True
 
     @abstractmethod
-    def get_control_input(self, env: BaseEnv) -> None:
+    def get_control_input(self, env: BaseEnv) -> T:
         """
         Returns the control input
         """
         pass
 
     @abstractmethod
-    def _log(self, run_id: int, timestamp: float, obs: np.ndarray) -> None:
+    def _log(self, run_id: int, timestamp: float, env: BaseEnv) -> None:
         """
         Logs desired quantities if flag is enabled
         """

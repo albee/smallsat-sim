@@ -10,37 +10,37 @@ class Body:
         self.euler = euler
 
 
-def randomize_initial_state() -> tuple[np.ndarray, np.ndarray]:
+def randomize_initial_state() -> tuple[list, list]:
     """
     Hardcoded for MissionPlanner at the moment.
-    
+
     """
     # Define positional references
     positions = [
-        [-3.3, -9, 0],         # Point 1
-        [-3.3, -18, 0],        # Point 2
-        [-1, -20, 5],          # Point 3
-        [16, 0, 23],           # Point 4
-        [16, 0, 0],            # Point 5
-        [16, 0, -23],          # Point 6
-        [16, 0, -26],          # Point 7
-        [7, 0, -26],           # Point 8
-        [7, 0, -4.5],          # Point 9
-        [3, 0, -4.5],          # Point 10
-        [3, 0, -8],            # Point 11
-        [3.6, 16, -8],         # Point 12
-        [3.6, 16, 0],          # Point 13
-        [-2.5, 16, 0],         # Point 14
-        [-1.5, 10.5, -2],      # Point 15
-        [-2.0, 7.75, -1],      # Point 16 
-        [-5.0, 5.0, 0],        # Point 17
-        [-7.5, 5, 0],          # Point 18
-        [-18, 10, 0],          # Point 19
-        [-18, 0, 0],           # Point 20
-        [-18, 0, -5],          # Point 21
-        [-8, 0, -5],           # Point 22
-        [-3.3, 0, -3.5],       # Point 23
-        [-3.3, -9, -3.5],      # Point 24
+        [-3.3, -9, 0],  # Point 1
+        [-3.3, -18, 0],  # Point 2
+        [-1, -20, 5],  # Point 3
+        [16, 0, 23],  # Point 4
+        [16, 0, 0],  # Point 5
+        [16, 0, -23],  # Point 6
+        [16, 0, -26],  # Point 7
+        [7, 0, -26],  # Point 8
+        [7, 0, -4.5],  # Point 9
+        [3, 0, -4.5],  # Point 10
+        [3, 0, -8],  # Point 11
+        [3.6, 16, -8],  # Point 12
+        [3.6, 16, 0],  # Point 13
+        [-2.5, 16, 0],  # Point 14
+        [-1.5, 10.5, -2],  # Point 15
+        [-2.0, 7.75, -1],  # Point 16
+        [-5.0, 5.0, 0],  # Point 17
+        [-7.5, 5, 0],  # Point 18
+        [-18, 10, 0],  # Point 19
+        [-18, 0, 0],  # Point 20
+        [-18, 0, -5],  # Point 21
+        [-8, 0, -5],  # Point 22
+        [-3.3, 0, -3.5],  # Point 23
+        [-3.3, -9, -3.5],  # Point 24
     ]
 
     # Define attitude references (Euler angles)
@@ -75,8 +75,8 @@ def randomize_initial_state() -> tuple[np.ndarray, np.ndarray]:
     idx = random.randint(0, 23)
     idx = 12
 
-    pos = positions[idx]
-    att = attitudes[idx]
+    pos = np.array(positions[idx], dtype=float)
+    att = np.array(attitudes[idx], dtype=float)
 
     # test = np.random.uniform(-0.5, 0.5, 3)
     # test = np.random.randint(-45, 46, 3)
@@ -88,7 +88,6 @@ def randomize_initial_state() -> tuple[np.ndarray, np.ndarray]:
 
     pos += np.random.uniform(-0.7, 0.7, 3)
     att += np.random.randint(-60, 60, 3)
-
 
     return pos.tolist(), att.tolist()
 
@@ -111,9 +110,7 @@ class EnvConfig(BaseEnvConfig):
         bodies_list = []
         for i in range(num_bodies):
             pos, att = randomize_initial_state()
-            bodies_list.append(
-                Body(name=f"body{i}", pos=pos, euler=att)
-            )
+            bodies_list.append(Body(name=f"body{i}", pos=pos, euler=att))
 
     # Holds all information for the controller in use
     class control:
