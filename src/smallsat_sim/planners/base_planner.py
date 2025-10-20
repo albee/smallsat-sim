@@ -1,4 +1,7 @@
+from typing import Any, Generic, TypeVar
+from numpy.typing import NDArray
 import numpy as np
+import jax.numpy as jnp
 import mujoco
 from mujoco import mjx
 from abc import abstractmethod, ABC
@@ -6,7 +9,12 @@ from abc import abstractmethod, ABC
 from smallsat_sim.envs.base_env import BaseEnv
 
 
-class BasePlanner(ABC):
+T = TypeVar("T", np.ndarray, jnp.ndarray)
+T1 = TypeVar("T1", tuple[NDArray[Any], NDArray[Any]], jnp.ndarray)
+T2 = TypeVar("T2", tuple[NDArray[Any], float], jnp.ndarray)
+
+
+class BasePlanner(ABC, Generic[T, T1, T2]):
     """
     Base class of planner objects.
     """
@@ -37,16 +45,14 @@ class BasePlanner(ABC):
             self._visualize_renderer = lambda *args, **kwargs: None
 
     @abstractmethod
-    def get_reference(self, obs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def get_reference(self, obs: T) -> T1:
         """
         Returns a reference for the position and attitude based on current observations
         """
         pass
 
     @abstractmethod
-    def closest_point_on_trajectory(
-        self, point: np.ndarray
-    ) -> tuple[np.ndarray, float]:
+    def closest_point_on_trajectory(self, point: T) -> T2:
         """
         Finds the closest point on the trajectory to the given point.
         Returns the position and corresponding arc length.
@@ -54,7 +60,10 @@ class BasePlanner(ABC):
         pass
 
     def visualize(
-        self, points: list[np.ndarray], color=[1, 0, 0, 2], size=[0.005, 0, 0]
+        self,
+        points: list[T],
+        color=[1, 0, 0, 2],
+        size=[0.005, 0, 0],
     ):
         """
         Visualizes reference points in the MuJoCo viewer
@@ -77,7 +86,10 @@ class BasePlanner(ABC):
             )
 
     def _visualize_renderer(
-        self, points: list[np.ndarray], color=[1, 0, 0, 2], size=[0.005, 0, 0]
+        self,
+        points: list[T],
+        color=[1, 0, 0, 2],
+        size=[0.005, 0, 0],
     ) -> None:
         """
         Visualizes reference points in the MuJoCo renderer.
