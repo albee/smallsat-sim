@@ -14,7 +14,7 @@ class Body:
 class EnvConfig(BaseEnvConfig):
     """Environment configuration class. Contains dynamic vehicle information."""
 
-    model = "cubesat"
+    model = "astrobee"
     compiler = {"convexhull": "true"}
     visual = {
         "headlight": {
