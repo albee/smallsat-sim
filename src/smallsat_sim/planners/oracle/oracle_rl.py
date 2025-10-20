@@ -49,17 +49,23 @@ class OraclePlannerRL(BasePlanner):
             False,
         )
 
+        # Visualize in viewer (if available)
+        self.visualize(self.reference_point_list)
+
         # Visualize the waypoints in the saved video
-        self._visualize_renderer(self.reference_points)
+        self._visualize_renderer(self.reference_point_list)
 
-        return self.reference_points[self.reference_point_indices % num_points]
+        ref_pos = self.reference_points[self.reference_point_indices % num_points]
+        ref_quat = jnp.tile(jnp.array([1.0, 0.0, 0.0, 0.0]), (obs.shape[0], 1))
 
-    def closest_point_on_trajectory(self, obs: jnp.ndarray) -> jnp.ndarray:
+        return jnp.concatenate([ref_pos, ref_quat], axis=1)
+
+    def closest_point_on_trajectory(self, point: jnp.ndarray) -> jnp.ndarray:
         """
         Finds the orthogonal projection of the smallsat position onto the trajectory.
         """
         # Extract the smallsat's current positions (assumed to be the first three elements)
-        pos = obs[:, :3]  # shape: (num_envs, 3)
+        pos = point[:, :3]  # shape: (num_envs, 3)
 
         # Compute distances from pos to each reference point
         distances = jnp.linalg.norm(
@@ -121,6 +127,9 @@ class OraclePlannerRL(BasePlanner):
                 self.reference_point_list.append(jnp.array([x, y, z]))
 
             num_points = int((2 * jnp.pi * self.radius) // self.spacing)
+            if num_points < 1:
+                raise ValueError("Radius too small for the given spacing.")
+
             indices = jnp.arange(num_points)
             x = self.radius * jnp.cos(indices * self.spacing / self.radius)
             y = self.radius * jnp.sin(indices * self.spacing / self.radius)
