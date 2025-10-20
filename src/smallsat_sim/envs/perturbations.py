@@ -1,8 +1,7 @@
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Optional, List
+from typing import Optional
 import numpy as np
-import jax
 import jax.numpy as jnp
 
 from smallsat_sim.envs.base_env_config import BaseEnvConfig
@@ -51,7 +50,8 @@ class Perturbation(ABC):
         self.nu = model_config.Thrusters.n_thrusters
 
         # Thruster mask to document the operational status of thrusters
-        self.thruster_mask = np.full(self.nu, PerturbationStatus.OPERATIONAL)
+        self.thruster_mask = jnp.full(self.nu, PerturbationStatus.OPERATIONAL.value)
+        self.model_config = model_config
 
     def select_thruster(self, index: Optional[int]) -> int:
         """
@@ -60,27 +60,29 @@ class Perturbation(ABC):
         if isinstance(index, int):
             return index
         else:
-            working_thrusters = np.where(
-                self.thruster_mask == PerturbationStatus.OPERATIONAL
+            working_thrusters = jnp.where(
+                self.thruster_mask == PerturbationStatus.OPERATIONAL.value
             )[0]
             random_index = np.random.choice(working_thrusters)
             return random_index
 
     @abstractmethod
-    def apply(self, input: np.ndarray, timestamp: Optional[float] = None) -> np.ndarray:
+    def apply(
+        self, input: jnp.ndarray, timestamp: Optional[float] = None
+    ) -> jnp.ndarray:
         pass
 
     @abstractmethod
     def key_callback(self, keycode: Optional[int] = None) -> None:
         pass
-    
+
 
 class PerturbationList(ABC):
     """
     Applies multiple perturbations.
     """
 
-    def __init__(self, perturbations: List[Perturbation]) -> None:
+    def __init__(self, perturbations: list[Perturbation]) -> None:
         super().__init__()
         # Save perturbations in array
         self.perturbations = perturbations
@@ -120,8 +122,11 @@ class PerturbationList(ABC):
         Reset thruster.
         """
         self.perturbations[0].thruster_mask = (
-            self.perturbations[0].thruster_mask.at[:, index].set(0)
-        )  # It doesn't matter which perturbation is used for the reset
+            self.perturbations[0]
+            .thruster_mask.at[index]
+            .set(PerturbationStatus.OPERATIONAL.value)
+        )
+        # It doesn't matter which perturbation is used for the reset
         print(f"Thruster {index} is fully functional.")
 
     def key_callback(self, keycode: Optional[int] = None):
@@ -176,18 +181,20 @@ class StuckOffThrusters(Perturbation):
         super().__init__(model_config)
 
         self.failure_type = PerturbationStatus.STUCK_OFF
-        self.start_times = np.zeros(self.nu)
+        self.start_times = jnp.zeros(self.nu)
 
-    def apply(self, input: np.ndarray, timestamp: Optional[float] = None) -> np.ndarray:
+    def apply(
+        self, input: jnp.ndarray, timestamp: Optional[float] = None
+    ) -> jnp.ndarray:
 
         # Do a elementwise AND operation
-        stuck_off = np.logical_and(
-            self.thruster_mask == PerturbationStatus.STUCK_OFF,
+        stuck_off = jnp.logical_and(
+            self.thruster_mask == PerturbationStatus.STUCK_OFF.value,
             timestamp >= self.start_times,
         )
 
         # Shut off respective thrusters
-        input.at[stuck_off].set(0.0)
+        input = input.at[stuck_off].set(0.0)
 
         return input
 
@@ -198,8 +205,11 @@ class StuckOffThrusters(Perturbation):
         Method to shut off a random thruster or a specific one if provided.
         """
         thruster_index = self.select_thruster(index)
-        self.thruster_mask[thruster_index] = PerturbationStatus.STUCK_OFF
-        self.start_times[thruster_index] = start_time
+        start_time_value = 0.0 if start_time is None else start_time
+        self.thruster_mask = self.thruster_mask.at[thruster_index].set(
+            PerturbationStatus.STUCK_OFF.value
+        )
+        self.start_times = self.start_times.at[thruster_index].set(start_time_value)
         print(
             f"Thruster {thruster_index} is stuck off starting at {start_time} seconds."
         )
@@ -217,23 +227,29 @@ class StuckOnThrusters(Perturbation):
     def __init__(self, model_config: BaseModelConfig) -> None:
         super().__init__(model_config)
 
-        self.failure_type = PerturbationStatus.STUCK_ON
-        self.start_times = np.zeros(self.nu)
+        self.model_config = model_config
 
-    def apply(self, input: np.ndarray, timestamp: Optional[float] = None) -> np.ndarray:
+        self.failure_type = PerturbationStatus.STUCK_ON
+        self.start_times = jnp.zeros(self.nu)
+
+    def apply(
+        self, input: jnp.ndarray, timestamp: Optional[float] = None
+    ) -> jnp.ndarray:
         # Find where to apply the perturbation
-        stuck_on_thrusters_indices = np.where(
-            np.logical_and(
-                self.thruster_mask == PerturbationStatus.STUCK_ON,
+        stuck_on_thrusters_indices = jnp.where(
+            jnp.logical_and(
+                self.thruster_mask == PerturbationStatus.STUCK_ON.value,
                 timestamp >= self.start_times,
             )
         )[0]
 
         # Apply the perturbation
         for idx in stuck_on_thrusters_indices:
-            input[idx] = self.model_config.Thrusters.thruster_list[idx].forcerange[
-                1
-            ]  # Max. thruster force
+            thruster_idx = int(idx)
+            max_force = self.model_config.Thrusters.thruster_list[
+                thruster_idx
+            ].forcerange[1]
+            input = input.at[thruster_idx].set(max_force)  # Max. thruster force
 
         return input
 
@@ -244,8 +260,11 @@ class StuckOnThrusters(Perturbation):
         Method to unable a random thruster or a specific one if provided, to shut off.
         """
         thruster_index = self.select_thruster(index)
-        self.thruster_mask[thruster_index] = PerturbationStatus.STUCK_ON
-        self.start_times[thruster_index] = start_time
+        start_time_value = 0.0 if start_time is None else start_time
+        self.thruster_mask = self.thruster_mask.at[thruster_index].set(
+            PerturbationStatus.STUCK_ON.value
+        )
+        self.start_times = self.start_times.at[thruster_index].set(start_time_value)
         print(f"Thruster {thruster_index} is stuck on.")
 
     def key_callback(self, keycode: Optional[int] = None) -> None:
@@ -272,31 +291,32 @@ class SamplePerturbation(Perturbation):
         self.max_duration = max_duration
 
         # Thruster mask to document when a perturbation has started
-        self.ongoing_perturbation_mask = np.zeros(self.nu)
+        self.ongoing_perturbation_mask = jnp.zeros(self.nu)
 
         # Number of samples in an input trajectory
         self.num_samples = 500
 
         # Matrix to save input trajectories sampled from the GP
-        self.input_trajectories = np.zeros((self.nu, self.num_samples))
+        self.input_trajectories = jnp.zeros((self.nu, self.num_samples))
 
-    def apply(self, input: np.ndarray, timestamp: Optional[float] = None) -> np.ndarray:
+    def apply(
+        self, input: jnp.ndarray, timestamp: Optional[float] = None
+    ) -> jnp.ndarray:
         # Find where to apply the perturbation
-        failing_thrusters_indices = np.where(
-            self.thruster_mask == PerturbationStatus.SAMPLE_PERTURBATION
+        failing_thrusters_indices = jnp.where(
+            self.thruster_mask == PerturbationStatus.SAMPLE_PERTURBATION.value
         )[0]
 
         for idx in failing_thrusters_indices:
-            # Update the thruster input
-            u_nominal = input[idx]
-            input[idx] = self.get_perturbed_input(u_nominal, idx, timestamp)
-
-            # Clip the sample to the thruster range
-            input[idx] = np.clip(
-                input[idx],
-                0,
-                self.model_config.Thrusters.thruster_list[idx].forcerange[1],
+            thruster_idx = int(idx)
+            u_nominal = input[thruster_idx].item()
+            perturbed = self.get_perturbed_input(u_nominal, thruster_idx, timestamp)
+            perturbed = jnp.clip(
+                perturbed,
+                0.0,
+                self.model_config.Thrusters.thruster_list[thruster_idx].forcerange[1],
             )
+            input = input.at[thruster_idx].set(perturbed)
 
         return input
 
@@ -305,7 +325,9 @@ class SamplePerturbation(Perturbation):
         Method to fail a random thruster or a specific one if provided.
         """
         thruster_index = self.select_thruster(index)
-        self.thruster_mask[thruster_index] = PerturbationStatus.SAMPLE_PERTURBATION
+        self.thruster_mask = self.thruster_mask.at[thruster_index].set(
+            PerturbationStatus.SAMPLE_PERTURBATION.value
+        )
         print(f"Thruster {thruster_index} is failing.")
 
     def key_callback(self, keycode: Optional[int] = None) -> None:
@@ -313,22 +335,37 @@ class SamplePerturbation(Perturbation):
         self.sample_perturbation(index=None)
 
     def get_perturbed_input(
-        self, u_nominal: float, idx: int, timestamp: float
+        self, u_nominal: float, idx: int, timestamp: float | None = None
     ) -> float:
         """
         Get the perturbed thruster input from the trajectory sampled from the GP (at the right time).
         """
+        if timestamp is None:
+            timestamp = 0.0
+
         # If the failure is starting now
-        if self.ongoing_perturbation_mask[idx] == 0:
-            self.input_trajectories[idx, :] = self.sample_input_trajectory(u_nominal)
-            self.ongoing_perturbation_mask[idx] = timestamp
-            return self.input_trajectories[idx, 0]
+        if self.ongoing_perturbation_mask[idx].item() == 0:
+            trajectory = jnp.asarray(self.sample_input_trajectory(u_nominal)).reshape(
+                -1
+            )
+            self.input_trajectories = self.input_trajectories.at[idx, :].set(trajectory)
+            timestamp_value = jnp.asarray(
+                timestamp, dtype=self.ongoing_perturbation_mask.dtype
+            )
+            self.ongoing_perturbation_mask = self.ongoing_perturbation_mask.at[idx].set(
+                timestamp_value
+            )
+            return self.input_trajectories[idx, 0].item()
         # If the failure took place already but is still unraveling
         else:
-            return self.input_trajectories[
-                idx,
-                int(np.floor(timestamp - self.ongoing_perturbation_mask[idx])),
-            ]
+            sample_index = int(
+                np.clip(
+                    np.floor(timestamp - self.ongoing_perturbation_mask[idx]),
+                    0,
+                    self.num_samples - 1,
+                )
+            )
+            return self.input_trajectories[idx, sample_index].item()
 
     def sample_input_trajectory(self, u_nominal: float) -> np.ndarray:
         """
@@ -367,18 +404,21 @@ class SamplePerturbation(Perturbation):
         )
         return sigma_f**2 * np.exp(-0.5 / length_scale**2 * sqdist)
 
+
 """
 This section will consist of "physically-grounded" perturbations modelled by a GP.
 Note that these function take in the demanded force and output the actual force.
 
 """
 
+
 class ThrusterFailureSimulator:
     """
     This class is used to the data for the nonlinar perturbations.
     It does the following things (in sequence):
-        - 
+        -
     """
+
     def __init__(
         self,
         num_points=100,
@@ -450,7 +490,9 @@ class ThrusterFailureSimulator:
 
         # No training needed as hyperparameters are manually set
         x_test = torch.linspace(0, self.upper_bound, self.num_points)
-        sampled_function = self._sample_gp_function(model, likelihood, x_test, failure_type)
+        sampled_function = self._sample_gp_function(
+            model, likelihood, x_test, failure_type
+        )
 
         sampled_function = torch.clamp(sampled_function, 0, self.upper_bound)
 
@@ -541,34 +583,36 @@ class GPPerturbation(Perturbation):
         super().__init__(model_config)
 
         self.failure_type = failure_type
-        self.start_times = np.zeros(self.nu)
+        self.start_times = jnp.zeros(self.nu)
         self.thruster_list = deepcopy(model_config.Thrusters.thruster_list)
 
         # Store interpolation functions for each thruster
         self.interpolations = [None] * self.nu
 
-    def apply(self, input: np.ndarray, timestamp: Optional[float] = None) -> np.ndarray:
+    def apply(
+        self, input: jnp.ndarray, timestamp: Optional[float] = None
+    ) -> jnp.ndarray:
         # Do a elementwise AND operation
-        faulty = np.logical_and(
-            self.thruster_mask == self.failure_type,
+        faulty = jnp.logical_and(
+            self.thruster_mask == self.failure_type.value,
             timestamp >= self.start_times,
         )
 
         # Apply interpolation only to the affected thrusters with active perturbations
-        if np.any(faulty):
+        if jnp.any(faulty):
             # Gather input values for the affected thrusters
             affected_inputs = input[faulty]
 
             # Apply the respective interpolation functions
-            interpolated_values = np.array(
+            interpolated_values = jnp.asarray(
                 [
-                    self.interpolations[i](affected_inputs[idx])
-                    for idx, i in enumerate(np.where(faulty)[0])
+                    self.interpolations[int(thruster_idx)](affected_inputs[idx])
+                    for idx, thruster_idx in enumerate(jnp.where(faulty)[0])
                 ]
             )
 
             # Update the input array with interpolated values
-            input.at[faulty].set(interpolated_values)
+            input = input.at[faulty].set(interpolated_values)
 
         return input
 
@@ -584,8 +628,11 @@ class GPPerturbation(Perturbation):
         """
 
         thruster_index = self.select_thruster(index)
-        self.thruster_mask[thruster_index] = self.failure_type
-        self.start_times[thruster_index] = start_time
+        start_time_value = 0.0 if start_time is None else start_time
+        self.thruster_mask = self.thruster_mask.at[thruster_index].set(
+            self.failure_type.value
+        )
+        self.start_times = self.start_times.at[thruster_index].set(start_time_value)
 
         if valve_min is None:
             valve_min = 0.15 * self.thruster_list[thruster_index].ctrlrange[-1]
@@ -594,11 +641,12 @@ class GPPerturbation(Perturbation):
             valve_max = 0.8 * self.thruster_list[thruster_index].ctrlrange[-1]
 
         # Get the GP-data
-        x_data, y_data = ThrusterFailureSimulator(
-            upper_bound=self.thruster_list[thruster_index].ctrlrange[-1],
-            valve_min=valve_min,
-            valve_max=valve_max,
-        ).generate_failure_data(self.failure_type)
+        if valve_min is not None and valve_max is not None:
+            x_data, y_data = ThrusterFailureSimulator(
+                upper_bound=self.thruster_list[thruster_index].ctrlrange[-1],
+                valve_min=valve_min,
+                valve_max=valve_max,
+            ).generate_failure_data(self.failure_type)
 
         # Plot data
         if False:
@@ -650,7 +698,8 @@ class SaturatedThrust(GPPerturbation):
         valve_max: float | None = None,
     ) -> None:
         return super().register_perturbation(index, start_time, valve_min, valve_max)
-    
+
+
 class ThrustInstability(GPPerturbation):
     def __init__(self, model_config) -> None:
         super().__init__(model_config, PerturbationStatus.THRUST_INSTABILITY)
