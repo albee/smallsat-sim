@@ -9,6 +9,9 @@ scripts=("experiments/rl_benchmarking/pd_controller.py"
         "experiments/rl_benchmarking/ppo_extrinsics_from_am.py" 
         "experiments/rl_benchmarking/pretrained_ppo_extrinsics_from_am.py")
 
+# Ensure repository root is on PYTHONPATH so `experiments` can be imported
+export PYTHONPATH="$(pwd):${PYTHONPATH}"
+
 # Iterate over each script
 for file in "${scripts[@]}"; do
   if [ -e "$file" ]; then
@@ -19,3 +22,5 @@ for file in "${scripts[@]}"; do
     exit 1
   fi
 done
+
+echo "All scripts executed successfully."
