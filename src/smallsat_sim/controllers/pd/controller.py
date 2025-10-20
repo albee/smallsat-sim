@@ -78,7 +78,10 @@ class PDController(BaseController):
         return u
 
     def get_control_input(self, env: BaseEnv) -> np.ndarray:
-        """Defines the controller callback for the simulation step."""
+        """
+        Defines the controller callback for the simulation step.
+        """
+
         desired_pos, desired_quat = self.planner.get_reference(env.obs)
         desired_linvel = self.v_ref  # Linear
         desired_angvel = np.zeros((3, 1))
@@ -103,9 +106,9 @@ class PDController(BaseController):
         )
         # PD, angular part, (alpha=angular acceleration).
         # Note: angular velocity is decomposed in the body frame
-        desired_alpha = self.Kp_q * sgn_quat(eta_error) * eps_error + self.Kd_q * (
-            desired_angvel - current_angvel
-        )
+        desired_alpha = self.Kp_q * sgn_quat(
+            float(eta_error)
+        ) * eps_error + self.Kd_q * (desired_angvel - current_angvel)
         desired_acceleration = np.append(desired_linacc, desired_alpha)
 
         desired_control = desired_acceleration
@@ -115,7 +118,7 @@ class PDController(BaseController):
         # Only allow non-negative thrust values
         u = self._apply_ctrl_constraint(env, u_unconstrained)
         return u
-    
+
     def _log(self, run_id: int, timestamp: float, env: BaseEnv) -> None:
         """
         Logs desired quantities if flag is enabled
@@ -123,4 +126,3 @@ class PDController(BaseController):
         raise NotImplementedError(
             f"The _log method is not implemented for the class {self.__class__.__name__}"
         )
-
