@@ -21,10 +21,10 @@ class Actor(nnx.Module):
         super().__init__()
         self.obs_dim = obs_dim
         self.act_dim = act_dim
-        log_std = -2.0 * jnp.ones(act_dim)
+        log_std = -0.5 * jnp.ones(act_dim)
         self.log_std = nnx.Param(log_std)
         self.mu_net = mlp(
-            [obs_dim + ext_dim] + list(hidden_sizes) + [act_dim],
+            [obs_dim + ext_dim] + [hidden_sizes] + [act_dim],
             activation,
             output_activation=nnx.relu,  # ReLU because the control inputs must be positive
             last_layer_std=0.01,
@@ -38,13 +38,17 @@ class Actor(nnx.Module):
         std = jnp.exp(self.log_std.value)
         return distrax.MultivariateNormalDiag(mu, std)
 
-    def _log_prob_from_dist(self, pi: jnp.ndarray, actions: jnp.ndarray):
+    def _log_prob_from_dist(
+        self, pi: distrax.MultivariateNormalDiag, actions: jnp.ndarray
+    ):
         """
         Return the log-probability of actions under the action distribution.
         """
         return pi.log_prob(actions)
 
-    def forward(self, obs_extrinsics: jnp.ndarray, actions: jnp.ndarray | None = None):
+    def forward(
+        self, obs_extrinsics: jnp.ndarray, actions: jnp.ndarray | None = None
+    ) -> tuple[distrax.MultivariateNormalDiag, jnp.ndarray | None]:
         """
         Return action distributions for given observations and the log-likelihood of given actions under those distributions.
         """
@@ -53,6 +57,6 @@ class Actor(nnx.Module):
         if actions is None:
             logp = None
         else:
-            logp = self._log_prob_from_dist(pi, actions)
+            logp = jnp.asarray(self._log_prob_from_dist(pi, actions))
 
         return pi, logp

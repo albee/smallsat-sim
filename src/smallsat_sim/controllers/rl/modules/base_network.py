@@ -19,7 +19,7 @@ class Critic(nnx.Module):
         super().__init__()
         self.obs_dim = obs_dim
         self.v_net = mlp(
-            [obs_dim + ext_dim] + list(hidden_sizes) + [1],
+            [obs_dim + ext_dim] + [hidden_sizes] + [1],
             activation,
             last_layer_std=1.0,
         )
