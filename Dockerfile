@@ -1,11 +1,12 @@
 # syntax=docker/dockerfile:experimental
 
-# Use ubuntu 20.04 as base image for arm64
-FROM ubuntu:20.04
+# Use a CUDA container
+FROM nvidia/cuda:12.4.0-devel-ubuntu22.04
 
-FROM nvidia/cuda:12.4.0-devel-ubuntu20.04
+ARG USE_CUDA=0
+ENV USE_CUDA=${USE_CUDA}
 
-Set environment variables for CUDA and cuDNN
+# Set environment variables for CUDA and cuDNN
 ENV CUDA_HOME=/usr/local/cuda \
     CUDA_PATH=/usr/local/cuda \
     LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH \
@@ -23,24 +24,28 @@ ENV TZ=US \
 # Define the folder /code as the main working directory
 WORKDIR /code
 
-# ===============================
-# Install Python3.10 
-# ===============================
-# Install python3.10. Since ubuntu 20.04 only has python3.8 by default, we need to add some addtional ppa's to install python3.10
-RUN apt-get update && apt install -y software-properties-common 
-
-# Add deadsnakes ppa which contains python3.10 for ubuntu 20.04
-RUN add-apt-repository -y ppa:deadsnakes/ppa
-# Install python3.10
-RUN apt update && apt install -y python3.10 python3.10-distutils python3.10-dev python3.10-minimal
-# Make sure python and python3 point to python3.10, and not the system default python3.8
-RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1
+# Copy setup scripts needed during image build
+COPY ./.setup ./.setup
 
 # ===============================
-# Install common dependencies
+# Ensure Python 3.10 is available
 # ===============================
-RUN DEBIAN_FRONTEND=noninteractive apt-get install -y \
+
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-distutils \
+    python3-dev \
+    python3-venv \
+    python3-pip \
+    && ln -sf /usr/bin/python3 /usr/bin/python \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# ===============================
+# Install system packages
+# ===============================
+
+# Install some basic dependencies
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     curl \
     wget \
     ccache \
@@ -61,6 +66,11 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get install -y \
     liblapack-dev \
     libopenblas-dev \
     libhdf5-dev \
+    libegl1 \
+    libgles2 \
+    libosmesa6 \
+    libosmesa6-dev \
+    mesa-utils \
     libc6 \
     libgomp1 \
     libglfw3 \
@@ -71,28 +81,12 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get install -y \
     libxext6 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Default to an off-screen MuJoCo GL backend; override at runtime if needed (e.g. MUJOCO_GL=egl)
+ENV MUJOCO_GL=osmesa
+
 # ===============================
-# Install Python dependencies
-# Specified in the requirements.txt file
+# Install native dependencies
 # ===============================
-# Install pip
-RUN curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py
-RUN python get-pip.py
-RUN rm get-pip.py
-
-# This is to make sure the newest version of cffi is installed (for some reason it will install 1.14.0, which is an old version).
-RUN pip install --upgrade pip setuptools 
-
-# Copy the current directory contents into the container at /code
-COPY . .
-
-# Install dependencies and the package in editable mode
-RUN pip install --upgrade pip
-RUN pip install -e .
-
-# Install additional dependencies and PyTorch
-RUN pip install torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu
-RUN pip install -U "jax[cuda12]"
 
 # Compile and install acados
 RUN ./.setup/ubuntu/install_acados.sh
@@ -107,7 +101,47 @@ RUN ./.setup/ubuntu/install_l4acados.sh
 # ENV ACADOS_SOURCE_DIR="/acados"
 # ENV LD_LIBRARY_PATH="/acados/lib:$LD_LIBRARY_PATH"
 
+# ===============================
+# Install Python dependencies
+# ===============================
+
+# Install pip
+RUN curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py
+RUN python get-pip.py
+RUN rm get-pip.py
+
+# This is to make sure the newest version of cffi is installed (for some reason it will install 1.14.0, which is an old version).
+RUN pip install --upgrade pip && pip install "setuptools<81"
+
+# Install additional dependencies; keep PyTorch only for CPU builds
+RUN if [ "$USE_CUDA" = "0" ]; then \
+        pip install torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu; \
+    fi
+RUN if [ "$USE_CUDA" = "1" ]; then \
+        pip install --upgrade "jax[cuda12]"; \
+    else \
+        pip install --upgrade "jax"; \
+    fi
+
+# Ensure l4acados Python package is available
+RUN pip install -e /l4acados
+
+# Copy the remaining project files
+COPY . .
+
+# Remove the OS package that is pinning blinker (which is causing problems with pip)
+RUN apt-get update && \
+    apt-get remove -y python3-blinker && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install dependencies and the package in editable mode
+RUN pip install -e .
+
+# Remove Torch-based dependencies when building CUDA-enabled images
+RUN if [ "$USE_CUDA" = "1" ]; then \
+        pip uninstall -y torch torchvision gpytorch || true; \
+    fi
+
 # Only set for arm64
 # ENV LD_PRELOAD="/usr/local/lib/python3.10/dist-packages/torch.libs/libgomp-f3febf51.so.1.0.0 /lib/aarch64-linux-gnu/libGLdispatch.so.0"
 # ENV MUJOCO_GL=glfw
-

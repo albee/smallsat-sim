@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=42"]
+requires = ["setuptools>=42,<81"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -11,8 +11,8 @@ dependencies = [
     "casadi==3.6.7",
     "numpy==1.26.4",
     "pyyaml==6.0.1",
-    "mujoco==3.2.1",
-    "mujoco-mjx==3.2.1",
+    "mujoco==3.3.6",
+    "mujoco-mjx==3.3.6",
     "glfw==2.8.0",
     "opencv-python==4.10.0.82",
     "scipy==1.14.1",
@@ -26,10 +26,11 @@ dependencies = [
     "brax==0.10.5",
     "optax==0.2.3",
     "flax==0.10.5",
+    "distrax==0.1.5",
     "tensorflow-probability==0.24.0",
     "wandb==0.17.8",
-    "pyqt6>=6.7.1",
-    "gpflow==2.9.2"
+    "gpflow==2.9.2",
+    "warp-lang",
 ]
 
 requires-python = ">=3.10"
