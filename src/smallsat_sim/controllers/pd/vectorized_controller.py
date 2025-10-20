@@ -57,7 +57,7 @@ class VectorizedPDController(BaseController):
         )
         self._compute_desired_alpha_vec = jax.jit(jax.vmap(self._compute_desired_alpha))
         self._compute_u_unconstrained_vec = jax.jit(
-            jax.vmap(self._compute_u_unconstrained)
+            jax.vmap(self._compute_u_unconstrained, in_axes=(None, 0))
         )
 
     def calc_B_matrix(self, model) -> jnp.ndarray:
@@ -78,7 +78,9 @@ class VectorizedPDController(BaseController):
         return B_matrix
 
     def _apply_ctrl_constraint(self, env: BaseEnv, u: jnp.ndarray) -> jnp.ndarray:
-        """Apply non-negative control constraints to the input control signal u."""
+        """
+        Apply non-negative control constraints to the input control signal u.
+        """
         # Get index of all thrusters that give propulsion in x,y,z
         # This assumes that thrusters only have propulsion in one direction!
         x_thrusters_id = [
@@ -87,12 +89,20 @@ class VectorizedPDController(BaseController):
         y_thrusters_id = [
             i for i, gear in enumerate(env.model.actuator_gear) if gear[1] != 0
         ]
+        z_thrusters_id = [
+            i for i, gear in enumerate(env.model.actuator_gear) if gear[2] != 0
+        ]
 
         combined_lists = jnp.stack(
-            [jnp.array(x_thrusters_id), jnp.array(y_thrusters_id)]
+            [
+                jnp.array(x_thrusters_id),
+                jnp.array(y_thrusters_id),
+                jnp.array(z_thrusters_id),
+            ]
         )
         min_elems = jnp.amin(u[:, combined_lists], axis=-1)
         negative_min_mask = min_elems < 0
+
         u_x = u.at[:, jnp.array(x_thrusters_id)].set(
             u[:, jnp.array(x_thrusters_id)]
             - jnp.where(negative_min_mask[:, 0, None], min_elems[:, 0, None], 0)
@@ -101,7 +111,11 @@ class VectorizedPDController(BaseController):
             u[:, jnp.array(y_thrusters_id)]
             - jnp.where(negative_min_mask[:, 1, None], min_elems[:, 1, None], 0)
         )
-        u = jnp.concatenate([u_x[:, 0:4], u_y[:, 4:8]], axis=1)
+        u_z = u.at[:, jnp.array(z_thrusters_id)].set(
+            u[:, jnp.array(z_thrusters_id)]
+            - jnp.where(negative_min_mask[:, 2, None], min_elems[:, 2, None], 0)
+        )
+        u = jnp.concatenate([u_x[:, 0:4], u_y[:, 4:8], u_z[:, 8:12]], axis=1)
 
         return u
 
@@ -113,12 +127,18 @@ class VectorizedPDController(BaseController):
         """
         obs = env.get_obs()
         if next_waypoint is None:
-            next_waypoint = jnp.full(
-                (env.num_envs, 3), jnp.array(env.env_cfg.Bodies.bodies_list[0].pos)
-            )
-
-        desired_pos = next_waypoint
-        desired_quat = jnp.full((env.num_envs, 4), jnp.array([1, 0, 0, 0]))
+            default_pos = jnp.array(env.env_cfg.Bodies.bodies_list[0].pos)
+            desired_pos = jnp.full((env.num_envs, 3), default_pos)
+            desired_quat = jnp.full((env.num_envs, 4), jnp.array([1.0, 0.0, 0.0, 0.0]))
+        else:
+            if next_waypoint.shape[1] >= 7:
+                desired_pos = next_waypoint[:, :3]
+                desired_quat = next_waypoint[:, 3:7]
+            else:
+                desired_pos = next_waypoint[:, :3]
+                desired_quat = jnp.full(
+                    (env.num_envs, 4), jnp.array([1.0, 0.0, 0.0, 0.0])
+                )
         desired_linvel = jnp.full(
             (env.num_envs, 3), self.v_ref.reshape(1, -1)
         )  # Linear
@@ -152,10 +172,11 @@ class VectorizedPDController(BaseController):
         desired_acceleration = jnp.concatenate([desired_linacc, desired_alpha], axis=1)
 
         desired_control = desired_acceleration
+
         # Distribute the desired forces and torques to the actuators, least squares
         p_inv_B_matrix = jnp.asarray(jnp.linalg.pinv(self.B_matrix))
         u_unconstrained = self._compute_u_unconstrained_vec(
-            jnp.full((env.num_envs, 8, 6), p_inv_B_matrix), desired_control
+            p_inv_B_matrix, desired_control
         )
 
         # Only allow non-negative thrust values
