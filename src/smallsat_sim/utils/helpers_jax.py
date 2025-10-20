@@ -2,7 +2,6 @@ import argparse
 import jax
 import jax.numpy as jnp
 from flax import nnx
-import scipy.signal
 
 
 # Import all base classes for typing
@@ -22,9 +21,6 @@ def get_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Parse command line inputs")
 
     # Add arguments
-    parser.add_argument(
-        "--num_envs", type=int, help="Number of envs run in parallel", default=1
-    )
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")
     parser.add_argument(
         "--num_bodies", type=int, help="Number of bodies in the simulation", default=1
@@ -163,9 +159,17 @@ def quat_conjugate(q) -> jnp.ndarray:
 
 def discount_cumsum(x, discount) -> jnp.ndarray:
     """
-    Compute cumulative sums of vectors. Inspired from https://spinningup.openai.com/en/latest/algorithms/vpg.html.
+    JAX-friendly discounted cumulative sum.
     """
-    return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
+    discount = jnp.asarray(discount)
+
+    def scan_fn(carry, val):
+        carry = val + discount * carry
+        return carry, carry
+
+    init = jnp.zeros_like(x[0])
+    _, out = jax.lax.scan(scan_fn, init, x[::-1])
+    return out[::-1]
 
 
 def combined_shape(len, shape=None):
@@ -189,21 +193,33 @@ def calc_lateral_tracking_error(obs: jnp.ndarray, planner: BasePlanner) -> jnp.n
     return jnp.linalg.norm(closest_points - obs[:, :3])
 
 
-def calc_orientation_error(states: jnp.ndarray) -> jnp.ndarray:
-    """Compute the orientation error (3 DOF case)."""
-    return states[:, 2]
-
-
-def calc_attitude_error(q_ref: jnp.ndarray, q: jnp.ndarray) -> jnp.ndarray:
+def calc_attitude_error(
+    obs: jnp.ndarray, q_ref: jnp.ndarray = jnp.array([1, 0, 0, 0])
+) -> jnp.ndarray:
     """
     Computes the attitude error as rotation angle. The angle error is the smallest angle by
     which you would need to rotate the spacecraft (or frame of reference) from its current
     orientation (actual quaternion) to match the desired orientation (desired quaternion).
     Returned in radians. Use jnp.degrees() for conversion.
     """
-    # Normalize the quaternions to ensure they represent valid rotations
-    q_ref_normalized = q_ref / jnp.linalg.norm(q_ref, axis=1)
-    q_normalized = q / jnp.linalg.norm(q, axis=1)
+    # Normalize the quaternions, defaulting to identity if the norm is near zero
+    eps = 1e-12
+    q_ref = jnp.asarray(q_ref)
+    if q_ref.ndim == 1:
+        q_ref = jnp.broadcast_to(q_ref, (obs.shape[0], q_ref.shape[0]))
+    elif q_ref.shape[0] != obs.shape[0]:
+        raise ValueError(
+            "q_ref must be either a single quaternion or batched to match obs"
+        )
+
+    q_ref_norm = jnp.linalg.norm(q_ref, axis=1, keepdims=True)
+    q_ref_norm = jnp.maximum(q_ref_norm, eps)
+    q_ref_normalized = q_ref / q_ref_norm
+
+    q = obs[:, 3:7]
+    q_norm = jnp.linalg.norm(q, axis=1, keepdims=True)
+    q_norm = jnp.maximum(q_norm, eps)
+    q_normalized = q / q_norm
 
     # Compute the error quaternion using JAX operations
     # Compute the conjugate of q_normalized in a vectorized manner
@@ -235,8 +251,8 @@ def calc_extrinsic_error(
 def train_val_split(
     X,
     y,
+    key: jnp.ndarray,
     val_split=0.2,
-    key=jax.random.PRNGKey(42),
     shuffle: bool = True,
     trim_for_cnn: bool = False,
 ):
@@ -261,7 +277,7 @@ def train_val_split(
         X_train, y_train = _trim_and_reshape(X_train, y_train)
         X_val, y_val = _trim_and_reshape(X_val, y_val)
 
-    return X_train, y_train, X_val, y_val
+    return X_train, y_train, X_val, y_val, key
 
 
 def _trim_and_reshape(X, y, seq_len=50):

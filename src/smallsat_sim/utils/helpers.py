@@ -5,13 +5,14 @@
 # Parsing
 import argparse
 import numpy as np
+import jax.numpy as jnp
 import scipy.signal
 
 import torch
 import psutil
 import os
 
-from typing import Callable
+from typing import Callable, TypeVar
 from scipy.spatial.transform import Rotation as R
 
 # Import all base classes for typing
@@ -19,6 +20,9 @@ from smallsat_sim.controllers.base_controller import BaseController
 from smallsat_sim.controllers.base_mpc_controller import BaseMPCController
 from smallsat_sim.envs.base_env import BaseEnv
 from smallsat_sim.planners.base_planner import BasePlanner
+
+
+T = TypeVar("T", np.ndarray, jnp.ndarray)
 
 
 def get_args() -> argparse.Namespace:
@@ -29,9 +33,6 @@ def get_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Parse command line inputs")
 
     # Add arguments
-    parser.add_argument(
-        "--num_envs", type=int, help="Number of envs run in parallel", default=1
-    )
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")
     parser.add_argument(
         "--num_bodies", type=int, help="Number of bodies in the simulation", default=1
@@ -128,7 +129,7 @@ def sgn_quat(x: float) -> int:
     return sgn
 
 
-def quat_multiply(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
+def quat_multiply(q1: T, q2: T) -> T:
     """q = quat_multiply(q1,q2) computes the quaternion product q of
     two quaternions q1 and q2.
     """
@@ -154,6 +155,7 @@ def quat_multiply(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
 
     else:
         raise ValueError("input must be of dim. 4 (unit quaternion)")
+    
     return q
 
 
@@ -172,7 +174,9 @@ def discount_cumsum(x, discount) -> np.ndarray:
     """
     Compute cumulative sums of vectors. Inspired from https://spinningup.openai.com/en/latest/algorithms/vpg.html.
     """
-    return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
+    return np.asarray(
+        scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
+    )
 
 
 def combined_shape(len, shape=None):
@@ -185,7 +189,7 @@ def combined_shape(len, shape=None):
     return (len, shape) if np.isscalar(shape) else (len, *shape)
 
 
-def calc_lateral_tracking_error(obs: np.ndarray, planner: BasePlanner) -> float:
+def calc_lateral_tracking_error(obs: T, planner: BasePlanner) -> float:
     """
     Computes the lateral tracking error at a given point
     """
@@ -195,10 +199,10 @@ def calc_lateral_tracking_error(obs: np.ndarray, planner: BasePlanner) -> float:
     closest_point, _ = planner.closest_point_on_trajectory(point=obs[:3])
 
     # Compute l2 distance (is orthogonal already)
-    return np.linalg.norm(closest_point - current_pos)
+    return np.linalg.norm(closest_point - current_pos).item()
 
 
-def calc_attitude_error(q_ref: np.ndarray, q: np.ndarray) -> float:
+def calc_attitude_error(q_ref: T, q: T) -> float:
     """
     Computes the attitude error as rotation angle.
     The angle error is the smallest angle by which you would need to rotate
@@ -206,40 +210,52 @@ def calc_attitude_error(q_ref: np.ndarray, q: np.ndarray) -> float:
     to match the desired orientation (desired quaternion).
     Returned in radians. Use np.degrees() for conversion.
     """
-    # Normalize the quaternions to ensure they represent valid rotations
-    q_ref_normalized = q_ref / np.linalg.norm(q_ref)
-    q_normalized = q / np.linalg.norm(q)
-    
+    # Normalize the quaternions to ensure they represent valid rotations.
+    # Gracefully handle degenerate (zero-norm) quaternions which can occur during
+    # initialization or faulty sensor readings.
+    eps = 1e-12
+    q_ref_norm = np.linalg.norm(q_ref)
+    if q_ref_norm < eps:
+        q_ref_normalized = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
+    else:
+        q_ref_normalized = q_ref / q_ref_norm
+
+    q_norm = np.linalg.norm(q)
+    if q_norm < eps:
+        q_normalized = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
+    else:
+        q_normalized = q / q_norm
+
     # Ensure the quaternions are in the format [x, y, z, w]
     # If they are in [w, x, y, z], reorder them
     # Uncomment and adjust the following lines if necessary
     # q_ref_normalized = q_ref_normalized[[1, 2, 3, 0]]
     # q_normalized = q_normalized[[1, 2, 3, 0]]
-    
+
     # Adjust quaternion signs for continuity
     if np.dot(q_ref_normalized, q_normalized) < 0:
         q_normalized = -q_normalized
-    
+
     # Convert the quaternions to Rotation objects
     rot_ref = R.from_quat(q_ref_normalized)
     rot = R.from_quat(q_normalized)
-    
+
     # Compute the relative rotation from q to q_ref
     error_rotation = rot.inv() * rot_ref
-    
+
     # Get the rotation vector (axis-angle representation)
     error_rotvec = error_rotation.as_rotvec()
-    
+
     # Compute the angle (magnitude of the rotation vector)
     error_angle = np.linalg.norm(error_rotvec)
-    
+
     # Ensure the angle is within [0, pi]
     if error_angle > np.pi:
         error_angle = 2 * np.pi - error_angle
-    
+
     # Convert to degrees if requested
     error_angle = np.degrees(error_angle)
-    
+
     return error_angle
 
 
@@ -253,7 +269,7 @@ def calc_model_error(
         .unsqueeze(-1)
     )
 
-    return model_error
+    return model_error.numpy()
 
 
 def get_memory_usage():
