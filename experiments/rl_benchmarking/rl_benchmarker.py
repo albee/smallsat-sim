@@ -66,8 +66,8 @@ class Benchmarker(object):
         if self.args.log:
             env.logger.save_log()
 
-        # Stop wandb run
-        wandb.finish()
+        if env.use_wandb and wandb.run is not None:
+            wandb.finish()
 
     def deploy_and_test(
         self,
