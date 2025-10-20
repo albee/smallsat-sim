@@ -1,4 +1,4 @@
-# smallsat-sim
+# SmallSatSim
 
 SmallSatSim is a MuJoCo-based simulation environment for microgravity robotics research. SmallSatSim is easily repurposable to other robotics research scenarios including, notably, maritime robotics. SmallSatSim provides:
 
@@ -13,14 +13,14 @@ SmallSatSim emerged from the SmallSat Steward project, a collaboration between r
 
 ## Docker
 
-### macOs
+### macOS
 
 Run the setup script
 ```bash
 cd .setup/macos
 bash setup.sh
 ```
-### Ubuntu
+### Ubuntu (CPU)
 
 Run the setup script
 ```bash
@@ -28,73 +28,122 @@ cd .setup/ubuntu
 bash setup.sh
 ```
 
-### Loading a prebuilt image
-The `smallsat.tar` file contains the pre-built image. You can load this image by running
+### Ubuntu (GPU)
 
+If you have an NVIDIA GPU with the Container Toolkit installed, run the GPU-enabled setup instead:
 ```bash
-docker load -i smallsat.tar
-``` 
+cd .setup/ubuntu
+bash setup_gpu.sh
+```
+This variant passes `USE_CUDA=1` to the image build so that the CUDA-enabled JAX wheels are installed.
 
-Then run the docker as usual
+*Note: you must have a CUDA version of 12.1 or above installed.*
+
+### Running Docker
+
+Build the Docker:
+```bash
+smallsat up
+```
+
+Run the Docker:
 ```bash
 smallsat run
 ```
 
-### Using a base image
-Download base image (.tar file) and add it to `code/` directory \
-Load prebuilt image `docker load -i base_image.tar` \
-Allow patching over local docker image by running the following in your terminal
+Additional terminals can be attached to the Docker using:
+```bash
+smallsat attach
+```
+
+Make sure to shut down the Docker when you are done developing:
+```bash
+smallsat down
+```
+
+### Viewing MuJoCo with NoVNC
+
+The compose stack starts a NoVNC service that exposes the MuJoCo viewer through your browser.
+
+**Local macOS workflow**
+
+Launch your script (keep the default `MUJOCO_GL=glfw`), e.g.:
+
+```bash
+python experiments/astrobee_CL.py
+```
+
+In your browser visit `http://localhost:8080` to see the simulation window.
+
+**Remote GPU host**
+
+Forward the NoVNC port to your local machine,
+
+```bash
+ssh -L 8080:localhost:8080 <remote_user>@<remote_host>
+```
+
+then follow the same steps as above. You must also set `MUJOCO_GL=egl`.
+
+**Headless execution**
+
+If you prefer headless execution, simply use the `--headless` flag. Your experiment will run completely without rendering or GUI context. This is the fastest option (and recommended for RL training).
+
+Alternatively, you could also set `MUJOCO_GL=osmesa` (CPU) or `MUJOCO_GL=egl` (GPU) before running your experiment; no NoVNC session is required in that case.
+
+### Using an existing image
+
+#### Using a base image
+Download base image (.tar file) and add it to `code/` directory. \
+Load prebuilt image `docker load -i base_image.tar`. \
+Allow patching over local Docker image by running the following in your terminal:
 ```bash
 docker context use default
 docker buildx use default
 ```
 
-Patch `Dockerfile` on top of the `base_image` base image by running 
+Patch `Dockerfile` on top of the `base_image` base image by running:
 ```bash
 docker buildx build --platform="linux/arm64" -t smallsat:latest --build-arg BASE_IMAGE=base_image .  --progress=plain
 ```
 
-If you are not using an `arm64` base, make sure to change the `platform`. \
-Save built image as .tar: `docker save -o smallsat.tar smallsat:latest`\
-Run docker container: `docker run -it --rm -v .:/code smallsat:latest`
+If you are not using an `arm64` base, make sure to change the `platform`.
 
-To use GPU accelerated containers, you must have a CUDA version of 12.1 or above installed.
-
-### Running Docker
-Build the docker
+Save built image as .tar: 
 ```bash
-smallsat up
+docker save -o smallsat.tar smallsat:latest
+```
+Run the Docker container: 
+```bash
+docker run -it --rm -v .:/code smallsat:latest
 ```
 
-Run the docker
+#### Loading a prebuilt image
+The `smallsat.tar` file contains the pre-built image. You can load this image by running:
+
+```bash
+docker load -i smallsat.tar
+``` 
+
+Then run the Docker as usual:
 ```bash
 smallsat run
 ```
 
-Additional terminals can be attached to the docker using 
-```bash
-smallsat attach
-```
-
-Make sure to shut down the docker when you are done developing
-```bash
-smallsat down
-```
-
 ## How to run a standard experiment
-In a terminal that is attached to the docker
+In a terminal that is attached to the Docker:
 
 ```bash
 python experiments/[my_experiment.py]
 ```
 
-You can try a test experiment with
+You can try a test experiment with:
 
 ```bash
 python experiments/test.py
 ```
 
-You should see a small box appear with a sinusoidal thrust applied. Most experiments also support the `--headless` argument to ignore visualization. A more complex experiment includes inspection of a space station
+You should see a small box appear with a sinusoidal thrust applied. Most experiments also support the `--headless` argument to ignore visualization. A more complex experiment includes inspection of a space station:
 
 ```bash
 python experiments/astrobee_CL_2d.py
@@ -227,7 +276,7 @@ Note that the simulation will not update the planned trajectory of the MPC contr
 
 
 ## Python Debugger 
-If you are using VSCode and want to run the python debugger in the docker run the following command in a terminal that is attached to the Docker. Make sure to replace `experiments/test.py` with the file you want to debug.
+If you are using VSCode and want to run the python debugger in the Docker run the following command in a terminal that is attached to the Docker. Make sure to replace `experiments/test.py` with the file you want to debug.
 
 ```bash
 pip install debugpy -t /tmp && python /tmp/debugpy --wait-for-client --listen 0.0.0.0:5678 experiments/test.py
@@ -236,7 +285,7 @@ pip install debugpy -t /tmp && python /tmp/debugpy --wait-for-client --listen 0.
 Then go to the `Run and Debug` in VS Code (left side bar, the play button with the bug symbol). Make sure it is set to `Python Debugger: Remote Attach` in the top left. Then press the play button. 
 
 ### FAQ
-If you have issues with e.g. `torch` imports try running the following, in a terminal that is attached to the docker
+If you have issues with e.g. `torch` imports try running the following, in a terminal that is attached to the Docker
 ```bash
 pip install importlib-metadata==8.4.0
 ```
