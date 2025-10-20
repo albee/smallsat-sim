@@ -67,28 +67,15 @@ class ReplayBuffer(object):
 
         rews = jnp.concatenate([self.rew_buf[path_slice], last_vals.reshape((1, -1))])
         vals = jnp.concatenate([self.val_buf[path_slice], last_vals.reshape((1, -1))])
-        run_len = self.ptr - self.path_start_idx
 
-        # TD residual calculation
+        # TD residual calculation with bootstrap
         deltas = rews[:-1] - vals[:-1] + self.gamma * vals[1:]
-        self.tdres_buf = self.tdres_buf.at[path_slice].set(
-            jnp.array(
-                [
-                    discount_cumsum(deltas[t:run_len], self.gamma * self.lam)[0]
-                    for t in range(run_len)
-                ]
-            )
-        )
+        advantages = discount_cumsum(deltas, self.gamma * self.lam)
+        self.tdres_buf = self.tdres_buf.at[path_slice].set(advantages)
 
-        # Discounted rewards-to-go calculation
-        self.ret_buf = self.ret_buf.at[path_slice].set(
-            jnp.array(
-                [
-                    discount_cumsum(rews[t:run_len], self.gamma)[0]
-                    for t in range(run_len)
-                ]
-            )
-        )
+        # Discounted rewards-to-go include bootstrap value (drop last entry)
+        returns = discount_cumsum(rews, self.gamma)[:-1]
+        self.ret_buf = self.ret_buf.at[path_slice].set(returns)
 
         # Update path start index
         self.path_start_idx = self.ptr
