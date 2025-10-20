@@ -90,9 +90,6 @@ class Logger(object):
         if isinstance(folder, str):
             folder = os.path.join(self.base_log_dir, folder)
         elif folder is None:
-        if isinstance(folder, str):
-            folder = os.path.join(self.base_log_dir, folder)
-        elif folder is None:
             folder = self._get_most_recent_log_dir()
 
 
