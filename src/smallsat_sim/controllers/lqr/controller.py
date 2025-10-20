@@ -41,6 +41,7 @@ class LQRController(BaseController):
             self.nx, self.nx
         )  # Perturb for numerical stability
         self.R = self.ctrl_cfg.cost.R
+        self._last_stable_gain = np.zeros((self.nu, self.nx))
 
     def check_controllability(self, A: np.ndarray, B: np.ndarray) -> bool:
         """
@@ -71,6 +72,10 @@ class LQRController(BaseController):
         A = np.array(ca.DM(A_num).full())
         B = np.array(ca.DM(B_num).full())
 
+        if not (np.all(np.isfinite(A)) and np.all(np.isfinite(B))):
+            print("[LQR] Non-finite entries in linearization; reusing previous gain.")
+            return self._last_stable_gain
+
         # Discretize the system (Euler discretization)
         A = np.eye(self.nx) + A * 0.5
         B = B * 0.5
@@ -78,12 +83,16 @@ class LQRController(BaseController):
         # Check if the system is controllable (for debugging purposes)
         is_controllable = self.check_controllability(A, B)
 
-        # Solve the DARE
-        P = solve_discrete_are(A, B, self.Q, self.R)
+        try:
+            P = solve_discrete_are(A, B, self.Q, self.R)
+        except np.linalg.LinAlgError:
+            print("[LQR] DARE failed; reusing previous gain.")
+            return self._last_stable_gain
 
         # Compute the LQR gain
         K = np.linalg.inv(B.T @ P @ B + self.R) @ (B.T @ P @ A)
 
+        self._last_stable_gain = K
         return K
 
     def get_control_input(self, env: BaseEnv) -> np.ndarray:
