@@ -5,11 +5,28 @@ def xmlify(array: list):
     return " ".join([str(x) for x in array])
 
 
+def _compiler_attributes(env_config) -> str:
+    """
+    Filtering out the convexhull compiler option since it was removed in MuJoCo 3.2.7.
+    """
+    compiler_config = getattr(env_config, "compiler", {}) or {}
+    filtered = {
+        key: value for key, value in compiler_config.items() if key != "convexhull"
+    }
+    if not filtered:
+        return ""
+    return " " + " ".join(f'{key}="{value}"' for key, value in filtered.items())
+
+
 def generate_mujoco_xml(env_config, model_config, use_flat_bed: bool = False):
     if use_flat_bed:
-        return generate_mujoco_xml_flat_bed(env_config, model_config, env_config.dof == "6d")
+        return generate_mujoco_xml_flat_bed(
+            env_config, model_config, env_config.dof == "6d"
+        )
     else:
-        return generate_mujoco_xml_gateway(env_config, model_config, env_config.dof == "6d")
+        return generate_mujoco_xml_gateway(
+            env_config, model_config, env_config.dof == "6d"
+        )
 
 
 # =============================================================================================================
@@ -40,7 +57,7 @@ def generate_mujoco_xml_flat_bed(env_config, model_config, free_floating: bool =
     # Loads all assets such as .obj files and corresponding meshes/texture
     xml_content = f"""<?xml version="1.0" encoding="utf-8"?>
     <mujoco model="{env_config.model}">
-        <compiler convexhull="{env_config.compiler['convexhull']}" texturedir="src/smallsat_sim/model" meshdir="src/smallsat_sim/model" eulerseq="XYZ"/>
+        <compiler texturedir="src/smallsat_sim/model" meshdir="src/smallsat_sim/model" eulerseq="XYZ"{_compiler_attributes(env_config)}/>
         <visual>
             <headlight ambient="{env_config.visual['headlight']['ambient']}" specular="{env_config.visual['headlight']['specular']}" diffuse="{env_config.visual['headlight']['diffuse']}"/>
         </visual>
@@ -136,13 +153,10 @@ def generate_mujoco_xml_flat_bed(env_config, model_config, free_floating: bool =
                     temp.append(geom.name)
                     xml_content += f"        <mesh name='{geom.name}' file='{geom.mesh}' scale='{xmlify(geom.asset_scale)}'/>\n"
 
-    # Import meshes of a plane
+    # Import meshes of a plane and open worldbody section
     xml_content += """      </asset>
     <worldbody>
         <geom name="gateway_full" type="plane" size="5 5 0.1" pos="0 0 0" rgba="0.8 0.8 0.8 1" />
-    </worldbody>
-
-    <worldbody>
 """
     # Generates the free-floating bodies in the simulation
     if model_config.name == "astrobee":
@@ -201,7 +215,7 @@ def generate_mujoco_xml_flat_bed(env_config, model_config, free_floating: bool =
                     xml_content += f"            <geom type='{geom.type}' size='{xmlify(geom.size)}' pos='{xmlify(geom.pos)}' euler='{xmlify(geom.euler)}'/>\n"
             for thruster in thrusters.thruster_list:
                 xml_content += f"            <site name='{body.name}_{thruster.site}' pos='{xmlify(thruster.pos)}' size='{thruster.size}'/>\n"
-                xml_content += "        </body>\n"
+            xml_content += "        </body>\n"
 
     xml_content += """    </worldbody>
 """
@@ -224,7 +238,6 @@ def generate_mujoco_xml_flat_bed(env_config, model_config, free_floating: bool =
     xml_content += "    </actuator>\n"
     xml_content += "</mujoco>"
     return xml_content
-
 
 
 # =============================================================================================================
@@ -251,15 +264,12 @@ def generate_mujoco_xml_gateway(env_config, model_config, free_floating: bool = 
             body.euler[0] = 0
             body.euler[1] = 0
 
-    
-
-
     # Beginning of xml file
     # Defines general options for the environment
     # Loads all assets such as .obj files and corresponding meshes/texture
     xml_content = f"""<?xml version="1.0" encoding="utf-8"?>
     <mujoco model="{env_config.model}">
-        <compiler convexhull="{env_config.compiler['convexhull']}" texturedir="src/smallsat_sim/model" meshdir="src/smallsat_sim/model" eulerseq="XYZ"/>
+        <compiler texturedir="src/smallsat_sim/model" meshdir="src/smallsat_sim/model" eulerseq="XYZ"{_compiler_attributes(env_config)}/>
         <visual>
             <headlight ambient="{env_config.visual['headlight']['ambient']}" specular="{env_config.visual['headlight']['specular']}" diffuse="{env_config.visual['headlight']['diffuse']}"/>
         </visual>
@@ -408,7 +418,7 @@ def generate_mujoco_xml_gateway(env_config, model_config, free_floating: bool = 
                     temp.append(geom.name)
                     xml_content += f"        <mesh name='{geom.name}' file='{geom.mesh}' scale='{xmlify(geom.asset_scale)}'/>\n"
 
-    # Import meshes of lunar gateway
+    # Import meshes of lunar gateway within the same worldbody section
     xml_content += """      </asset>
     <worldbody>
         <body name="gateway_full">
@@ -448,9 +458,6 @@ def generate_mujoco_xml_gateway(env_config, model_config, free_floating: bool = 
             <geom mesh="gateway_simple_24" class="collision"/>
             <geom mesh="gateway_simple_25" class="collision"/>
         </body>
-    </worldbody>
-
-    <worldbody>
 """
     # Generates the free-floating bodiesin the simulation
     if model_config.name == "astrobee":
@@ -509,7 +516,7 @@ def generate_mujoco_xml_gateway(env_config, model_config, free_floating: bool = 
                     xml_content += f"            <geom type='{geom.type}' size='{xmlify(geom.size)}' pos='{xmlify(geom.pos)}' euler='{xmlify(geom.euler)}'/>\n"
             for thruster in thrusters.thruster_list:
                 xml_content += f"            <site name='{body.name}_{thruster.site}' pos='{xmlify(thruster.pos)}' size='{thruster.size}'/>\n"
-                xml_content += "        </body>\n"
+            xml_content += "        </body>\n"
 
     xml_content += """    </worldbody>
 """
@@ -538,6 +545,7 @@ def generate_mujoco_xml_gateway(env_config, model_config, free_floating: bool = 
 if __name__ == "__main__":
     from smallsat_sim.envs.astrobee.cfg.config import EnvConfig
     from smallsat_sim.model.astrobee.cfg.config import ModelConfig
+
     # from smallsat_sim.envs.astrobee_2d.cfg.config import EnvConfig
     # from smallsat_sim.model.astrobee_2d.cfg.config import ModelConfig
 
