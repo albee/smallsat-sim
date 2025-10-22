@@ -354,7 +354,6 @@ class VecEnv(BaseEnv):
         """
         Creates a renderer to visualize the experiments (to later save them to a video).
         """
-        print("BUG HERE") # TODO
         # Create instance of MuJoCo renderer
         self.renderer = mujoco.Renderer(
             self.model, width=self.env_cfg.renderer.width, height=self.env_cfg.renderer.height,
@@ -381,6 +380,7 @@ class VecEnv(BaseEnv):
         # Create model and data instances
         self.model = mujoco.MjModel.from_xml_string(xml)
         self.data = mujoco.MjData(self.model)
+
         self.mjx_model = mjx.put_model(
             self.model
         )  # impl='warp', warp requires a CUDA device & mujoco-mjx[warp]
@@ -402,10 +402,7 @@ class VecEnv(BaseEnv):
 
         # Launch the viewer
         if not args.headless:
-            raise Exception(
-                "Viewer is not supported in vectorized environments. Run simulation in headless mode."
-            )
-            # self._create_viewer(args)
+            self._create_viewer(args)
         else:
             # If sim is run in headless mode, set the update_viewer method
             # to a lambda function which essentially does nothing

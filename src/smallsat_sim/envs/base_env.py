@@ -343,6 +343,7 @@ class BaseEnv(object):
         """
         # Generate xml using env and model config files
         xml = xml_parser.generate_mujoco_xml(self.env_cfg, self.model_cfg)
+        
         # Create model and data instances
         self.model = mujoco.MjModel.from_xml_string(xml)
         self.data = mujoco.MjData(self.model)
@@ -368,9 +369,7 @@ class BaseEnv(object):
         """
         Updates the viewer
         """
-        print("Updating viewer...")
         self.viewer.sync()
-        print("Viewer updated.")
 
     def _update_renderer(self) -> None:
         """

@@ -27,7 +27,7 @@ class AstrobeeEnvVectorized(VecEnv):
 
         # Load necessary config files
         self.env_cfg, self.model_cfg = self._load_cfg(
-            env_name="astrobee_rl", model_name=None
+            env_name="astrobee_rl", model_name="astrobee"
         )
         if init_pos is not None:
             self.env_cfg.Bodies.bodies_list[0].pos = init_pos
