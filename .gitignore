@@ -45,6 +45,8 @@ wandb/
 # external libraries during development
 external/
 
-
 # wandb API key
 src/smallsat_sim/utils/wandb_config.py
+
+# .egg-info
+src/smallsat_sim.egg-info/
