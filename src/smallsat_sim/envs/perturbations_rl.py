@@ -1,13 +1,13 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from enum import Enum
 import warnings
 from copy import deepcopy
 import jax
 import jax.numpy as jnp
+import jax.scipy as jsp
+import gpjax as gpx
 from scipy.interpolate import interp1d
-import gpflow
-import tensorflow as tf
-import tensorflow_probability as tfp
 
 from smallsat_sim.envs.base_env_config import BaseEnvConfig
 from smallsat_sim.model.base_model_config import BaseModelConfig
@@ -465,7 +465,25 @@ class ThrusterFailureSimulator:
         )  # Values between 0 and upper_bound
         self.failure_modes = self._get_failure_modes()
 
-    class ThrusterFailureGPModel(gpflow.models.GPR):
+    @dataclass
+    class _GPPosterior:
+        """Lightweight Gaussian distribution wrapper compatible with the old API."""
+
+        loc: jnp.ndarray
+        scale_tril: jnp.ndarray
+
+        def mean(self) -> jnp.ndarray:
+            return self.loc
+
+        def sample(self, key) -> jnp.ndarray:
+            if key is None:
+                raise ValueError(
+                    "A PRNGKey must be provided when sampling from the GP posterior."
+                )
+            normal = jax.random.normal(key, shape=self.loc.shape, dtype=self.loc.dtype)
+            return self.loc + self.scale_tril @ normal
+
+    class ThrusterFailureGPModel:
         def __init__(
             self,
             train_x,
@@ -474,42 +492,58 @@ class ThrusterFailureSimulator:
             lengthscale=0.2,
             outputscale=1.0,
         ):
-            train_x = tf.convert_to_tensor(train_x, dtype=tf.float64)
-            train_x_reshaped = tf.reshape(train_x, [-1, 1])
-            train_y = tf.convert_to_tensor(train_y, dtype=tf.float64)
-            train_y_reshaped = tf.reshape(train_y, [-1, 1])
+            train_x = jnp.asarray(train_x, dtype=jnp.float64).reshape(-1, 1)
+            train_y = jnp.asarray(train_y, dtype=jnp.float64).reshape(-1, 1)
 
-            kernel = self._choose_kernel(kernel_type, lengthscale)
-            kernel.variance.assign(outputscale)
+            self._train_x = train_x
+            self._kernel = self._choose_kernel(kernel_type, lengthscale, outputscale)
+            self._mean_value = float(jnp.mean(train_y))
+            self._jitter = jnp.asarray(1e-8, dtype=jnp.float64)
 
-            mean_function = gpflow.mean_functions.Constant()
-
-            super().__init__(
-                (train_x_reshaped, train_y_reshaped),
-                kernel=kernel,
-                mean_function=mean_function,
+            centered_y = train_y - self._mean_value
+            k_xx = self._kernel(train_x, train_x)
+            noise = 1e-6 * jnp.eye(train_x.shape[0], dtype=k_xx.dtype)
+            self._train_chol = jsp.linalg.cholesky(
+                k_xx + noise + self._jitter * jnp.eye(k_xx.shape[0], dtype=k_xx.dtype),
+                lower=True,
             )
+            self._alpha = jsp.linalg.cho_solve((self._train_chol, True), centered_y)
 
-        def _choose_kernel(self, kernel_type, lengthscale):
+        def _choose_kernel(self, kernel_type, lengthscale, outputscale):
+            lengthscale = jnp.asarray(lengthscale, dtype=jnp.float64)
+            variance = jnp.asarray(outputscale, dtype=jnp.float64)
             if kernel_type == "RBF":
-                return gpflow.kernels.SquaredExponential(lengthscales=lengthscale)
+                return gpx.kernels.RBF(lengthscale=lengthscale, variance=variance)
             elif kernel_type == "Matern":
-                return gpflow.kernels.Matern32(lengthscales=lengthscale)
+                return gpx.kernels.Matern32(lengthscale=lengthscale, variance=variance)
             raise ValueError(f"Unsupported kernel type: {kernel_type}")
 
         def forward(self, x):
-            test_x = tf.convert_to_tensor(x, dtype=tf.float64)
+            test_x = jnp.asarray(x, dtype=jnp.float64).reshape(-1, 1)
 
-            mean_x, covar_x = self.predict_f(tf.reshape(test_x, [-1, 1]), full_cov=True)
-            scale = tf.linalg.cholesky(covar_x[0, :, :])
+            k_xt = self._kernel(self._train_x, test_x)
+            predictive_mean = self._mean_value + jnp.matmul(
+                k_xt.T, self._alpha
+            ).reshape(-1)
 
-            return tfp.distributions.MultivariateNormalTriL(
-                loc=mean_x[:, 0], scale_tril=scale
+            v = jsp.linalg.solve_triangular(self._train_chol, k_xt, lower=True)
+            k_tt = self._kernel(test_x, test_x)
+            predictive_cov = k_tt - jnp.matmul(v.T, v)
+            predictive_cov = (predictive_cov + predictive_cov.T) * 0.5
+            predictive_cov = predictive_cov + self._jitter * jnp.eye(
+                predictive_cov.shape[0], dtype=predictive_cov.dtype
+            )
+            scale_tril = jsp.linalg.cholesky(predictive_cov, lower=True)
+
+            return ThrusterFailureSimulator._GPPosterior(
+                loc=predictive_mean, scale_tril=scale_tril
             )
 
     def generate_failure_data(self, key, failure_type):
-        actual_force = self._get_actual_force(key, failure_type)
-        subset_indices = self._select_subset_indices(key)
+        key_actual, key_subset, key_sample = jax.random.split(key, 3)
+
+        actual_force = self._get_actual_force(key_actual, failure_type)
+        subset_indices = self._select_subset_indices(key_subset)
         demanded_force_subset = self.demanded_force[subset_indices]
         actual_force_subset = actual_force[subset_indices]
 
@@ -524,13 +558,10 @@ class ThrusterFailureSimulator:
             outputscale=params["outputscale"],
         )
 
-        # Train model
-        opt = gpflow.optimizers.Scipy()
-        opt.minimize(model.training_loss, model.trainable_variables)
-
-        # No training needed as hyperparameters are manually set
         x_test = jnp.linspace(0, self.upper_bound, self.num_points)
-        sampled_function = self._sample_gp_function(model, x_test, failure_type)
+        sampled_function = self._sample_gp_function(
+            model, x_test, failure_type, key_sample
+        )
 
         sampled_function = jax.lax.clamp(
             0.0, jnp.asarray(sampled_function), self.upper_bound
@@ -595,13 +626,13 @@ class ThrusterFailureSimulator:
         indices = jnp.concatenate([start, indices, end])
         return jnp.sort(indices)
 
-    def _sample_gp_function(self, gp_model, demanded_force, failure_type):
+    def _sample_gp_function(self, gp_model, demanded_force, failure_type, sample_key):
         observed_pred = gp_model.forward(demanded_force)
 
         if failure_type == PerturbationStatus.SATURATED_THRUST:
             return observed_pred.mean()
         else:
-            return observed_pred.sample()
+            return observed_pred.sample(sample_key)
 
     def _get_failure_modes(self):
         return {
