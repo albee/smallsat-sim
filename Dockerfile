@@ -81,8 +81,8 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     libxext6 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Default to an off-screen MuJoCo GL backend; override at runtime if needed (e.g. MUJOCO_GL=egl)
-ENV MUJOCO_GL=osmesa
+# Default to an off-screen MuJoCo GL backend; override at runtime if needed (e.g. MUJOCO_GL=egl or osmesa)
+ENV MUJOCO_GL=egl
 
 # ===============================
 # Install native dependencies
@@ -117,11 +117,6 @@ RUN pip install --upgrade pip && pip install "setuptools<81"
 RUN if [ "$USE_CUDA" = "0" ]; then \
         pip install torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu; \
     fi
-RUN if [ "$USE_CUDA" = "1" ]; then \
-        pip install --upgrade "jax[cuda12]"; \
-    else \
-        pip install --upgrade "jax"; \
-    fi
 
 # Ensure l4acados Python package is available
 RUN pip install -e /l4acados
@@ -136,6 +131,11 @@ RUN apt-get update && \
 
 # Install dependencies and the package in editable mode
 RUN pip install -e .
+
+# Force install CUDA-enabled JAX when requested (same version as in pyproject.toml)
+RUN if [ "$USE_CUDA" = "1" ]; then \
+        pip install "jax[cuda12]==0.6.2" --force-reinstall --no-cache-dir; \
+    fi
 
 # Remove Torch-based dependencies when building CUDA-enabled images
 RUN if [ "$USE_CUDA" = "1" ]; then \
