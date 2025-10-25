@@ -356,7 +356,9 @@ class VecEnv(BaseEnv):
         """
         # Create instance of MuJoCo renderer
         self.renderer = mujoco.Renderer(
-            self.model, width=self.env_cfg.renderer.width, height=self.env_cfg.renderer.height,
+            self.model,
+            width=self.env_cfg.renderer.width,
+            height=self.env_cfg.renderer.height,
         )
 
         # Set up the scene and the default camera options
@@ -498,30 +500,37 @@ class VecEnv(BaseEnv):
             angle_error <= att_threshold,
         )
 
-    def _get_error_quaternion(self, q: jnp.ndarray, q_des: jnp.ndarray) -> jnp.ndarray:
+    def _get_error_quaternion(
+        self, q: jnp.ndarray, q_des: jnp.ndarray, eps=1e-12
+    ) -> jnp.ndarray:
         """
-        Return the error between two quaternions.
-        """
-        # Quaternion error
-        q_conj = jnp.array([q[0], -q[1], -q[2], -q[3]])
-        e_q_vec = jnp.array(
-            [
-                q_des[0] * q_conj[1]
-                + q_des[1] * q_conj[0]
-                + q_des[2] * q_conj[3]
-                - q_des[3] * q_conj[2],
-                q_des[0] * q_conj[2]
-                - q_des[1] * q_conj[3]
-                + q_des[2] * q_conj[0]
-                + q_des[3] * q_conj[1],
-                q_des[0] * q_conj[3]
-                + q_des[1] * q_conj[2]
-                - q_des[2] * q_conj[1]
-                + q_des[3] * q_conj[0],
-            ]
-        )
+        Compute the quaternion attitude error between the current and desired orientations.
 
-        return e_q_vec
+        This function computes the right-invariant quaternion error q_e = q_des ⊗ conj(q),
+        where both input quaternions are assumed to be in the [w, x, y, z] format.
+
+        The result encodes the rotation that brings the current attitude `q` into alignment
+        with the desired attitude `q_des`. The scalar part `w` represents cos(θ/2),
+        and the vector part `e_signed` represents the rotation axis scaled by sin(θ/2),
+        where θ is the shortest rotation angle between the two orientations.
+
+        To ensure a unique and continuous representation (avoiding quaternion unwinding),
+        the sign of the vector part is flipped whenever the scalar part is negative:
+        e_signed = sign(w) * e.
+        """
+        q = q / jnp.maximum(jnp.linalg.norm(q), eps)
+        q_des = q_des / jnp.maximum(jnp.linalg.norm(q_des), eps)
+        qc = jnp.array([q[0], -q[1], -q[2], -q[3]])
+
+        # Multiply q_des ⊗ qc
+        w = q_des[0] * qc[0] - q_des[1] * qc[1] - q_des[2] * qc[2] - q_des[3] * qc[3]
+        ex = q_des[0] * qc[1] + q_des[1] * qc[0] + q_des[2] * qc[3] - q_des[3] * qc[2]
+        ey = q_des[0] * qc[2] - q_des[1] * qc[3] + q_des[2] * qc[0] + q_des[3] * qc[1]
+        ez = q_des[0] * qc[3] + q_des[1] * qc[2] - q_des[2] * qc[1] + q_des[3] * qc[0]
+        e = jnp.stack([ex, ey, ez])
+        e_signed = jnp.where(w < 0.0, -e, e)
+
+        return e_signed
 
     def _get_random_quaternion(self, rng) -> jnp.ndarray:
         """

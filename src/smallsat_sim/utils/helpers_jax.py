@@ -197,9 +197,9 @@ def calc_attitude_error(
     obs: jnp.ndarray, q_ref: jnp.ndarray = jnp.array([1, 0, 0, 0])
 ) -> jnp.ndarray:
     """
-    Computes the attitude error as rotation angle. The angle error is the smallest angle by
-    which you would need to rotate the spacecraft (or frame of reference) from its current
-    orientation (actual quaternion) to match the desired orientation (desired quaternion).
+    Computes the attitude error as the shortest rotation angle. The angle error is the smallest 
+    angle by which you would need to rotate the spacecraft (or frame of reference) from its 
+    current orientation (actual quaternion) to match the desired orientation (desired quaternion).
     Returned in radians. Use jnp.degrees() for conversion.
     """
     # Normalize the quaternions, defaulting to identity if the norm is near zero
@@ -234,7 +234,10 @@ def calc_attitude_error(
     error_angle = 2 * jnp.arccos(jnp.abs(w))
 
     # Ensure the angle is within [0, pi]
-    error_angle = jnp.where(error_angle > jnp.pi, 2 * jnp.pi - error_angle, error_angle)
+    # error_angle = jnp.where(error_angle > jnp.pi, 2 * jnp.pi - error_angle, error_angle)
+
+    v_norm = jnp.linalg.norm(q_err[:, 1:], axis=1)
+    error_angle = 2 * jnp.arctan2(v_norm, jnp.abs(w))
 
     return error_angle
 
