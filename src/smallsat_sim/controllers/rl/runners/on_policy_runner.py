@@ -229,6 +229,9 @@ class OnPolicyRunner(object):
             ret,
         )
 
+        # Only pretrain the actor mean, reset log_std
+        self.agent.actor.log_std = nnx.Param(-0.5 * jnp.ones(self.env.act_dim))
+
         # Save the trained actor and critic network weights
         save_trained_modules(
             self.agent, self.ckpt_dir, self.pretraining_state_file_name
