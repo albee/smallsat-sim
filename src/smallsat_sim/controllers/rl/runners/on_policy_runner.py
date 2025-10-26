@@ -30,7 +30,6 @@ from smallsat_sim.utils.helpers_jax import (
     calc_attitude_error,
     calc_extrinsic_error,
 )
-from smallsat_sim.utils.wandb_config import setup_wandb
 
 
 class OnPolicyRunner(object):
@@ -68,6 +67,7 @@ class OnPolicyRunner(object):
 
         # Use Weights and Biases for logging
         if self.env.use_wandb:
+            from smallsat_sim.utils.wandb_config import setup_wandb
             setup_wandb()
             wandb.init(
                 project="Astrobee-training",
