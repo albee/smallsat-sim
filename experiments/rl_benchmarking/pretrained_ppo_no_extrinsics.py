@@ -8,5 +8,10 @@ from experiments.rl_benchmarking.rl_benchmarker import Benchmarker
 
 benchmarker = Benchmarker(run_name="pretrained_ppo_no_extrinsics")
 
-benchmarker.train_and_evaluate(use_pretrained=True, use_adaptive_approach=False)
-benchmarker.deploy_and_test(use_pretrained=True, use_adaptive_approach=False)
+benchmarker.train_and_evaluate(
+    train_with_failures=True, use_pretrained=True, use_adaptive_approach=False
+)
+
+benchmarker.deploy_and_test(
+    train_with_failures=True, use_pretrained=True, use_adaptive_approach=False
+)

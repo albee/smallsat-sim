@@ -2,12 +2,17 @@
 
 # Scripts to run
 scripts=("experiments/rl_benchmarking/pd_controller.py" 
+        "experiments/rl_benchmarking/nn_controller.py"
+        "experiments/rl_benchmarking/nn_controller_adaptive.py"
+        "experiments/rl_benchmarking/ppo_no_extrinsics_nominal.py"
         "experiments/rl_benchmarking/ppo_no_extrinsics.py"
-        "experiments/rl_benchmarking/ppo_extrinsics_from_sim.py" 
-        "experiments/rl_benchmarking/pretrained_ppo_no_extrinsics.py" 
-        "experiments/rl_benchmarking/pretrained_ppo_extrinsics_from_sim.py" 
-        "experiments/rl_benchmarking/ppo_extrinsics_from_am.py" 
-        "experiments/rl_benchmarking/pretrained_ppo_extrinsics_from_am.py")
+        "experiments/rl_benchmarking/ppo_extrinsics_from_sim.py"
+        "experiments/rl_benchmarking/ppo_extrinsics_from_am.py"
+        "experiments/rl_benchmarking/pretrained_ppo_no_extrinsics_nominal.py"
+        # "experiments/rl_benchmarking/pretrained_ppo_no_extrinsics.py" 
+        # "experiments/rl_benchmarking/pretrained_ppo_extrinsics_from_sim.py" 
+        # "experiments/rl_benchmarking/pretrained_ppo_extrinsics_from_am.py"
+        )
 
 # Ensure repository root is on PYTHONPATH so `experiments` can be imported
 export PYTHONPATH="$(pwd):${PYTHONPATH}"

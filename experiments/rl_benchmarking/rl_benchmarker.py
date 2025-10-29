@@ -28,6 +28,7 @@ class Benchmarker(object):
 
     def train_and_evaluate(
         self,
+        train_with_failures: bool,
         use_pretrained: bool,
         use_adaptive_approach: bool,
         phase: int = 2,
@@ -39,6 +40,7 @@ class Benchmarker(object):
         env = AstrobeeEnvVectorized(
             args=self.args,
             run_name=self.run_name,
+            train_with_failures=train_with_failures,
             use_pretrained=use_pretrained,
             use_adaptive_approach=use_adaptive_approach,
         )
@@ -71,6 +73,7 @@ class Benchmarker(object):
 
     def deploy_and_test(
         self,
+        train_with_failures: bool,
         use_pretrained: bool,
         use_adaptive_approach: bool,
         phase: int = 2,
@@ -86,6 +89,7 @@ class Benchmarker(object):
             run_name=self.run_name,
             init_pos=jnp.array([5.0, 0.0, 10.17]),
             max_start_offset=0.5,
+            train_with_failures=train_with_failures,
             use_pretrained=use_pretrained,
             use_adaptive_approach=use_adaptive_approach,
         )
@@ -137,6 +141,14 @@ class Benchmarker(object):
             phase=phase,
             test_pd=test_pd,
             perturbation_distribution=jnp.array([0.0, 0.0, 0.0, 0.0, 1.0]),
+        )
+
+        # Test constant force disturbances
+        ctrl.control(
+            stage="constant_force_disturbances_deployment",
+            phase=phase,
+            test_pd=test_pd,
+            apply_disturbances=True,
         )
 
         # Save log if logging is enabled
