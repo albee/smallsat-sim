@@ -25,7 +25,6 @@ from smallsat_sim.utils.helpers_jax import (
     batch_mse_loss_fn,
     mae_loss_fn,
     normalize_obs,
-    scale_rews,
     calc_lateral_tracking_error,
     calc_attitude_error,
     calc_extrinsic_error,
@@ -102,7 +101,8 @@ class OnPolicyRunner(object):
         """
         Pretrain the actor and critic networks.
         """
-        file_path = os.path.join(self.ckpt_dir, self.pretraining_data_file_name)
+        # Check if pretraining has already been done
+        file_path = os.path.join(self.ckpt_dir, self.pretraining_state_file_name)
         if os.path.isfile(file_path):
             return
 
@@ -241,7 +241,10 @@ class OnPolicyRunner(object):
         """
         Main training loop.
         """
-        print("Training agent...\n")
+        # Check if training has already been done
+        file_path = os.path.join(self.ckpt_dir, self.training_state_file_name)
+        if os.path.isfile(file_path):
+            return
 
         if self.env.use_pretrained:
             # Check if pretrained actor and critic modules are available and load them
@@ -258,6 +261,8 @@ class OnPolicyRunner(object):
                 )
             else:
                 print("No pretrained modules available.\n")
+
+        print("Training agent...\n")
 
         # Set up buffer
         buffer = ReplayBuffer(
@@ -279,6 +284,7 @@ class OnPolicyRunner(object):
             0,
         )
         states_normalized = states
+        episode_counter = 0
 
         if self.env.use_adaptive_approach is True:
             ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
@@ -290,19 +296,29 @@ class OnPolicyRunner(object):
 
         # Main training loop
         for epoch in range(self.epochs):
-            if epoch >= self.epochs // 2:
+            # Apply perturbations ramp-up
+            if self.env.train_with_failures and epoch >= self.epochs // 2:
                 ramp_duration = max(self.epochs // 2, 1)
                 ramp_progress = min((epoch - ramp_duration) / ramp_duration, 1.0)
+                self.env.reset_perturbations()  # avoid accumulating failures across epochs
                 self.env.apply_random_perturbations(
                     key=subkeys_train[epoch],
                     fraction_perturbed_envs=0.05
                     + (0.5 - 0.05) * max(ramp_progress, 0.0),
                 )
+                self.env.apply_random_disturbance(
+                    key=subkeys_train[epoch],
+                    fraction_disturbed_envs=0.05
+                    + (0.15 - 0.05) * max(ramp_progress, 0.0),
+                )
 
+            # Epoch variables
             ep_returns = jnp.zeros((self.env.num_envs, self.steps_per_epoch))
             ep_obs = jnp.zeros(
                 (self.env.num_envs, self.steps_per_epoch, self.env.obs_dim)
             )
+
+            # For logging mean errors
             ep_mean_tracking_error = jnp.zeros(
                 (self.env.num_envs, self.steps_per_epoch)
             )
@@ -310,11 +326,14 @@ class OnPolicyRunner(object):
             ep_mean_extrinsic_error = jnp.zeros(
                 (self.env.num_envs, self.steps_per_epoch)
             )
+
             for t in range(self.steps_per_epoch):
+                # Get actions from the agent
                 a, v, logp = self.agent.act(
                     jnp.concatenate([states, ext], axis=1), log=True
                 )  # Use un-normalized states
 
+                # Compute and log mean errors
                 obs = self.env.get_obs()
                 tracking_mean, angle_mean, extrinsic_mean = self._compute_mean_errors(
                     obs, a, ext
@@ -331,24 +350,25 @@ class OnPolicyRunner(object):
                         extrinsic_mean
                     )
 
-                r, terminal = self.env.transition(a, states, epoch)
+                # Perform environment transition
+                r, terminal = self.env.transition(
+                    a, states, self.reference_point, epoch
+                )
                 ep_returns = ep_returns.at[:, t].set(
                     self.gamma * ep_returns[:, t - 1] + r
                 )
-                r_scaled = scale_rews(r, ep_returns, t)
-                ep_ret += r_scaled
+                ep_ret += r
                 ep_len += 1
 
                 # Log transition
-                buffer.store(
-                    states, a, r_scaled, v, logp, ext
-                )  # Use un-normalized states
+                buffer.store(states, a, r, v, logp, ext)  # Use un-normalized states
 
                 # Update state
                 states = self.env.get_states(self.reference_point)
                 ep_obs = ep_obs.at[:, t, :].set(states)
                 states_normalized = normalize_obs(states, ep_obs, t)
 
+                # Update extrinsics
                 if self.env.use_adaptive_approach is True:
                     ext = self.env.mjx_batch.ctrl / (
                         a + 1e-8 * jnp.ones_like(self.env.mjx_batch.ctrl)
@@ -377,16 +397,17 @@ class OnPolicyRunner(object):
                     if self.env.use_wandb:
                         wandb.log(
                             {
-                                "mean_scaled_episodic_returns": ep_ret.mean(),
+                                "mean_episodic_returns": ep_ret.mean(),
                             }
                         )
                     if self.agent.has_logger:
                         self.env.logger.log(
                             self.env.run_id,
                             float(self.env.mjx_batch.time[0]),
+                            step=episode_counter,
                             run_name=self.env.run_name,
                             stage="policy_training",
-                            mean_scaled_episodic_returns=ep_ret.mean(),
+                            mean_episodic_returns=ep_ret.mean(),
                         )
 
                     self.env.reset()
@@ -404,6 +425,8 @@ class OnPolicyRunner(object):
                         )  # No control input yet
                     else:
                         ext = jnp.empty((self.env.num_envs, 0))
+
+                    episode_counter += 1
 
             # Get the data from the training loop and save it
             data = buffer.get()
@@ -450,7 +473,7 @@ class OnPolicyRunner(object):
             if self.env.use_wandb:
                 wandb.log(
                     {
-                        "mean_scaled_rewards": rews.mean(),
+                        "mean_rewards": rews.mean(),
                         "actor_loss": actor_loss,
                         "critic_loss": critic_loss,
                         "num_terminal": jnp.sum(terminal),
@@ -464,9 +487,10 @@ class OnPolicyRunner(object):
                 self.env.logger.log(
                     self.env.run_id,
                     float(self.env.mjx_batch.time[0]),
+                    step=int(epoch),
                     run_name=self.env.run_name,
                     stage="policy_training",
-                    mean_scaled_rewards=rews.mean(),
+                    mean_rewards=rews.mean(),
                     actor_loss=actor_loss,
                     critic_loss=critic_loss,
                     num_terminal=jnp.sum(terminal),
@@ -482,75 +506,6 @@ class OnPolicyRunner(object):
                 self.agent, self.ckpt_dir, self.training_state_file_name
             )
 
-    # def train_adaptation_module_pretraining_data(self) -> None:
-    #     """
-    #     Train adaptation module to predict extrinsics from the history of states and actions from pretraining data.
-    #     NOTE: use_adaptive_approach must be set to True in the environment config.
-    #     """
-    #     if self.env.use_adaptive_approach is False:
-    #         return
-
-    #     file_path = os.path.join(self.ckpt_dir, "adapt_module_state.pkl")
-    #     if os.path.isfile(file_path):
-    #         return
-
-    #     print("Training adaptation module...\n")
-
-    #     # Generate experience if necessary and load the pretraining data
-    #     self._generate_experience()
-    #     pretraining_data = load_training_data(
-    #         self.ckpt_dir, self.pretraining_data_file_name
-    #     )  # Can use pretraining data
-
-    #     # Load the data
-    #     obs = pretraining_data["obs"].reshape(-1, self.env.obs_dim)
-    #     act = pretraining_data["act"].reshape(-1, self.env.act_dim)
-    #     if self.env.use_adaptive_approach is True:
-    #         extrinsics = pretraining_data["extrinsics"].reshape(-1, self.env.ext_dim)
-    #     else:
-    #         extrinsics = jnp.empty((self.steps_per_epoch * self.env.num_envs, 0))
-
-    #     state_action_data = jnp.concatenate([obs, act], axis=1)
-
-    #     num_epochs = 100
-
-    #     # Optimizer
-    #     am_lr = self.env.env_cfg.control.RL.am_lr
-    #     self.am_optimizer = nnx.Optimizer(
-    #         self.am,
-    #         optax.adam(
-    #             learning_rate=am_lr,
-    #             eps=1e-5,
-    #         ),
-    #     )
-
-    #     # Split into training and validation sets
-    #     X_train, y_train, X_val, y_val = train_val_split(
-    #         state_action_data, extrinsics, shuffle=False
-    #     )
-
-    #     # Training loop
-    #     for epoch in range(num_epochs):
-    #         # Compute the loss
-    #         train_loss, grads = nnx.value_and_grad(batch_mse_loss_fn)(
-    #             self.am,
-    #             X_train,
-    #             y_train,
-    #             key,
-    #         )
-    #         print(f"{train_loss = }\n")
-    #         self.am_optimizer.update(grads)
-
-    #         # Periodically evaluate on the validation set (e.g., every 10 epochs)
-    #         if epoch % 10 == 0:
-    #             val_loss = batch_mse_loss_fn(self.am, X_val, y_val, key)
-    #             print(
-    #                 f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}\n"
-    #             )
-
-    #     # Save the adaptation module weights
-    #     save_adaptation_module(self.am, self.ckpt_dir, "adapt_module_state.pkl")
-
     def train_adaptation_module_on_policy(self) -> None:
         """
         Train adaptation module to predict extrinsics from the history of states and actions with
@@ -560,6 +515,7 @@ class OnPolicyRunner(object):
         if self.env.use_adaptive_approach is False:
             return
 
+        # Check if adaptation module has already been trained
         file_path = os.path.join(self.ckpt_dir, "adapt_module_state.pkl")
         if os.path.isfile(file_path):
             return
@@ -576,6 +532,8 @@ class OnPolicyRunner(object):
             raise Exception(
                 "The base policy must be trained before the adaptation module."
             )
+
+        print("Training adaptation module...\n")
 
         # Set up buffer
         buffer = ReplayBuffer(
@@ -601,10 +559,8 @@ class OnPolicyRunner(object):
         state_action_history = jnp.zeros(
             (self.env.num_envs, 50, self.env.obs_dim + self.env.act_dim)
         )  # No history in the beginning
-        if self.env.use_adaptive_approach is True:
-            ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
-        else:
-            ext = jnp.empty((self.env.num_envs, 0))
+        ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
+        ext_gt = jnp.ones_like(self.env.mjx_batch.ctrl)  # Ground truth extrinsics
 
         # Create PRNG keys
         subkeys_train = self._take_keys(self.epochs)
@@ -613,9 +569,14 @@ class OnPolicyRunner(object):
         for epoch in range(self.epochs):
             ramp_duration = max(self.epochs // 2, 1)
             ramp_progress = min((epoch - ramp_duration) / ramp_duration, 1.0)
+            self.env.reset_perturbations()  # avoid accumulating failures across epochs
             self.env.apply_random_perturbations(
                 key=subkeys_train[epoch],
                 fraction_perturbed_envs=0.05 + (0.5 - 0.05) * max(ramp_progress, 0.0),
+            )
+            self.env.apply_random_disturbance(
+                key=subkeys_train[epoch],
+                fraction_disturbed_envs=0.05 + (0.15 - 0.05) * max(ramp_progress, 0.0),
             )
 
             ep_obs = jnp.zeros(
@@ -629,10 +590,18 @@ class OnPolicyRunner(object):
                 (self.env.num_envs, self.steps_per_epoch)
             )
             for t in range(self.steps_per_epoch):
+                # Get actions from the agent
                 a = self.agent.get_control_input(
                     self.env, "am_training", jnp.concatenate([states, ext], axis=1)
                 )  # Use un-normalized states
 
+                # Update state-action history
+                state_action_history = jnp.roll(state_action_history, shift=-1, axis=1)
+                state_action_history = state_action_history.at[:, -1, :].set(
+                    jnp.concatenate([states, a], axis=1)
+                )
+
+                # Compute and log mean errors
                 obs = self.env.get_obs()
                 tracking_mean, angle_mean, extrinsic_mean = self._compute_mean_errors(
                     obs, a, ext
@@ -641,21 +610,21 @@ class OnPolicyRunner(object):
                     tracking_mean
                 )
                 ep_mean_angle_error = ep_mean_angle_error.at[:, t].set(angle_mean)
-                if (
-                    self.env.use_adaptive_approach is True
-                    and extrinsic_mean is not None
-                ):
+                if extrinsic_mean is not None:
                     ep_mean_extrinsic_error = ep_mean_extrinsic_error.at[:, t].set(
                         extrinsic_mean
                     )
 
-                _, terminal = self.env.transition(a, states, epoch)
+                # Perform environment transition
+                _, terminal = self.env.transition(
+                    a, states, self.reference_point, epoch
+                )
                 ep_len += 1
 
                 # Log transition
                 placeholder = jnp.zeros(self.env.num_envs)
                 buffer.store(
-                    states, a, placeholder, placeholder, placeholder, ext
+                    states, a, placeholder, placeholder, placeholder, ext_gt
                 )  # Use un-normalized states
 
                 # Update state
@@ -663,15 +632,11 @@ class OnPolicyRunner(object):
                 ep_obs = ep_obs.at[:, t, :].set(states)
                 states_normalized = normalize_obs(states, ep_obs, t)
 
-                state_action_history = jnp.roll(state_action_history, shift=-1, axis=1)
-                state_action_history = state_action_history.at[:, -1, :].set(
-                    jnp.concatenate([states, a], axis=1)
+                # Update extrinsics
+                ext_gt = self.env.mjx_batch.ctrl / (
+                    a + 1e-8 * jnp.ones_like(self.env.mjx_batch.ctrl)
                 )
-
-                if self.env.use_adaptive_approach is True:
-                    ext = self.adaptation_module(state_action_history)
-                else:
-                    ext = jnp.empty((self.env.num_envs, 0))
+                ext = self.adaptation_module(state_action_history)
 
                 # Check if a timeout is appropriate
                 timeout = ep_len == self.max_ep_len
@@ -689,31 +654,15 @@ class OnPolicyRunner(object):
                     )
                     states_normalized = states
 
-                    if self.env.use_adaptive_approach is True:
-                        ext = jnp.ones_like(
-                            self.env.mjx_batch.ctrl
-                        )  # No control input yet
-                    else:
-                        ext = jnp.empty((self.env.num_envs, 0))
+                    ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
+                    ext_gt = jnp.ones_like(self.env.mjx_batch.ctrl)
 
             # Get the data from the training loop
             data = buffer.get()
 
-            # obs = data["obs"].reshape(-1, self.env.obs_dim)
-            # act = data["act"].reshape(-1, self.env.act_dim)
-            # if self.env.use_adaptive_approach is True:
-            #     extrinsics = data["extrinsics"].reshape(-1, self.env.ext_dim)
-            # else:
-            #     extrinsics = jnp.empty((self.steps_per_epoch * self.env.num_envs, 0))
-
-            # state_action_data = jnp.concatenate([obs, act], axis=1)
-
             obs = data["obs"]
             act = data["act"]
-            if self.env.use_adaptive_approach is True:
-                extrinsics = data["extrinsics"]
-            else:
-                extrinsics = jnp.empty((self.steps_per_epoch, self.env.num_envs, 0))
+            extrinsics = data["extrinsics"]
 
             state_action_data = jnp.concatenate([obs, act], axis=2)
 
@@ -779,6 +728,7 @@ class OnPolicyRunner(object):
                 self.env.logger.log(
                     self.env.run_id,
                     float(self.env.mjx_batch.time[0]),
+                    step=int(epoch),
                     run_name=self.env.run_name,
                     stage="am_training",
                     am_train_loss=am_train_loss,
@@ -790,6 +740,13 @@ class OnPolicyRunner(object):
 
             # Save the adaptation module weights
             save_adaptation_module(self.am, self.ckpt_dir, "adapt_module_state.pkl")
+
+    def posttrain(self) -> None:
+        """
+        Fine-tune the policy on imperfectly estimated extrinsics (phase 3 in A-RMA).
+        NOTE: use_adaptive_approach must be set to True in the environment config.
+        """
+        raise NotImplementedError("Post-training is not implemented yet.\n")
 
     def evaluate(self, phase: int = 2) -> None:
         """
@@ -836,6 +793,7 @@ class OnPolicyRunner(object):
             else:
                 ext = jnp.empty((self.env.num_envs, 0))
 
+            # Initialize episode variables
             ep_ret = jnp.zeros(self.env.num_envs)
             ep_returns = jnp.zeros((self.env.num_envs, self.episode_len))
             ep_obs = jnp.zeros((self.env.num_envs, self.episode_len, self.env.obs_dim))
@@ -845,17 +803,29 @@ class OnPolicyRunner(object):
             ep_mean_extrinsic_error = jnp.zeros((self.env.num_envs, self.episode_len))
 
             # Start perturbations halfway through the evaluation
-            if eval >= self.n_evals // 2:
+            if self.env.train_with_failures and eval >= self.n_evals // 2:
                 self.env.apply_random_perturbations(
                     key=subkeys_eval[eval],
                     fraction_perturbed_envs=0.5,
                 )
+                self.env.apply_random_disturbance(
+                    key=subkeys_eval[eval],
+                    fraction_disturbed_envs=0.15,
+                )
 
             for ep in range(self.episode_len):
+                # Get actions from the agent
                 actions = self.agent.get_control_input(
                     self.env, "evaluation", jnp.concatenate([states, ext], axis=1)
                 )  # Use un-normalized states
 
+                # Update state-action history
+                state_action_history = jnp.roll(state_action_history, shift=-1, axis=1)
+                state_action_history = state_action_history.at[:, -1, :].set(
+                    jnp.concatenate([states, actions], axis=1)
+                )
+
+                # Compute and log mean errors
                 obs = self.env.get_obs()
                 tracking_mean, angle_mean, extrinsic_mean = self._compute_mean_errors(
                     obs, actions, ext
@@ -872,15 +842,12 @@ class OnPolicyRunner(object):
                         extrinsic_mean
                     )
 
+                # Update state
                 states = self.env.get_states(self.reference_point)
                 ep_obs = ep_obs.at[:, ep, :].set(states)
                 states_normalized = normalize_obs(states, ep_obs, ep)
 
-                state_action_history = jnp.roll(state_action_history, shift=-1, axis=1)
-                state_action_history = state_action_history.at[:, -1, :].set(
-                    jnp.concatenate([states, actions], axis=1)
-                )
-
+                # Update extrinsics
                 if self.env.use_adaptive_approach is True:
                     if phase == 1:
                         ext = self.env.mjx_batch.ctrl / (
@@ -893,12 +860,13 @@ class OnPolicyRunner(object):
                 else:
                     ext = jnp.empty((self.env.num_envs, 0))
 
-                rewards, terminal = self.env.transition(actions, states)
+                rewards, terminal = self.env.transition(
+                    actions, states, self.reference_point
+                )
                 ep_returns = ep_returns.at[:, ep].set(
                     self.gamma * ep_returns[:, ep - 1] + rewards
                 )
-                rewards_scaled = scale_rews(rewards, ep_returns, ep)
-                ep_ret += rewards_scaled
+                ep_ret += rewards
                 if terminal.all():  # Abort if all environments terminated
                     break
 
@@ -909,9 +877,10 @@ class OnPolicyRunner(object):
                 self.env.logger.log(
                     self.env.run_id,
                     float(self.env.mjx_batch.time[0]),
+                    step=int(eval),
                     run_name=self.env.run_name,
                     stage="evaluation",
-                    mean_scaled_episodic_returns=ep_ret.mean(),
+                    mean_episodic_returns=ep_ret.mean(),
                     num_terminal=jnp.sum(terminal),
                     mean_tracking_error=ep_mean_tracking_error.mean(),
                     mean_angle_error=ep_mean_angle_error.mean(),
@@ -926,6 +895,7 @@ class OnPolicyRunner(object):
         """
         Roll out an episode where the actions are computed from a PD controller that serves as training data.
         """
+        # Check if pretraining data already exists
         file_path = os.path.join(self.ckpt_dir, self.pretraining_data_file_name)
         if os.path.isfile(file_path):
             return
@@ -957,30 +927,36 @@ class OnPolicyRunner(object):
         else:
             ext = jnp.empty((self.env.num_envs, 0))
 
-        # Main training loop
+        # Epoch variables
         ep_returns = jnp.zeros((self.env.num_envs, self.steps_per_epoch))
         ep_obs = jnp.zeros((self.env.num_envs, self.steps_per_epoch, self.env.obs_dim))
+
+        # Main training loop
         for t in range(self.steps_per_epoch):
+            # Get value estimates from the agent
             _, v, logp = self.agent.act(
                 jnp.concatenate([states, ext], axis=1)
             )  # Use un-normalized states
             self.env.obs = self.env.get_obs()
+
+            # Compute actions from the PD controller
             a = self.pd_ctrl.get_control_input(self.env)
 
-            r, terminal = self.env.transition(a, states)
+            # Perform environment transition
+            r, terminal = self.env.transition(a, states, self.reference_point)
             ep_returns = ep_returns.at[:, t].set(self.gamma * ep_returns[:, t - 1] + r)
-            r_scaled = scale_rews(r, ep_returns, t)
-            ep_ret += r_scaled
+            ep_ret += r
             ep_len += 1
 
             # Log transition
-            buffer.store(states, a, r_scaled, v, logp, ext)  # Use un-normalized states
+            buffer.store(states, a, r, v, logp, ext)  # Use un-normalized states
 
             # Update state
             states = self.env.get_states(self.reference_point)
             ep_obs = ep_obs.at[:, t, :].set(states)
             states_normalized = normalize_obs(states, ep_obs, t)
 
+            # Update extrinsics
             if self.env.use_adaptive_approach is True:
                 ext = self.env.mjx_batch.ctrl / (
                     a + 1e-8 * jnp.ones_like(self.env.mjx_batch.ctrl)
@@ -1073,21 +1049,24 @@ class OnPolicyRunner(object):
         """
         Create the checkpoint file names for the pretraining and training data and states.
         """
-        if self.env.use_adaptive_approach:
+
+        # Build filename components
+        adaptive = "adaptive" if self.env.use_adaptive_approach else None
+        pretrained = "pretrained" if self.env.use_pretrained else None
+        nominal = None if self.env.train_with_failures else "nominal"
+
+        def build_name(prefix: str) -> str:
+            parts = [prefix, adaptive, pretrained, nominal]
+            return "_".join(p for p in parts if p) + ".pkl"
+
+        # Pretraining filenames
+        if adaptive:
             self.pretraining_data_file_name = "pretraining_data_adaptive.pkl"
             self.pretraining_state_file_name = "pretraining_state_adaptive.pkl"
-            if self.env.use_pretrained:
-                self.training_data_file_name = "training_data_adaptive_pretrained.pkl"
-                self.training_state_file_name = "training_state_adaptive_pretrained.pkl"
-            else:
-                self.training_data_file_name = "training_data_adaptive.pkl"
-                self.training_state_file_name = "training_state_adaptive.pkl"
         else:
             self.pretraining_data_file_name = "pretraining_data.pkl"
             self.pretraining_state_file_name = "pretraining_state.pkl"
-            if self.env.use_pretrained:
-                self.training_data_file_name = "training_data_pretrained.pkl"
-                self.training_state_file_name = "training_state_pretrained.pkl"
-            else:
-                self.training_data_file_name = "training_data.pkl"
-                self.training_state_file_name = "training_state.pkl"
+
+        # Training filenames
+        self.training_data_file_name = build_name("training_data")
+        self.training_state_file_name = build_name("training_state")

@@ -6,10 +6,8 @@ import mujoco
 import mujoco.viewer
 from mujoco import mjx
 
-# from mujoco.mjx import viewer
-import wandb
-
 from smallsat_sim.envs.base_env import BaseEnv
+from smallsat_sim.envs.disturbances import DisturbanceStatus
 from smallsat_sim.utils import xml_parser_lightweight
 
 
@@ -24,6 +22,9 @@ class VecEnv(BaseEnv):
 
         # Number of environments running in parallel
         self.num_envs = self.env_cfg.control.RL.num_envs
+
+        # Flag to decide whether to enable random failures during training (and evaluation)
+        self.train_with_failures = self.env_cfg.control.RL.train_with_failures
 
         # Flag to decide whether to used the pretrained actor and critic networks
         self.use_pretrained = self.env_cfg.control.RL.use_pretrained
@@ -51,6 +52,9 @@ class VecEnv(BaseEnv):
         # Max. offset from the initial position at the start
         self.max_start_offset = self.env_cfg.Bodies.max_start_offset
 
+        # Load mission tolerances, reward weights, and penalty weights
+        self._load_vec_env_hyperparams()
+
         # Perform a Just In Time compilation of mjx.step() so that it runs efficiently on GPU
         self.jit_step = jax.jit(jax.vmap(mjx.step, in_axes=(None, 0)))
         self.jit_forward = jax.jit(jax.vmap(mjx.forward, in_axes=(None, 0)))
@@ -70,8 +74,6 @@ class VecEnv(BaseEnv):
         """
         Reset the agent in all the environment instances, while randomizing the initial position.
         """
-        self.prev_shaping = None
-
         # Updating only qpos and qvel, not resetting all of mj_data
         self.mjx_data = self.mjx_data.replace(qpos=self.init_qpos[0])
         rng = self.next_rng_keys(self.num_envs)
@@ -84,7 +86,7 @@ class VecEnv(BaseEnv):
                 minval=-self.max_start_offset,
                 maxval=self.max_start_offset,
             )
-            random_quat = self._get_random_quaternion(quat_key)
+            random_quat = self._get_random_quat(quat_key)
             return self.mjx_data.replace(
                 qpos=jnp.concatenate([random_pos, random_quat])
             )
@@ -98,70 +100,68 @@ class VecEnv(BaseEnv):
         self,
         actions: jnp.ndarray,
         states: jnp.ndarray,
+        next_waypoint: jnp.ndarray,
         iter: int | None = None,
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         """
-        Apply input action on the environment. Returns the rewards and wether the terminal state has been reached.
+        Apply input action on the environment. Returns the rewards and whether the terminal state has been reached.
         """
+
+        def phi(st):
+            """
+            Potential for reward shaping.
+            """
+            # Reward kernels (normalize errors by tolerances)
+            pos_term = jnp.exp(-jnp.sum((st[:, 0:3] / self.sigma_pos) ** 2, axis=1))
+            vel_term = jnp.exp(-jnp.sum((st[:, 6:9] / self.sigma_vel) ** 2, axis=1))
+            att_term = jnp.exp(
+                -((jnp.linalg.norm(st[:, 3:6], axis=1) / self.sigma_att) ** 2)
+            )
+            ang_term = jnp.exp(-jnp.sum((st[:, 9:12] / self.sigma_angvel) ** 2, axis=1))
+
+            return (
+                self.w_pos * pos_term
+                + self.w_vel * vel_term
+                + self.w_att * att_term
+                + self.w_angvel * ang_term
+            )
+
+        # Pre-step potential
+        phi_s = phi(states)
+
+        # Step the environment
         self.step(input=actions)
 
-        # Reward shaping
-        rewards = jnp.zeros(self.num_envs)
+        # Get new states
+        next_states = self.get_states(next_waypoint)
 
-        pos_error = states[:, 0:3]
-        att_error_vec = states[:, 3:6]
-        body_vel = states[:, 6:9]
-        ang_vel = states[:, 9:12]
-
-        squared_pos_error = jnp.sum(pos_error**2, axis=1)
-        manhattan_dist2goal = jnp.sum(jnp.abs(pos_error), axis=1)
-        attitude_error_norm = jnp.linalg.norm(att_error_vec, axis=1)
-        attitude_dev = jnp.exp(-1.0 * attitude_error_norm**2)
-        squared_body_vel = jnp.sum(body_vel**2, axis=1)
-        squared_angvel = jnp.sum(ang_vel**2, axis=1)
-        control_effort = jnp.sum(actions**2, axis=1)
-
-        # Curriculum-based training
-        if (
-            iter is not None and iter < 25
-        ):  # Assumption: train for more than this many epochs
-            shaping = (
-                -3 * squared_pos_error
-                - 2 * manhattan_dist2goal
-                - 0.5 * squared_body_vel
-                - 1 * squared_angvel
-                + 0.1 * attitude_dev
-                - 0.01 * control_effort
-            )
-        else:
-            shaping = (
-                -3 * squared_pos_error
-                - 2 * manhattan_dist2goal
-                - 0.5 * squared_body_vel
-                - 1 * squared_angvel
-                + 0.1 * attitude_dev
-                - 0.01 * control_effort
-            )
-
-        # Penalize control actions outside of the bounds (approximate upper bound by largest possible value)
-        lb_input = 0
-        lb_mask = actions < lb_input
-        shaping += 0.02 * jnp.sum((actions - lb_input) * lb_mask, axis=1)
-        ub_input = 0.6
-        ub_mask = actions > ub_input
-        shaping -= 0.02 * jnp.sum((actions - ub_input) * ub_mask, axis=1)
+        # Post-step potential
+        phi_s_next = phi(next_states)
 
         # Check if the agent is out-of-bounds or has reached the goal
         is_terminal = jax.vmap(self._in_terminal_set)
-        terminal = is_terminal(states)
+        terminal = is_terminal(next_states)
 
-        # If the agent is in the terminal set, they should stop
-        linear_speed_sq = jnp.sum(body_vel**2, axis=1)
-        shaping += jnp.where(terminal, 0.1 * linear_speed_sq, 0)
+        # Penalties
+        fuel_pen = jnp.sum(jnp.abs(actions), axis=1)
+        lin_speed_sq = jnp.sum(next_states[:, 6:9] ** 2, axis=1)
+        ang_speed_sq = jnp.sum(next_states[:, 9:12] ** 2, axis=1)
+        vel_pen_terminal = jnp.where(
+            terminal, self.lam_speed_terminal * lin_speed_sq, 0.0
+        )
+        angvel_pen_terminal = jnp.where(
+            terminal, self.lam_ang_speed_terminal * ang_speed_sq, 0.0
+        )
+        fuel_pen_terminal = jnp.where(terminal, self.lam_fuel_terminal * fuel_pen, 0.0)
+        penalties = (
+            self.lam_fuel * fuel_pen
+            + vel_pen_terminal
+            + angvel_pen_terminal
+            + fuel_pen_terminal
+        )
 
-        if self.prev_shaping is not None:
-            rewards = shaping - self.prev_shaping
-        self.prev_shaping = shaping
+        # Reward shaping
+        rewards = phi_s_next - phi_s - penalties
 
         return rewards, terminal
 
@@ -245,7 +245,7 @@ class VecEnv(BaseEnv):
 
         delta_pos = self.mjx_batch.qpos[:, 0:3] - ref_pos
 
-        get_error_quat = jax.vmap(self._get_error_quaternion, in_axes=(0, 0))
+        get_error_quat = jax.vmap(self._get_error_quat_logvec, in_axes=(0, 0))
         attitude_error = get_error_quat(self.mjx_batch.qpos[:, 3:7], ref_quat)
 
         states = jnp.concatenate(
@@ -334,6 +334,36 @@ class VecEnv(BaseEnv):
         self.perturbations.perturbations[4].register_perturbation(
             subkeys[4], thrust_instability_envs
         )
+
+    def apply_random_disturbance(self, key, fraction_disturbed_envs: float) -> None:
+        """
+        Apply the constant force disturbance to a subset of environments.
+        """
+        if self.disturbances is None:
+            return
+
+        clamped_fraction = max(0.0, min(1.0, fraction_disturbed_envs))
+        num_disturbed = int(self.num_envs * clamped_fraction)
+        if num_disturbed == 0:
+            return
+
+        env_indices = jnp.arange(self.num_envs)
+        permuted_indices = jax.random.permutation(key, env_indices)
+        selected_indices = permuted_indices[:num_disturbed]
+
+        constant_force_disturbance = None
+        for disturbance in self.disturbances.disturbances:
+            if (
+                getattr(disturbance, "failure_type", None)
+                == DisturbanceStatus.CONSTANT_FORCE
+            ):
+                constant_force_disturbance = disturbance
+                break
+
+        if constant_force_disturbance is None:
+            return
+
+        constant_force_disturbance.const_force_disturbance(selected_indices)
 
     def _create_viewer(self, args) -> None:
         """
@@ -488,51 +518,47 @@ class VecEnv(BaseEnv):
         """
         Returns one if in terminal set, zero otherwise.
         """
-        pos_error = states[0:3]
-        eps = states[3:6]
-        eps_norm = jnp.linalg.norm(eps)
-        quat_scalar = jnp.sqrt(jnp.maximum(1.0 - jnp.minimum(1.0, eps_norm**2), 0.0))
-        angle_error = 2 * jnp.arctan2(eps_norm, quat_scalar + 1e-8)
-        pos_threshold = 0.2
-        att_threshold = 0.05  # radians (approx 2.9 degrees)
-        return jnp.logical_and(
-            jnp.linalg.norm(pos_error) <= pos_threshold,
-            angle_error <= att_threshold,
-        )
+        return jnp.linalg.norm(states[0:3]) <= self.sigma_pos
 
-    def _get_error_quaternion(
-        self, q: jnp.ndarray, q_des: jnp.ndarray, eps=1e-12
+    def _get_error_quat_logvec(
+        self, q: jnp.ndarray, q_des: jnp.ndarray, eps: float = 1e-9
     ) -> jnp.ndarray:
         """
-        Compute the quaternion attitude error between the current and desired orientations.
-
-        This function computes the right-invariant quaternion error q_e = q_des ⊗ conj(q),
-        where both input quaternions are assumed to be in the [w, x, y, z] format.
-
-        The result encodes the rotation that brings the current attitude `q` into alignment
-        with the desired attitude `q_des`. The scalar part `w` represents cos(θ/2),
-        and the vector part `e_signed` represents the rotation axis scaled by sin(θ/2),
-        where θ is the shortest rotation angle between the two orientations.
-
-        To ensure a unique and continuous representation (avoiding quaternion unwinding),
-        the sign of the vector part is flipped whenever the scalar part is negative:
-        e_signed = sign(w) * e.
+        Return SO(3) log-map (rotation vector) that rotates q -> q_des.
         """
-        q = q / jnp.maximum(jnp.linalg.norm(q), eps)
-        q_des = q_des / jnp.maximum(jnp.linalg.norm(q_des), eps)
-        qc = jnp.array([q[0], -q[1], -q[2], -q[3]])
 
-        # Multiply q_des ⊗ qc
-        w = q_des[0] * qc[0] - q_des[1] * qc[1] - q_des[2] * qc[2] - q_des[3] * qc[3]
-        ex = q_des[0] * qc[1] + q_des[1] * qc[0] + q_des[2] * qc[3] - q_des[3] * qc[2]
-        ey = q_des[0] * qc[2] - q_des[1] * qc[3] + q_des[2] * qc[0] + q_des[3] * qc[1]
-        ez = q_des[0] * qc[3] + q_des[1] * qc[2] - q_des[2] * qc[1] + q_des[3] * qc[0]
+        # Normalize
+        def _unit(a):
+            return a / (jnp.linalg.norm(a) + eps)
+
+        q = _unit(q)
+        q_des = _unit(q_des)
+
+        # Error quaternion: q_e = q_des ⊗ conj(q)
+        w, x, y, z = q
+        qc = jnp.array([w, -x, -y, -z])
+        w2, x2, y2, z2 = q_des
+        we = w2 * qc[0] - x2 * qc[1] - y2 * qc[2] - z2 * qc[3]
+        ex = w2 * qc[1] + x2 * qc[0] + y2 * qc[3] - z2 * qc[2]
+        ey = w2 * qc[2] - x2 * qc[3] + y2 * qc[0] + z2 * qc[1]
+        ez = w2 * qc[3] + x2 * qc[2] - y2 * qc[1] + z2 * qc[0]
         e = jnp.stack([ex, ey, ez])
-        e_signed = jnp.where(w < 0.0, -e, e)
 
-        return e_signed
+        # Enforce shortest path / continuity: flip WHOLE quaternion if we < 0
+        sign = jnp.where(we < 0.0, -1.0, 1.0)
+        we = sign * we
+        e = sign * e
 
-    def _get_random_quaternion(self, rng) -> jnp.ndarray:
+        # log-map: axis * theta, with ||logvec|| = theta in [0, pi]
+        e_norm = jnp.linalg.norm(e)  # == sin(theta/2)
+        we_abs = jnp.clip(jnp.abs(we), 0.0, 1.0)
+        theta = 2.0 * jnp.arctan2(e_norm, we_abs)
+        axis = e / (e_norm + eps)
+        logvec = axis * theta
+
+        return logvec
+
+    def _get_random_quat(self, rng) -> jnp.ndarray:
         """
         Return a random quaternion.
         """
@@ -561,3 +587,25 @@ class VecEnv(BaseEnv):
         quaternion = quaternion / jnp.linalg.norm(quaternion)
 
         return quaternion
+
+    def _load_vec_env_hyperparams(self) -> None:
+        """
+        Load VecEnv-specific hyperparams.
+        """
+        # Mission tolerances
+        self.sigma_pos = self.env_cfg.control.RL.sigma_pos
+        self.sigma_vel = self.env_cfg.control.RL.sigma_vel
+        self.sigma_att = self.env_cfg.control.RL.sigma_att
+        self.sigma_angvel = self.env_cfg.control.RL.sigma_angvel
+
+        # Reward weights
+        self.w_pos = self.env_cfg.control.RL.w_pos
+        self.w_vel = self.env_cfg.control.RL.w_vel
+        self.w_att = self.env_cfg.control.RL.w_att
+        self.w_angvel = self.env_cfg.control.RL.w_angvel
+
+        # Penalty weights
+        self.lam_fuel = self.env_cfg.control.RL.lam_fuel
+        self.lam_speed_terminal = self.env_cfg.control.RL.lam_speed_terminal
+        self.lam_ang_speed_terminal = self.env_cfg.control.RL.lam_ang_speed_terminal
+        self.lam_fuel_terminal = self.env_cfg.control.RL.lam_fuel_terminal

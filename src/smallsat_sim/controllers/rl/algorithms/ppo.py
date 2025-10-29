@@ -23,11 +23,15 @@ def actor_loss_fn(
     actions: jnp.ndarray,
     logp: jnp.ndarray,
     clip_ratio: float,
+    entropy_coef: float,
 ):
-    _, logp_a = actor_model.forward(obs_extrinsics, actions)
+    pi, logp_a = actor_model.forward(obs_extrinsics, actions)
     ratio = jnp.exp(logp_a - logp)
     clipped_ratio = jax.lax.clamp(1 - clip_ratio, ratio, 1 + clip_ratio)
-    return -jax.lax.min(ratio * tdres, clipped_ratio * tdres).mean()
+    surrogate = jax.lax.min(ratio * tdres, clipped_ratio * tdres)
+    entropy_scale = jnp.asarray(entropy_coef, dtype=tdres.dtype)
+    entropy_bonus = entropy_scale * pi.entropy()
+    return -(surrogate.mean() + entropy_bonus.mean())
 
 
 # Define the critic loss
@@ -128,19 +132,20 @@ class PPO(BaseAgent):
         if minibatch:
             epoch_keys = jax.random.split(key, self.actor_training_epochs)
             actor_graphdef, actor_state = nnx.split((self.actor, self.actor_optimizer))
-            actor_loss, actor_state = _actor_epochs_jit(
-                actor_graphdef,
-                actor_state,
-                epoch_keys,
-                obs_extrinsics,
-                actions,
-                tdres,
-                logp,
-                self.clip_ratio,
-                self.target_kl,
-                self.num_minibatches,
-                self.minibatch_size,
-            )
+                actor_loss, actor_state = _actor_epochs_jit(
+                    actor_graphdef,
+                    actor_state,
+                    epoch_keys,
+                    obs_extrinsics,
+                    actions,
+                    tdres,
+                    logp,
+                    self.clip_ratio,
+                    self.entropy_coef,
+                    self.target_kl,
+                    self.num_minibatches,
+                    self.minibatch_size,
+                )
             nnx.update((self.actor, self.actor_optimizer), actor_state)
         else:
             actor_loss = jnp.array(0.0, dtype=tdres.dtype)
@@ -155,6 +160,7 @@ class PPO(BaseAgent):
                         actions,
                         logp,
                         self.clip_ratio,
+                        self.entropy_coef,
                     )
 
                 actor_loss, grads = nnx.value_and_grad(loss_fn)(actor)
@@ -244,6 +250,7 @@ class PPO(BaseAgent):
             logp,
             returns,
             self.clip_ratio,
+            self.entropy_coef,
             self.target_kl,
             self.num_minibatches,
             self.minibatch_size,
@@ -272,6 +279,7 @@ class PPO(BaseAgent):
         self.lam = self.env.env_cfg.control.RL.PPO.lam
         self.actor_lr = self.env.env_cfg.control.RL.PPO.actor_lr
         self.critic_lr = self.env.env_cfg.control.RL.PPO.critic_lr
+        self.entropy_coef = self.env.env_cfg.control.RL.PPO.entropy_coef
 
     def _log(
         self,
@@ -325,7 +333,7 @@ def _shuffle_and_batch(
     return trimmed.reshape((num_minibatches, minibatch_size) + trimmed.shape[1:])
 
 
-@partial(jax.jit, static_argnums=(9, 10))
+@partial(jax.jit, static_argnums=(10, 11))
 def _actor_epochs_jit(
     graphdef,
     state,
@@ -335,6 +343,7 @@ def _actor_epochs_jit(
     advantages: jnp.ndarray,
     logp: jnp.ndarray,
     clip_ratio: float,
+    entropy_coef: float,
     target_kl: float,
     num_minibatches: int,
     minibatch_size: int,
@@ -401,6 +410,7 @@ def _actor_epochs_jit(
                             act_mb,
                             logp_mb,
                             clip_ratio,
+                            entropy_coef,
                         )
 
                     loss, grads = nnx.value_and_grad(loss_fn)(actor)
@@ -482,7 +492,7 @@ def _critic_epochs_jit(
     return last_loss, state
 
 
-@partial(jax.jit, static_argnums=(10, 11))
+@partial(jax.jit, static_argnums=(11, 12))
 def _actor_critic_epochs_jit(
     graphdef,
     state,
@@ -493,6 +503,7 @@ def _actor_critic_epochs_jit(
     logp: jnp.ndarray,
     returns: jnp.ndarray,
     clip_ratio: float,
+    entropy_coef: float,
     target_kl: float,
     num_minibatches: int,
     minibatch_size: int,
@@ -588,6 +599,7 @@ def _actor_critic_epochs_jit(
                             act_mb,
                             logp_mb,
                             clip_ratio,
+                            entropy_coef,
                         )
 
                     actor_loss, actor_grads = nnx.value_and_grad(actor_loss_local)(

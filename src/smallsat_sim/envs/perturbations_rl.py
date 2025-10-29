@@ -6,7 +6,6 @@ from copy import deepcopy
 import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
-import gpjax as gpx
 from scipy.interpolate import interp1d
 
 from smallsat_sim.envs.base_env_config import BaseEnvConfig
@@ -89,8 +88,8 @@ class Perturbation(ABC):
         """
         Return array with envs where a failure occurs. If fraction_perturbed_envs and num_envs are too low, no envs will be perturbed.
         """
-        if isinstance(perturbed_envs, jnp.ndarray):
-            return perturbed_envs
+        if perturbed_envs is not None:
+            return jnp.asarray(perturbed_envs, dtype=jnp.int32)
 
         fraction = float(
             jax.device_get(jnp.clip(jnp.asarray(fraction_perturbed_envs), 0.0, 1.0))
@@ -124,8 +123,8 @@ class Perturbation(ABC):
         Return thruster indices to fail.
         """
 
-        if isinstance(perturbed_thrusters, jnp.ndarray):
-            return perturbed_thrusters
+        if perturbed_thrusters is not None:
+            return jnp.asarray(perturbed_thrusters, dtype=jnp.int32)
 
         if perturbed_envs.size == 0:
             return jnp.array([], dtype=jnp.int32)
@@ -492,13 +491,14 @@ class ThrusterFailureSimulator:
             lengthscale=0.2,
             outputscale=1.0,
         ):
-            train_x = jnp.asarray(train_x, dtype=jnp.float64).reshape(-1, 1)
-            train_y = jnp.asarray(train_y, dtype=jnp.float64).reshape(-1, 1)
+            dtype = jnp.float32
+            train_x = jnp.asarray(train_x, dtype=dtype).reshape(-1, 1)
+            train_y = jnp.asarray(train_y, dtype=dtype).reshape(-1, 1)
 
             self._train_x = train_x
             self._kernel = self._choose_kernel(kernel_type, lengthscale, outputscale)
             self._mean_value = float(jnp.mean(train_y))
-            self._jitter = jnp.asarray(1e-8, dtype=jnp.float64)
+            self._jitter = jnp.asarray(1e-6, dtype=dtype)
 
             centered_y = train_y - self._mean_value
             k_xx = self._kernel(train_x, train_x)
@@ -510,16 +510,36 @@ class ThrusterFailureSimulator:
             self._alpha = jsp.linalg.cho_solve((self._train_chol, True), centered_y)
 
         def _choose_kernel(self, kernel_type, lengthscale, outputscale):
-            lengthscale = jnp.asarray(lengthscale, dtype=jnp.float64)
-            variance = jnp.asarray(outputscale, dtype=jnp.float64)
+            dtype = jnp.float32
+            lengthscale = jnp.asarray(lengthscale, dtype=dtype)
+            variance = jnp.asarray(outputscale, dtype=dtype)
+
+            def _rbf(x, y):
+                x = jnp.asarray(x, dtype=dtype)
+                y = jnp.asarray(y, dtype=dtype)
+                sq_dist = jnp.sum((x[:, None, :] - y[None, :, :]) ** 2, axis=-1)
+                return variance * jnp.exp(-0.5 * sq_dist / (lengthscale**2 + 1e-12))
+
+            def _matern32(x, y):
+                x = jnp.asarray(x, dtype=dtype)
+                y = jnp.asarray(y, dtype=dtype)
+                scaled = jnp.sqrt(
+                    jnp.sum(
+                        ((x[:, None, :] - y[None, :, :]) / (lengthscale + 1e-12)) ** 2,
+                        axis=-1,
+                    )
+                )
+                sqrt3 = jnp.sqrt(jnp.asarray(3.0, dtype=dtype))
+                return variance * (1.0 + sqrt3 * scaled) * jnp.exp(-sqrt3 * scaled)
+
             if kernel_type == "RBF":
-                return gpx.kernels.RBF(lengthscale=lengthscale, variance=variance)
+                return _rbf
             elif kernel_type == "Matern":
-                return gpx.kernels.Matern32(lengthscale=lengthscale, variance=variance)
+                return _matern32
             raise ValueError(f"Unsupported kernel type: {kernel_type}")
 
         def forward(self, x):
-            test_x = jnp.asarray(x, dtype=jnp.float64).reshape(-1, 1)
+            test_x = jnp.asarray(x, dtype=jnp.float32).reshape(-1, 1)
 
             k_xt = self._kernel(self._train_x, test_x)
             predictive_mean = self._mean_value + jnp.matmul(

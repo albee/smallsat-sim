@@ -19,6 +19,7 @@ class AstrobeeEnvVectorized(VecEnv):
         run_name: str = "default",
         init_pos: jnp.ndarray | None = None,
         max_start_offset: float | None = None,
+        train_with_failures: bool | None = None,
         use_pretrained: bool | None = None,
         use_adaptive_approach: bool | None = None,
     ) -> None:
@@ -33,6 +34,8 @@ class AstrobeeEnvVectorized(VecEnv):
             self.env_cfg.Bodies.bodies_list[0].pos = init_pos
         if max_start_offset is not None:
             self.env_cfg.Bodies.max_start_offset = max_start_offset
+        if train_with_failures is not None:
+            self.env_cfg.control.RL.train_with_failures = train_with_failures
         if use_pretrained is not None:
             self.env_cfg.control.RL.use_pretrained = use_pretrained
         if use_adaptive_approach is not None:

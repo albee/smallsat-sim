@@ -59,6 +59,7 @@ class RLController(object):
         phase: int = 2,
         test_pd: bool = False,
         perturbation_distribution: jnp.ndarray | None = None,
+        apply_disturbances: bool = False,
     ) -> None:
         """
         Control the agent using the previously trained RL controller.
@@ -118,16 +119,18 @@ class RLController(object):
             sim_time = self.env.mjx_batch.time[0]
 
             # Start perturbations after 100 steps
-            if (
-                self.deployment_len >= 100
-                and step == 100
-                and perturbation_distribution is not None
-            ):
-                self.env.apply_random_perturbations(
-                    key=self._take_keys(),
-                    fraction_perturbed_envs=1.0,
-                    perturbation_distribution=perturbation_distribution,
-                )
+            if self.deployment_len >= 100 and step == 100:
+                if perturbation_distribution is not None:
+                    self.env.apply_random_perturbations(
+                        key=self._take_keys(),
+                        fraction_perturbed_envs=1.0,
+                        perturbation_distribution=perturbation_distribution,
+                    )
+                elif apply_disturbances:
+                    self.env.apply_random_disturbance(
+                        key=self._take_keys(),
+                        fraction_disturbed_envs=1.0,
+                    )
 
             if hasattr(self.env, "renderer") and self.env.renderer is not None:
                 self.env._visualize_renderer(self.planner.reference_point_list)
@@ -143,13 +146,7 @@ class RLController(object):
                     self.pd_ctrl.get_control_input(self.env, next_waypoint)
                 )
 
-            next_waypoint = self.planner.get_reference(self.env.get_obs())
-            states = self.env.get_states(next_waypoint)
-            if step == (num_saved_obs):
-                last_obs = jnp.roll(last_obs, num_saved_obs - 1, axis=1)
-            last_obs = last_obs.at[:, step, :].set(states)
-            states_normalized = normalize_obs(states, last_obs, step)
-
+            # Update state-action history
             state_action = jnp.expand_dims(
                 jnp.concatenate([states, actions], axis=1), axis=1
             )
@@ -157,6 +154,15 @@ class RLController(object):
                 [state_action_history[:, 1:, :], state_action], axis=1
             )
 
+            # Update next waypoint and states
+            next_waypoint = self.planner.get_reference(self.env.get_obs())
+            states = self.env.get_states(next_waypoint)
+            if step == (num_saved_obs):
+                last_obs = jnp.roll(last_obs, num_saved_obs - 1, axis=1)
+            last_obs = last_obs.at[:, step, :].set(states)
+            states_normalized = normalize_obs(states, last_obs, step)
+
+            # Compute extrinsics
             if self.env.use_adaptive_approach is True:
                 if phase == 1:
                     ext = self.env.mjx_batch.ctrl / (
@@ -169,7 +175,7 @@ class RLController(object):
             else:
                 ext = jnp.empty((self.env.num_envs, 0))
 
-            _, terminal = self.env.transition(actions, states)
+            _, _ = self.env.transition(actions, states)
             step += 1
 
             if self.planner.completed_path.all():
@@ -177,15 +183,15 @@ class RLController(object):
 
     def _get_training_state_file_name(self) -> None:
         """
-        Get the checkpoint file names for the training state.
+        Set the checkpoint file name for the training state.
         """
+        parts = ["training_state"]
+
         if self.env.use_adaptive_approach:
-            if self.env.use_pretrained:
-                self.ckpt_filename = "training_state_adaptive_pretrained.pkl"
-            else:
-                self.ckpt_filename = "training_state_adaptive.pkl"
-        else:
-            if self.env.use_pretrained:
-                self.ckpt_filename = "training_state_pretrained.pkl"
-            else:
-                self.ckpt_filename = "training_state.pkl"
+            parts.append("adaptive")
+        if self.env.use_pretrained:
+            parts.append("pretrained")
+        if not self.env.train_with_failures:
+            parts.append("nominal")
+
+        self.ckpt_filename = "_".join(parts) + ".pkl"

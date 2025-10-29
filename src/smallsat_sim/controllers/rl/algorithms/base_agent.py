@@ -33,8 +33,19 @@ class BaseAgent(BaseController):
         self.num_layers = 2
         self.layer_width = 64
         hidden_sizes = ([self.layer_width] * self.num_layers)[0]
+        thruster_ranges = [
+            thruster.forcerange for thruster in env.model_cfg.Thrusters.thruster_list
+        ]
+        act_low = jnp.asarray([fr[0] for fr in thruster_ranges], dtype=jnp.float32)
+        act_high = jnp.asarray([fr[1] for fr in thruster_ranges], dtype=jnp.float32)
         self.actor = Actor(
-            env.obs_dim, env.act_dim, hidden_sizes, activation, env.ext_dim
+            env.obs_dim,
+            env.act_dim,
+            hidden_sizes,
+            activation,
+            env.ext_dim,
+            act_low,
+            act_high,
         )
         self.critic = Critic(env.obs_dim, hidden_sizes, activation, env.ext_dim)
         self.key = rng_key
@@ -47,7 +58,8 @@ class BaseAgent(BaseController):
         """
         pi, _ = self.actor.forward(states_ext)
         self.key, subkey = jax.random.split(self.key)
-        actions = pi.sample(seed=subkey)
+        pre_actions = pi.sample(seed=subkey)
+        actions = self.actor.apply_action_bounds(pre_actions)
         values = self.critic.forward(states_ext)
         logp = jnp.asarray(self.actor._log_prob_from_dist(pi, actions))
 
@@ -65,7 +77,7 @@ class BaseAgent(BaseController):
         if stage is None or obs_extrinsics is None:
             raise ValueError("stage and obs_extrinsics must be provided")
 
-        ctrl_input = self.actor.mu_net(obs_extrinsics)
+        ctrl_input = self.actor.deterministic_action(obs_extrinsics)
 
         if stage != "am_training" and stage != "evaluation":
             self._log(
