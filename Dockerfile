@@ -137,10 +137,6 @@ RUN if [ "$USE_CUDA" = "1" ]; then \
         pip install "jax[cuda12]==0.6.2" --force-reinstall --no-cache-dir; \
     fi
 
-# Remove Torch-based dependencies when building CUDA-enabled images
-RUN if [ "$USE_CUDA" = "1" ]; then \
-        pip uninstall -y torch torchvision gpytorch || true; \
-    fi
 
 # Only set for arm64
 # ENV LD_PRELOAD="/usr/local/lib/python3.10/dist-packages/torch.libs/libgomp-f3febf51.so.1.0.0 /lib/aarch64-linux-gnu/libGLdispatch.so.0"
