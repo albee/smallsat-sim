@@ -283,7 +283,6 @@ class OnPolicyRunner(object):
             jnp.zeros(self.env.num_envs),
             0,
         )
-        states_normalized = states
         episode_counter = 0
 
         if self.env.use_adaptive_approach is True:
@@ -312,20 +311,12 @@ class OnPolicyRunner(object):
                     + (0.15 - 0.05) * max(ramp_progress, 0.0),
                 )
 
-            # Epoch variables
-            ep_returns = jnp.zeros((self.env.num_envs, self.steps_per_epoch))
-            ep_obs = jnp.zeros(
-                (self.env.num_envs, self.steps_per_epoch, self.env.obs_dim)
-            )
-
-            # For logging mean errors
-            ep_mean_tracking_error = jnp.zeros(
-                (self.env.num_envs, self.steps_per_epoch)
-            )
-            ep_mean_angle_error = jnp.zeros((self.env.num_envs, self.steps_per_epoch))
-            ep_mean_extrinsic_error = jnp.zeros(
-                (self.env.num_envs, self.steps_per_epoch)
-            )
+            # Accumulate rollout stats to emit once per epoch
+            epoch_tracking_history = []
+            epoch_angle_history = []
+            epoch_extrinsic_history = []
+            epoch_terminal_flags = []
+            epoch_episode_returns = []
 
             for t in range(self.steps_per_epoch):
                 # Get actions from the agent
@@ -338,25 +329,19 @@ class OnPolicyRunner(object):
                 tracking_mean, angle_mean, extrinsic_mean = self._compute_mean_errors(
                     obs, a, ext
                 )
-                ep_mean_tracking_error = ep_mean_tracking_error.at[:, t].set(
-                    tracking_mean
-                )
-                ep_mean_angle_error = ep_mean_angle_error.at[:, t].set(angle_mean)
+                epoch_tracking_history.append(tracking_mean)
+                epoch_angle_history.append(angle_mean)
                 if (
                     self.env.use_adaptive_approach is True
                     and extrinsic_mean is not None
                 ):
-                    ep_mean_extrinsic_error = ep_mean_extrinsic_error.at[:, t].set(
-                        extrinsic_mean
-                    )
+                    epoch_extrinsic_history.append(extrinsic_mean)
 
                 # Perform environment transition
                 r, terminal = self.env.transition(
                     a, states, self.reference_point, epoch
                 )
-                ep_returns = ep_returns.at[:, t].set(
-                    self.gamma * ep_returns[:, t - 1] + r
-                )
+                epoch_terminal_flags.append(terminal)
                 ep_ret += r
                 ep_len += 1
 
@@ -365,8 +350,6 @@ class OnPolicyRunner(object):
 
                 # Update state
                 states = self.env.get_states(self.reference_point)
-                ep_obs = ep_obs.at[:, t, :].set(states)
-                states_normalized = normalize_obs(states, ep_obs, t)
 
                 # Update extrinsics
                 if self.env.use_adaptive_approach is True:
@@ -392,14 +375,8 @@ class OnPolicyRunner(object):
                         v = jnp.zeros(self.env.num_envs)
 
                     buffer.end_traj(v)
+                    epoch_episode_returns.append(ep_ret.mean())
 
-                    # Log the mean scaled episodic returns
-                    if self.env.use_wandb:
-                        wandb.log(
-                            {
-                                "mean_episodic_returns": ep_ret.mean(),
-                            }
-                        )
                     if self.agent.has_logger:
                         self.env.logger.log(
                             self.env.run_id,
@@ -407,7 +384,7 @@ class OnPolicyRunner(object):
                             step=episode_counter,
                             run_name=self.env.run_name,
                             stage="policy_training",
-                            mean_episodic_returns=ep_ret.mean(),
+                            mean_episodic_returns=float(ep_ret.mean()),
                         )
 
                     self.env.reset()
@@ -417,7 +394,6 @@ class OnPolicyRunner(object):
                         jnp.zeros(self.env.num_envs),
                         0,
                     )
-                    states_normalized = states
 
                     if self.env.use_adaptive_approach is True:
                         ext = jnp.ones_like(
@@ -431,6 +407,31 @@ class OnPolicyRunner(object):
             # Get the data from the training loop and save it
             data = buffer.get()
             save_training_data(self.ckpt_dir, self.training_data_file_name, data)
+
+            tracking_error_epoch = (
+                jnp.stack(epoch_tracking_history).mean()
+                if epoch_tracking_history
+                else jnp.array(0.0)
+            )
+            angle_error_epoch = (
+                jnp.stack(epoch_angle_history).mean()
+                if epoch_angle_history
+                else jnp.array(0.0)
+            )
+            if self.env.use_adaptive_approach and epoch_extrinsic_history:
+                extrinsic_error_epoch = jnp.stack(epoch_extrinsic_history).mean()
+            else:
+                extrinsic_error_epoch = jnp.array(0.0)
+            terminal_count_epoch = (
+                jnp.stack(epoch_terminal_flags).sum()
+                if epoch_terminal_flags
+                else jnp.array(0.0)
+            )
+            mean_ep_return_epoch = (
+                jnp.stack(epoch_episode_returns).mean()
+                if epoch_episode_returns
+                else jnp.array(0.0)
+            )
 
             obs = data["obs"].reshape(-1, self.env.obs_dim)
             actions = data["act"].reshape(-1, self.env.act_dim)
@@ -473,12 +474,20 @@ class OnPolicyRunner(object):
             if self.env.use_wandb:
                 wandb.log(
                     {
-                        "mean_rewards": rews.mean(),
-                        "actor_loss": actor_loss,
-                        "critic_loss": critic_loss,
-                        "num_terminal": jnp.sum(terminal),
-                        "mean_log_std": self.agent.actor.log_std.value.mean(),
-                        "mean_std": jnp.exp(self.agent.actor.log_std.value).mean(),
+                        "mean_rewards": float(rews.mean()),
+                        "actor_loss": float(actor_loss),
+                        "critic_loss": float(critic_loss),
+                        "mean_episodic_returns": float(mean_ep_return_epoch),
+                        "num_terminal": float(terminal_count_epoch),
+                        "mean_log_std": float(
+                            self.agent.actor.log_std.value.mean()
+                        ),
+                        "mean_std": float(
+                            jnp.exp(self.agent.actor.log_std.value).mean()
+                        ),
+                        "mean_tracking_error": float(tracking_error_epoch),
+                        "mean_angle_error": float(angle_error_epoch),
+                        "mean_extrinsic_error": float(extrinsic_error_epoch),
                     }
                 )
 
@@ -490,15 +499,17 @@ class OnPolicyRunner(object):
                     step=int(epoch),
                     run_name=self.env.run_name,
                     stage="policy_training",
-                    mean_rewards=rews.mean(),
-                    actor_loss=actor_loss,
-                    critic_loss=critic_loss,
-                    num_terminal=jnp.sum(terminal),
-                    mean_log_std=self.agent.actor.log_std.value.mean(),
-                    mean_std=jnp.exp(self.agent.actor.log_std.value).mean(),
-                    mean_tracking_error=ep_mean_tracking_error.mean(),
-                    mean_angle_error=ep_mean_angle_error.mean(),
-                    mean_extrinsic_error=ep_mean_extrinsic_error.mean(),
+                    mean_rewards=float(rews.mean()),
+                    actor_loss=float(actor_loss),
+                    critic_loss=float(critic_loss),
+                    num_terminal=float(terminal_count_epoch),
+                    mean_log_std=float(self.agent.actor.log_std.value.mean()),
+                    mean_std=float(
+                        jnp.exp(self.agent.actor.log_std.value).mean()
+                    ),
+                    mean_tracking_error=float(tracking_error_epoch),
+                    mean_angle_error=float(angle_error_epoch),
+                    mean_extrinsic_error=float(extrinsic_error_epoch),
                 )
 
             # Save the trained actor and critic network weights
