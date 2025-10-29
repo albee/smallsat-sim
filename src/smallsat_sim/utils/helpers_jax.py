@@ -284,13 +284,49 @@ def train_val_split(
 
 
 def _trim_and_reshape(X, y, seq_len=50):
-    keep = (X.shape[0] // seq_len) * seq_len  # largest multiple of seq_len ≤ n
+    """
+    Trim leading dimension to a multiple of ``seq_len`` and construct sequences
+    that stay within the same environment trajectory.
+    """
+    if X.shape[0] == 0:
+        return X, y
 
+    keep = (X.shape[0] // seq_len) * seq_len  # largest multiple of seq_len ≤ n
     X_trim = X[:keep]
     y_trim = y[:keep]
 
-    X_seq = X_trim.reshape(-1, seq_len, X.shape[2])
-    y_seq = y_trim.reshape(-1, seq_len, y.shape[2])
+    if X_trim.ndim >= 3:
+        num_envs = X_trim.shape[1]
+        feat_dim = X_trim.shape[2]
+        ext_dim = y_trim.shape[2] if y_trim.ndim >= 3 else y_trim.shape[-1]
+
+        if keep == 0:
+            return (
+                jnp.empty((0, seq_len, feat_dim), dtype=X.dtype),
+                jnp.empty((0, seq_len, ext_dim), dtype=y.dtype),
+            )
+
+        windows = keep // seq_len
+        X_windows = X_trim.reshape(windows, seq_len, num_envs, feat_dim)
+        X_windows = jnp.transpose(X_windows, (2, 0, 1, 3))  # env, window, seq, feat
+        X_seq = X_windows.reshape(-1, seq_len, feat_dim)
+
+        if y_trim.ndim >= 3:
+            y_windows = y_trim.reshape(windows, seq_len, num_envs, y_trim.shape[2])
+            y_windows = jnp.transpose(y_windows, (2, 0, 1, 3))
+            y_seq = y_windows.reshape(-1, seq_len, y_trim.shape[2])
+        else:
+            y_windows = y_trim.reshape(windows, seq_len, num_envs)
+            y_windows = jnp.transpose(y_windows, (2, 0, 1))
+            y_seq = y_windows.reshape(-1, seq_len, 1)
+    else:
+        if keep == 0:
+            return (
+                jnp.empty((0, seq_len, X.shape[-1]), dtype=X.dtype),
+                jnp.empty((0, seq_len, y.shape[-1]), dtype=y.dtype),
+            )
+        X_seq = X_trim.reshape(-1, seq_len, X.shape[-1])
+        y_seq = y_trim.reshape(-1, seq_len, y.shape[-1])
 
     return X_seq, y_seq
 
