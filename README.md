@@ -245,6 +245,8 @@ The training script provided in `experiments/rl_training/train_astrobee.py` dire
 
 The agent should be trained on GPU using a CUDA Docker image. It is also possible to log videos and data from experiments, as well as to monitor training runs online using Weights & Biases. More details can be found in `README.md`.
 
+*Note: to use W&B, add your API key to `wandb_config.py`.*
+
 #### Benchmarking the RL training methods
 
 To benchmark all different variants of the algorithm against each other, run `train_test_all.sh`. To plot the results, run `experiments/rl_benchmarking/rl_plotter.py` (this only works with `python`, not `mjpython`).
