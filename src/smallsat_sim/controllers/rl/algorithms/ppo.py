@@ -132,20 +132,20 @@ class PPO(BaseAgent):
         if minibatch:
             epoch_keys = jax.random.split(key, self.actor_training_epochs)
             actor_graphdef, actor_state = nnx.split((self.actor, self.actor_optimizer))
-                actor_loss, actor_state = _actor_epochs_jit(
-                    actor_graphdef,
-                    actor_state,
-                    epoch_keys,
-                    obs_extrinsics,
-                    actions,
-                    tdres,
-                    logp,
-                    self.clip_ratio,
-                    self.entropy_coef,
-                    self.target_kl,
-                    self.num_minibatches,
-                    self.minibatch_size,
-                )
+            actor_loss, actor_state = _actor_epochs_jit(
+                actor_graphdef,
+                actor_state,
+                epoch_keys,
+                obs_extrinsics,
+                actions,
+                tdres,
+                logp,
+                self.clip_ratio,
+                self.entropy_coef,
+                self.target_kl,
+                self.num_minibatches,
+                self.minibatch_size,
+            )
             nnx.update((self.actor, self.actor_optimizer), actor_state)
         else:
             actor_loss = jnp.array(0.0, dtype=tdres.dtype)
