@@ -6,12 +6,12 @@ os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True "
 from experiments.rl_benchmarking.rl_benchmarker import Benchmarker
 
 
-benchmarker = Benchmarker(run_name="pretrained_ppo_no_extrinsics")
+benchmarker = Benchmarker(run_name="ppo_plain")
 
 benchmarker.train_and_evaluate(
-    train_with_failures=True, use_pretrained=True, use_adaptive_approach=False
+    train_with_failures=True, use_pretrained=False, use_adaptive_approach=False
 )
 
 benchmarker.deploy_and_test(
-    train_with_failures=True, use_pretrained=True, use_adaptive_approach=False
+    train_with_failures=True, use_pretrained=False, use_adaptive_approach=False
 )

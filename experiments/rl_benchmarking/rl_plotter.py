@@ -221,14 +221,14 @@ def main():
         "pd_controller",
         "nn_controller",
         "nn_controller_adaptive",
-        "ppo_no_extrinsics_nominal",
-        "ppo_no_extrinsics",
-        "ppo_extrinsics_from_sim",
-        "ppo_extrinsics_from_am",
-        "pretrained_ppo_no_extrinsics_nominal",
-        "pretrained_ppo_no_extrinsics",
-        "pretrained_ppo_extrinsics_from_sim",
-        "pretrained_ppo_extrinsics_from_am",
+        "ppo_nominal",
+        "ppo_plain",
+        "ppo_adaptive_sim",
+        "ppo_adaptive",
+        "pretrained_ppo_nominal",
+        "pretrained_ppo",
+        "pretrained_ppo_adaptive_sim",
+        "pretrained_ppo_adaptive",
     ]:
         plot_results(logger, run_name)
 

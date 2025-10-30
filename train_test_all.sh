@@ -4,14 +4,14 @@
 scripts=("experiments/rl_benchmarking/pd_controller.py" 
         "experiments/rl_benchmarking/nn_controller.py"
         "experiments/rl_benchmarking/nn_controller_adaptive.py"
-        "experiments/rl_benchmarking/ppo_no_extrinsics_nominal.py"
-        "experiments/rl_benchmarking/ppo_no_extrinsics.py"
-        "experiments/rl_benchmarking/ppo_extrinsics_from_sim.py"
-        "experiments/rl_benchmarking/ppo_extrinsics_from_am.py"
-        "experiments/rl_benchmarking/pretrained_ppo_no_extrinsics_nominal.py"
-        # "experiments/rl_benchmarking/pretrained_ppo_no_extrinsics.py" 
-        # "experiments/rl_benchmarking/pretrained_ppo_extrinsics_from_sim.py" 
-        # "experiments/rl_benchmarking/pretrained_ppo_extrinsics_from_am.py"
+        "experiments/rl_benchmarking/ppo_nominal.py"
+        "experiments/rl_benchmarking/ppo_plain.py"
+        "experiments/rl_benchmarking/ppo_adaptive_sim.py"
+        "experiments/rl_benchmarking/ppo_adaptive.py"
+        # "experiments/rl_benchmarking/pretrained_ppo_nominal.py"
+        # "experiments/rl_benchmarking/pretrained_ppo.py"
+        # "experiments/rl_benchmarking/pretrained_ppo_adaptive_sim.py"
+        # "experiments/rl_benchmarking/pretrained_ppo_adaptive.py"
         )
 
 # Ensure repository root is on PYTHONPATH so `experiments` can be imported
@@ -21,7 +21,7 @@ export PYTHONPATH="$(pwd):${PYTHONPATH}"
 for file in "${scripts[@]}"; do
   if [ -e "$file" ]; then
     echo "Running $file..."
-    python "$file" --headless --log --wandb
+    python "$file" --headless --log # --wandb
   else
     echo "File $file not found."
     exit 1
