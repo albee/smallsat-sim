@@ -43,11 +43,11 @@ class BaseAgent(BaseController):
             env.act_dim,
             hidden_sizes,
             activation,
-            env.ext_dim,
+            env.res_dim,
             act_low,
             act_high,
         )
-        self.critic = Critic(env.obs_dim, hidden_sizes, activation, env.ext_dim)
+        self.critic = Critic(env.obs_dim, hidden_sizes, activation, env.res_dim)
         self.key = rng_key
 
     def act(
@@ -67,27 +67,16 @@ class BaseAgent(BaseController):
 
     def get_control_input(
         self,
-        env: BaseEnv,
         stage: str | None = None,
-        obs_extrinsics: jnp.ndarray | None = None,
+        obs_residuals: jnp.ndarray | None = None,
     ) -> jnp.ndarray:
         """
         Calculate the control input based on current observations for each environment.
         """
-        if stage is None or obs_extrinsics is None:
-            raise ValueError("stage and obs_extrinsics must be provided")
+        if stage is None or obs_residuals is None:
+            raise ValueError("stage and obs_residuals must be provided")
 
-        ctrl_input = self.actor.deterministic_action(obs_extrinsics)
-
-        if stage != "am_training" and stage != "evaluation":
-            self._log(
-                self.env.run_id,
-                float(self.env.mjx_batch.time[0]),
-                stage,
-                self.env,
-                ctrl_input,
-                obs_extrinsics,
-            )
+        ctrl_input = self.actor.deterministic_action(obs_residuals)
 
         return ctrl_input
 
@@ -95,7 +84,7 @@ class BaseAgent(BaseController):
     def update_policy_gradient(
         self,
         key,
-        obs_extrinsics: jnp.ndarray,
+        obs_residuals: jnp.ndarray,
         actions: jnp.ndarray,
         tdres: jnp.ndarray,
         logp: jnp.ndarray,
@@ -110,7 +99,7 @@ class BaseAgent(BaseController):
     def update_value_function(
         self,
         key,
-        obs_extrinsics: jnp.ndarray,
+        obs_residuals: jnp.ndarray,
         returns: jnp.ndarray,
         minibatch: bool = True,
     ) -> jnp.ndarray:

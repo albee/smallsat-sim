@@ -100,13 +100,16 @@ class RLController(object):
         states = self.env.get_states(next_waypoint)
         states_normalized = states
 
+        # No history in the beginning
         state_action_history = jnp.zeros(
             (self.env.num_envs, 50, self.env.obs_dim + self.env.act_dim)
-        )  # No history in the beginning
+        )
+
+        # Initialize residuals
         if self.env.use_adaptive_approach is True:
-            ext = jnp.ones_like(self.env.mjx_batch.ctrl)  # No control input yet
+            res = jnp.zeros(self.env.res_dim)
         else:
-            ext = jnp.empty((self.env.num_envs, 0))
+            res = jnp.empty((self.env.num_envs, 0))
 
         terminal = jnp.zeros(self.env.num_envs, dtype=bool)
 
@@ -137,9 +140,8 @@ class RLController(object):
 
             if not test_pd:
                 actions = self.agent.get_control_input(
-                    self.env,
                     stage,
-                    jnp.concatenate([states, ext], axis=1),  # Use un-normalized states
+                    jnp.concatenate([states, res], axis=1),  # Use un-normalized states
                 )  # No sampling/exploration noise needed
             else:
                 actions = jnp.asarray(
@@ -162,21 +164,33 @@ class RLController(object):
             last_obs = last_obs.at[:, step, :].set(states)
             states_normalized = normalize_obs(states, last_obs, step)
 
-            # Compute extrinsics
+            # Step the environment
+            _, _ = self.env.transition(actions, states, next_waypoint)
+            step += 1
+
+            # Compute extrinsics and residuals
+            actual_wrench = self.env.get_actual_wrench()
             if self.env.use_adaptive_approach is True:
                 if phase == 1:
-                    ext = self.env.mjx_batch.ctrl / (
-                        actions + 1e-8 * jnp.ones_like(self.env.mjx_batch.ctrl)
-                    )
+                    ext = actual_wrench
                 elif phase == 2:
                     ext = self.adaptation_module(state_action_history)
                 else:
                     raise Exception("There only exist two training phases.")
+                desired_wrench = self.env.get_desired_wrench(actions)
+                res = ext - desired_wrench
             else:
-                ext = jnp.empty((self.env.num_envs, 0))
+                res = jnp.empty((self.env.num_envs, 0))
 
-            _, _ = self.env.transition(actions, states)
-            step += 1
+            # Log data
+            self.agent._log(
+                self.env.run_id,
+                float(self.env.mjx_batch.time[0]),
+                stage,
+                self.env,
+                actual_wrench,
+                ext,
+            )
 
             if self.planner.completed_path.all():
                 break

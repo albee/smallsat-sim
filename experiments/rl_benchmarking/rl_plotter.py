@@ -33,7 +33,6 @@ def plot_results(logger: Logger, run_name: str) -> None:
         "policy_training": [
             "mean_tracking_error",
             "mean_angle_error",
-            "mean_extrinsic_error",
             "mean_episodic_returns",
             "mean_rewards",
             "actor_loss",
@@ -52,7 +51,7 @@ def plot_results(logger: Logger, run_name: str) -> None:
         "evaluation": [
             "mean_tracking_error",
             "mean_angle_error",
-            "mean_extrinsic_error",
+            "mean_extrinsic_error",  # Only relevant if in phase 2
             "mean_episodic_returns",
             "num_terminal",
         ],
@@ -83,7 +82,11 @@ def plot_results(logger: Logger, run_name: str) -> None:
                         x_col="step",
                     )
 
-    errors = ["mean_tracking_error", "mean_angle_error", "mean_extrinsic_error"]
+    errors = [
+        "mean_tracking_error",
+        "mean_angle_error",
+        "mean_extrinsic_error",
+    ]  # mean_extrinsic_error only relevant if in phase 2
     stage_metrics_test = {
         "deployment": errors,
         "stuck_off_deployment": errors,

@@ -246,7 +246,7 @@ def calc_extrinsic_error(
     actual_ext: jnp.ndarray, estimated_ext: jnp.ndarray
 ) -> jnp.ndarray:
     """
-    Computes the error between the actual and estimated thruster ratios in all environments.
+    Computes the error between the actual and estimated wrenches in all environments.
     """
     return estimated_ext - actual_ext
 

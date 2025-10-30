@@ -17,7 +17,7 @@ class Actor(nnx.Module):
         act_dim: int,
         hidden_sizes: int,
         activation,
-        ext_dim: int,
+        res_dim: int,
         act_low: jnp.ndarray,
         act_high: jnp.ndarray,
     ) -> None:
@@ -36,17 +36,17 @@ class Actor(nnx.Module):
         log_std = -0.5 * jnp.ones(act_dim)
         self.log_std = nnx.Param(log_std)
         self.mu_net = mlp(
-            [obs_dim + ext_dim] + [hidden_sizes] + [act_dim],
+            [obs_dim + res_dim] + [hidden_sizes] + [act_dim],
             activation,
             output_activation=None,
             last_layer_std=0.01,
         )
 
-    def _distribution(self, obs_extrinsics: jnp.ndarray):
+    def _distribution(self, obs_residuals: jnp.ndarray):
         """
         Return a Gaussian distribution over actions given observations.
         """
-        mu = self.mu_net(obs_extrinsics)
+        mu = self.mu_net(obs_residuals)
         std = jnp.exp(self.log_std.value)
         return distrax.MultivariateNormalDiag(mu, std)
 
@@ -65,12 +65,12 @@ class Actor(nnx.Module):
         return pi.log_prob(pre_actions) - log_det
 
     def forward(
-        self, obs_extrinsics: jnp.ndarray, actions: jnp.ndarray | None = None
+        self, obs_residuals: jnp.ndarray, actions: jnp.ndarray | None = None
     ) -> tuple[distrax.MultivariateNormalDiag, jnp.ndarray | None]:
         """
         Return action distributions for given observations and the log-likelihood of given actions under those distributions.
         """
-        pi = self._distribution(obs_extrinsics)
+        pi = self._distribution(obs_residuals)
 
         if actions is None:
             logp = None
@@ -88,11 +88,11 @@ class Actor(nnx.Module):
         squashed = jax.nn.sigmoid(pre_actions)
         return self.act_low + self.act_range * squashed
 
-    def deterministic_action(self, obs_extrinsics: jnp.ndarray) -> jnp.ndarray:
+    def deterministic_action(self, obs_residuals: jnp.ndarray) -> jnp.ndarray:
         """
         Return the mean action squashed into the thruster range.
         """
-        return self.apply_action_bounds(self.mu_net(obs_extrinsics))
+        return self.apply_action_bounds(self.mu_net(obs_residuals))
 
     def _normalize_actions(self, actions: jnp.ndarray) -> jnp.ndarray:
         """

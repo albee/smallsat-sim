@@ -58,7 +58,7 @@ class VPG(BaseAgent):
     def update_policy_gradient(
         self,
         key,
-        obs_extrinsics: jnp.ndarray,
+        obs_residuals: jnp.ndarray,
         actions: jnp.ndarray,
         tdres: jnp.ndarray,
         logp: jnp.ndarray,
@@ -80,7 +80,7 @@ class VPG(BaseAgent):
     def update_value_function(
         self,
         key,
-        obs_extrinsics: jnp.ndarray,
+        obs_residuals: jnp.ndarray,
         returns: jnp.ndarray,
         minibatch: bool = True,
     ) -> jnp.ndarray:

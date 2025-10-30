@@ -19,13 +19,13 @@ from smallsat_sim.utils.helpers_jax import (
 def actor_loss_fn(
     actor_model,
     tdres: jnp.ndarray,
-    obs_extrinsics: jnp.ndarray,
+    obs_residuals: jnp.ndarray,
     actions: jnp.ndarray,
     logp: jnp.ndarray,
     clip_ratio: float,
     entropy_coef: float,
 ):
-    pi, logp_a = actor_model.forward(obs_extrinsics, actions)
+    pi, logp_a = actor_model.forward(obs_residuals, actions)
     ratio = jnp.exp(logp_a - logp)
     clipped_ratio = jax.lax.clamp(1 - clip_ratio, ratio, 1 + clip_ratio)
     surrogate = jax.lax.min(ratio * tdres, clipped_ratio * tdres)
@@ -38,9 +38,9 @@ def actor_loss_fn(
 def critic_loss_fn(
     critic_model,
     returns: jnp.ndarray,
-    obs_extrinsics: jnp.ndarray,
+    obs_residuals: jnp.ndarray,
 ):
-    values = critic_model.forward(obs_extrinsics)
+    values = critic_model.forward(obs_residuals)
     return jnp.mean((values - returns) ** 2)  # MSE loss
 
 
@@ -120,7 +120,7 @@ class PPO(BaseAgent):
     def update_policy_gradient(
         self,
         key,
-        obs_extrinsics: jnp.ndarray,
+        obs_residuals: jnp.ndarray,
         actions: jnp.ndarray,
         tdres: jnp.ndarray,
         logp: jnp.ndarray,
@@ -136,7 +136,7 @@ class PPO(BaseAgent):
                 actor_graphdef,
                 actor_state,
                 epoch_keys,
-                obs_extrinsics,
+                obs_residuals,
                 actions,
                 tdres,
                 logp,
@@ -156,7 +156,7 @@ class PPO(BaseAgent):
                     return actor_loss_fn(
                         model,
                         tdres,
-                        obs_extrinsics,
+                        obs_residuals,
                         actions,
                         logp,
                         self.clip_ratio,
@@ -167,7 +167,7 @@ class PPO(BaseAgent):
 
                 optimizer.update(grads)
 
-                _, logp_a = self.actor.forward(obs_extrinsics, actions)
+                _, logp_a = self.actor.forward(obs_residuals, actions)
                 kl = (logp - logp_a).mean()
                 if kl > 1.5 * self.target_kl:
                     break
@@ -177,7 +177,7 @@ class PPO(BaseAgent):
     def update_value_function(
         self,
         key,
-        obs_extrinsics: jnp.ndarray,
+        obs_residuals: jnp.ndarray,
         returns: jnp.ndarray,
         minibatch: bool = True,
     ) -> jnp.ndarray:
@@ -196,7 +196,7 @@ class PPO(BaseAgent):
                 critic_graphdef,
                 critic_state,
                 epoch_keys,
-                obs_extrinsics,
+                obs_residuals,
                 returns,
                 self.num_minibatches,
                 self.minibatch_size,
@@ -207,7 +207,7 @@ class PPO(BaseAgent):
                 critic, optimizer = self.critic, self.critic_optimizer
 
                 def loss_fn(model):
-                    return critic_loss_fn(model, returns, obs_extrinsics)
+                    return critic_loss_fn(model, returns, obs_residuals)
 
                 critic_loss, grads = nnx.value_and_grad(loss_fn)(critic)
 
@@ -218,7 +218,7 @@ class PPO(BaseAgent):
     def update_actor_critic_minibatch(
         self,
         key,
-        obs_extrinsics: jnp.ndarray,
+        obs_residuals: jnp.ndarray,
         actions: jnp.ndarray,
         tdres: jnp.ndarray,
         logp: jnp.ndarray,
@@ -244,7 +244,7 @@ class PPO(BaseAgent):
             joint_graphdef,
             joint_state,
             epoch_keys,
-            obs_extrinsics,
+            obs_residuals,
             actions,
             tdres,
             logp,
@@ -287,8 +287,8 @@ class PPO(BaseAgent):
         timestamp: float,
         stage: str,
         env: VecEnv,
-        ctrl_input: jnp.ndarray,
-        obs_extrinsics: jnp.ndarray,
+        actual_ext: jnp.ndarray,
+        estimated_ext: jnp.ndarray,
     ) -> None:
         """
         Logs desired quantities if flag is enabled
@@ -296,20 +296,8 @@ class PPO(BaseAgent):
         if self.has_logger:
             tracking_error = calc_lateral_tracking_error(env.get_obs(), self.planner)
             angle_error = jnp.degrees(calc_attitude_error(env.get_obs()))
+            extrinsic_error = calc_extrinsic_error(actual_ext, estimated_ext)
 
-            if env.ext_dim != 0:
-                # If the extrinsics are included in the observations
-                extrinsics = obs_extrinsics[:, env.obs_dim :]
-            else:
-                # If the extrinsics are not included in the observations
-                # NOTE: they are still logged but not need to plot them
-                extrinsics = jnp.zeros((env.num_envs, env.act_dim))
-
-            extrinsic_error = calc_extrinsic_error(
-                extrinsics,
-                env.mjx_batch.ctrl
-                / (ctrl_input + 1e-8 * jnp.ones_like(env.mjx_batch.ctrl)),
-            )
             self.logger.log(
                 run_id,
                 timestamp,

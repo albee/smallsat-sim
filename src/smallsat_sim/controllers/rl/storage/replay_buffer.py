@@ -17,7 +17,7 @@ class ReplayBuffer(object):
         num_envs,
         obs_dim,
         act_dim,
-        ext_dim,
+        res_dim,
         size,
         gamma,
         lam,
@@ -25,7 +25,7 @@ class ReplayBuffer(object):
         self.num_envs = num_envs
         self.obs_dim = obs_dim
         self.act_dim = act_dim
-        self.ext_dim = ext_dim
+        self.res_dim = res_dim
         self.gamma = gamma
         self.lam = lam
         self.max_size = size
@@ -42,7 +42,7 @@ class ReplayBuffer(object):
         rew: jnp.ndarray,
         val: jnp.ndarray,
         logp: jnp.ndarray,
-        extrinsics: jnp.ndarray,
+        residuals: jnp.ndarray,
     ):
         """
         Append a single timestep to the buffer at each environment update in each environment.
@@ -59,7 +59,7 @@ class ReplayBuffer(object):
         self.rew_buf.append(rew)
         self.val_buf.append(val)
         self.logp_buf.append(logp)
-        self.extrinsics_buf.append(extrinsics)
+        self.residuals_buf.append(residuals)
         self.tdres_buf.append(None)
         self.ret_buf.append(None)
 
@@ -118,7 +118,7 @@ class ReplayBuffer(object):
         tdres = _stack_list("tdres", self.tdres_buf)
         ret = _stack_list("ret", self.ret_buf)
         logp = jnp.stack(self.logp_buf, axis=0)
-        extrinsics = jnp.stack(self.extrinsics_buf, axis=0)
+        residuals = jnp.stack(self.residuals_buf, axis=0)
 
         # Normalize the TD residuals (could instead also normalize on minibatch-level)
         tdres_mean = jnp.mean(tdres, axis=0)
@@ -133,7 +133,7 @@ class ReplayBuffer(object):
             ret=ret,
             tdres=tdres,
             logp=logp,
-            extrinsics=extrinsics,
+            residuals=residuals,
         )
 
         self._reset_storage()
@@ -146,7 +146,7 @@ class ReplayBuffer(object):
         self.rew_buf: List[jnp.ndarray] = []
         self.val_buf: List[jnp.ndarray] = []
         self.logp_buf: List[jnp.ndarray] = []
-        self.extrinsics_buf: List[jnp.ndarray] = []
+        self.residuals_buf: List[jnp.ndarray] = []
         self.tdres_buf: List[Optional[jnp.ndarray]] = []
         self.ret_buf: List[Optional[jnp.ndarray]] = []
 

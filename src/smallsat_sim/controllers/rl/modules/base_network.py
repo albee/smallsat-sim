@@ -14,18 +14,18 @@ class Critic(nnx.Module):
         obs_dim: int,
         hidden_sizes: int,
         activation,
-        ext_dim: int,
+        res_dim: int,
     ) -> None:
         super().__init__()
         self.obs_dim = obs_dim
         self.v_net = mlp(
-            [obs_dim + ext_dim] + [hidden_sizes] + [1],
+            [obs_dim + res_dim] + [hidden_sizes] + [1],
             activation,
             last_layer_std=1.0,
         )
 
-    def forward(self, obs_extrinsics: jnp.ndarray):
+    def forward(self, obs_residuals: jnp.ndarray):
         """
         Return the value estimates for given observations.
         """
-        return jnp.squeeze(self.v_net(obs_extrinsics), -1)
+        return jnp.squeeze(self.v_net(obs_residuals), -1)
