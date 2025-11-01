@@ -104,12 +104,16 @@ class RLController(object):
         state_action_history = jnp.zeros(
             (self.env.num_envs, 50, self.env.obs_dim + self.env.act_dim)
         )
+        history_len = state_action_history.shape[1]
+        history_counts = jnp.zeros(self.env.num_envs, dtype=jnp.int32)
 
         # Initialize residuals
         if self.env.use_adaptive_approach is True:
             res = jnp.zeros(self.env.res_dim)
+            ext = jnp.zeros((self.env.num_envs, self.env.ext_dim))
         else:
             res = jnp.empty((self.env.num_envs, 0))
+            ext = jnp.empty((self.env.num_envs, 0))
 
         terminal = jnp.zeros(self.env.num_envs, dtype=bool)
 
@@ -155,6 +159,7 @@ class RLController(object):
             state_action_history = jnp.concatenate(
                 [state_action_history[:, 1:, :], state_action], axis=1
             )
+            history_counts = jnp.minimum(history_counts + 1, history_len)
 
             # Update next waypoint and states
             next_waypoint = self.planner.get_reference(self.env.get_obs())
@@ -171,14 +176,18 @@ class RLController(object):
             # Compute extrinsics and residuals
             actual_wrench = self.env.get_actual_wrench()
             if self.env.use_adaptive_approach is True:
+                history_full = bool(jnp.all(history_counts >= history_len))
                 if phase == 1:
                     ext = actual_wrench
                 elif phase == 2:
-                    ext = self.adaptation_module(state_action_history)
+                    # Mirror training: only query the adapter when the history buffer is full.
+                    if history_full:
+                        ext = self.adaptation_module(state_action_history)
                 else:
                     raise Exception("There only exist two training phases.")
                 desired_wrench = self.env.get_desired_wrench(actions)
-                res = ext - desired_wrench
+                if phase == 1 or (phase == 2 and history_full):
+                    res = ext - desired_wrench
             else:
                 res = jnp.empty((self.env.num_envs, 0))
 

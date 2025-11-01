@@ -197,8 +197,8 @@ def calc_attitude_error(
     obs: jnp.ndarray, q_ref: jnp.ndarray = jnp.array([1, 0, 0, 0])
 ) -> jnp.ndarray:
     """
-    Computes the attitude error as the shortest rotation angle. The angle error is the smallest 
-    angle by which you would need to rotate the spacecraft (or frame of reference) from its 
+    Computes the attitude error as the shortest rotation angle. The angle error is the smallest
+    angle by which you would need to rotate the spacecraft (or frame of reference) from its
     current orientation (actual quaternion) to match the desired orientation (desired quaternion).
     Returned in radians. Use jnp.degrees() for conversion.
     """
@@ -251,14 +251,7 @@ def calc_extrinsic_error(
     return estimated_ext - actual_ext
 
 
-def train_val_split(
-    X,
-    y,
-    key: jnp.ndarray,
-    val_split=0.2,
-    shuffle: bool = True,
-    trim_for_cnn: bool = False,
-):
+def train_val_split(X, y, key: jnp.ndarray, val_split=0.2, shuffle: bool = True):
     """
     Split data into training and validation set.
     """
@@ -275,11 +268,6 @@ def train_val_split(
     X_train, y_train = X[train_idx], y[train_idx]
     X_val, y_val = X[val_idx], y[val_idx]
 
-    if trim_for_cnn:
-        # Trim the data to be a multiple of seq_len
-        X_train, y_train = _trim_and_reshape(X_train, y_train)
-        X_val, y_val = _trim_and_reshape(X_val, y_val)
-
     return X_train, y_train, X_val, y_val, key
 
 
@@ -287,6 +275,7 @@ def _trim_and_reshape(X, y, seq_len=50):
     """
     Trim leading dimension to a multiple of ``seq_len`` and construct sequences
     that stay within the same environment trajectory.
+    NOTE: not useful with the current implementation.
     """
     if X.shape[0] == 0:
         return X, y

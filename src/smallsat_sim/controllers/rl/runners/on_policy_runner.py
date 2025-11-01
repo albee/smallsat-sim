@@ -552,6 +552,7 @@ class OnPolicyRunner(object):
         state_action_history = jnp.zeros(
             (self.env.num_envs, 50, self.env.obs_dim + self.env.act_dim)
         )
+        history_len = state_action_history.shape[1]
 
         # Initialize residuals
         res = jnp.zeros(self.env.res_dim)
@@ -559,8 +560,33 @@ class OnPolicyRunner(object):
         # Create PRNG keys
         subkeys_train = self._take_keys(self.epochs)
 
+        # Set up adaptation module optimizer
+        am_lr = self.env.env_cfg.control.RL.am_lr
+        am_weight_decay = self.env.env_cfg.control.RL.am_weight_decay
+        grad_clip_norm = self.env.env_cfg.control.RL.am_grad_clip_norm
+
+        grad_clip_norm = max(float(grad_clip_norm), 1e-6)
+        am_optax = optax.chain(
+            optax.clip_by_global_norm(grad_clip_norm),
+            optax.adamw(
+                learning_rate=am_lr,
+                eps=1e-8,
+                weight_decay=am_weight_decay,
+            ),
+        )
+        self.am_optimizer = nnx.Optimizer(
+            self.am,
+            am_optax,
+        )
+
         # Main training loop
         for epoch in range(self.epochs):
+            # Reset history buffer and counters at the start of each epoch.
+            state_action_history = jnp.zeros(
+                (self.env.num_envs, history_len, self.env.obs_dim + self.env.act_dim)
+            )
+            history_counts = jnp.zeros(self.env.num_envs, dtype=jnp.int32)
+            history_full_records: list[jnp.ndarray] = []
             ramp_duration = max(self.epochs // 2, 1)
             ramp_progress = min((epoch - ramp_duration) / ramp_duration, 1.0)
             self.env.reset_perturbations()  # avoid accumulating failures across epochs
@@ -594,6 +620,10 @@ class OnPolicyRunner(object):
                 state_action_history = state_action_history.at[:, -1, :].set(
                     jnp.concatenate([states, a], axis=1)
                 )
+                # Track how many frames of history are populated for each environment.
+                history_counts = jnp.minimum(history_counts + 1, history_len)
+                history_full = history_counts >= history_len
+                history_full_records.append(history_full)
 
                 # Perform environment transition
                 _, terminal = self.env.transition(
@@ -615,9 +645,12 @@ class OnPolicyRunner(object):
 
                 # Compute and log mean errors
                 obs = self.env.get_obs()
-                ext_estimated = self.adaptation_module(
-                    state_action_history
-                )  # Estimate extrinsics from history
+                ext_estimated = None
+                if bool(jnp.all(history_full)):
+                    # Only evaluate the adaptation module once the history buffer is fully populated
+                    ext_estimated = self.adaptation_module(
+                        state_action_history
+                    )  # Estimate extrinsics from history
                 tracking_mean, angle_mean, extrinsic_mean = self._compute_mean_errors(
                     obs, actual_wrench, ext_estimated
                 )
@@ -652,6 +685,14 @@ class OnPolicyRunner(object):
                     states_normalized = states
 
                     res = jnp.zeros(self.env.res_dim)
+                    state_action_history = jnp.zeros(
+                        (
+                            self.env.num_envs,
+                            history_len,
+                            self.env.obs_dim + self.env.act_dim,
+                        )
+                    )
+                    history_counts = jnp.zeros(self.env.num_envs, dtype=jnp.int32)
 
             # Get the data from the training loop
             data = buffer.get()
@@ -663,18 +704,21 @@ class OnPolicyRunner(object):
             ]  # Here, residuals store the ground truth extrinsics
 
             state_action_data = jnp.concatenate([obs, act], axis=2)
+            # Reconstruct stride-1 windows and drop entries captured during the warm-up phase.
+            history_full_mask = jnp.stack(history_full_records, axis=0)
+            state_action_data, extrinsics = self._build_sliding_windows(
+                state_action_data,
+                extrinsics,
+                history_full_mask,
+                history_len,
+            )
+            if state_action_data.shape[0] == 0:
+                print(
+                    "Skipping adaptation module update: insufficient full-history samples."
+                )
+                continue
 
             num_nn_epochs = 100
-
-            # Optimizer
-            am_lr = self.env.env_cfg.control.RL.am_lr
-            self.am_optimizer = nnx.Optimizer(
-                self.am,
-                optax.adam(
-                    learning_rate=am_lr,
-                    eps=1e-5,
-                ),
-            )
 
             # Split into training and validation sets
             split_key = self._take_keys()
@@ -689,7 +733,6 @@ class OnPolicyRunner(object):
                 extrinsics,
                 key=split_key,
                 shuffle=False,
-                trim_for_cnn=True,
             )
 
             # Training loop
@@ -1002,6 +1045,58 @@ class OnPolicyRunner(object):
         # Get the data from the training loop and save it
         data = buffer.get()
         save_training_data(self.ckpt_dir, self.pretraining_data_file_name, data)
+
+    def _build_sliding_windows(
+        self,
+        features: jnp.ndarray,
+        targets: jnp.ndarray,
+        mask: jnp.ndarray,
+        seq_len: int,
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+        """
+        Construct stride-1 windows of length ``seq_len`` and keep only entries with a fully populated history.
+        """
+        # Discard early timesteps where the history buffer is still warming up.
+        valid_mask = mask.at[: seq_len - 1, :].set(False)
+        valid_count = int(valid_mask.sum())
+        if valid_count == 0:
+            return (
+                jnp.empty((0, seq_len, features.shape[2]), dtype=features.dtype),
+                jnp.empty((0, seq_len, targets.shape[2]), dtype=targets.dtype),
+            )
+
+        # Flatten (time, env) indices where a full history is available.
+        valid_t, valid_env = jnp.where(
+            valid_mask,
+            size=int(valid_mask.size),
+            fill_value=-1,
+        )
+        valid_t = valid_t[:valid_count]
+        valid_env = valid_env[:valid_count]
+        starts = valid_t - (seq_len - 1)
+
+        feat_dim = features.shape[2]
+        target_dim = targets.shape[2]
+
+        def _slice_single(start: jnp.ndarray, env_idx: jnp.ndarray):
+            start = jnp.asarray(start, dtype=jnp.int32)
+            env_idx = jnp.asarray(env_idx, dtype=jnp.int32)
+            feat_slice = jax.lax.dynamic_slice(
+                features,
+                (start, env_idx, 0),
+                (seq_len, 1, feat_dim),
+            )
+            feat_slice = jnp.squeeze(feat_slice, axis=1)
+            target_slice = jax.lax.dynamic_slice(
+                targets,
+                (start, env_idx, 0),
+                (seq_len, 1, target_dim),
+            )
+            target_slice = jnp.squeeze(target_slice, axis=1)
+            return feat_slice, target_slice
+
+        feat_windows, target_windows = jax.vmap(_slice_single)(starts, valid_env)
+        return feat_windows, target_windows
 
     def _compute_mean_errors(
         self,
