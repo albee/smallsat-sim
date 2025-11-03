@@ -296,7 +296,10 @@ class PPO(BaseAgent):
         if self.has_logger:
             tracking_error = calc_lateral_tracking_error(env.get_obs(), self.planner)
             angle_error = jnp.degrees(calc_attitude_error(env.get_obs()))
-            extrinsic_error = calc_extrinsic_error(actual_ext, estimated_ext)
+            if self.env.use_adaptive_approach:
+                extrinsic_error = calc_extrinsic_error(actual_ext, estimated_ext)
+            else:
+                extrinsic_error = jnp.zeros(env.num_envs)
 
             self.logger.log(
                 run_id,
