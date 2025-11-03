@@ -114,9 +114,7 @@ RUN rm get-pip.py
 RUN pip install --upgrade pip && pip install "setuptools<81"
 
 # Install additional dependencies; keep PyTorch only for CPU builds
-RUN if [ "$USE_CUDA" = "0" ]; then \
-        pip install torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu; \
-    fi
+RUN pip install torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu
 
 # Ensure l4acados Python package is available
 RUN pip install -e /l4acados
