@@ -187,7 +187,7 @@ class Line(Segment):
     def tangent(self, arc_length: Optional[float] = None) -> np.ndarray:
         direction = self.end_point.position - self.start_point.position
 
-        if(direction.all() == 0):
+        if direction.all() == 0:
             return [0, 0, 0]
 
         return direction / np.linalg.norm(direction)
@@ -362,13 +362,27 @@ class MissionPlanner(BasePlanner):
         # Create the trajectory
         self._create_trajectory()
 
+        # Capture current position to align the initial reference with the vehicle state
+        initial_obs = None
+        if hasattr(env, "get_obs"):
+            try:
+                initial_obs = env.get_obs()
+            except TypeError:
+                initial_obs = None
+        if initial_obs is None:
+            initial_obs = getattr(env, "obs", None)
+        if initial_obs is not None:
+            initial_position = np.asarray(initial_obs[:3]).reshape(3)
+        else:
+            initial_position = self.waypoints[0].position.copy()
+
         # Set planner mode
         if planner_mode == "Waypoint Tracking":
             # Set the correct get reference method
             self.get_reference = self._get_reference_wp_tracking
 
             # Initialize current reference point
-            self.idx_reference_point = 12
+            self.idx_reference_point = self._closest_waypoint_index(initial_position)
 
             # Initialize the timer clearance boolean
             self.timer_started = False
@@ -381,7 +395,9 @@ class MissionPlanner(BasePlanner):
             self._generate_intermediate_reference()
 
             # Initialize current reference point
-            self.idx_reference_point = 12
+            self.idx_reference_point = self._closest_intermediate_index(
+                initial_position
+            )
 
             # Initialize the timer clearance boolean
             self.timer_started = False
@@ -394,30 +410,30 @@ class MissionPlanner(BasePlanner):
         """
         # Define positional references
         positions = [
-            [-3.3, -9, 0],         # Point 1
-            [-3.3, -18, 0],        # Point 2
-            [-1, -20, 5],          # Point 3
-            [16, 0, 23],           # Point 4
-            [16, 0, 0],            # Point 5
-            [16, 0, -23],          # Point 6
-            [16, 0, -26],          # Point 7
-            [7, 0, -26],           # Point 8
-            [7, 0, -4.5],          # Point 9
-            [3, 0, -4.5],          # Point 10
-            [3, 0, -8],            # Point 11
-            [3.6, 16, -8],         # Point 12
-            [3.6, 16, 0],          # Point 13
-            [-2.5, 16, 0],         # Point 14
-            [-1.5, 10.5, -2],      # Point 15
-            [-2.0, 7.75, -1],      # Point 16 
-            [-5.0, 5.0, 0],        # Point 17
-            [-7.5, 5, 0],          # Point 18
-            [-18, 10, 0],          # Point 19
-            [-18, 0, 0],           # Point 20
-            [-18, 0, -5],          # Point 21
-            [-8, 0, -5],           # Point 22
-            [-3.3, 0, -3.5],       # Point 23
-            [-3.3, -9, -3.5],      # Point 24
+            [-3.3, -9, 0],  # Point 1
+            [-3.3, -18, 0],  # Point 2
+            [-1, -20, 5],  # Point 3
+            [16, 0, 23],  # Point 4
+            [16, 0, 0],  # Point 5
+            [16, 0, -23],  # Point 6
+            [16, 0, -26],  # Point 7
+            [7, 0, -26],  # Point 8
+            [7, 0, -4.5],  # Point 9
+            [3, 0, -4.5],  # Point 10
+            [3, 0, -8],  # Point 11
+            [3.6, 16, -8],  # Point 12
+            [3.6, 16, 0],  # Point 13
+            [-2.5, 16, 0],  # Point 14
+            [-1.5, 10.5, -2],  # Point 15
+            [-2.0, 7.75, -1],  # Point 16
+            [-5.0, 5.0, 0],  # Point 17
+            [-7.5, 5, 0],  # Point 18
+            [-18, 10, 0],  # Point 19
+            [-18, 0, 0],  # Point 20
+            [-18, 0, -5],  # Point 21
+            [-8, 0, -5],  # Point 22
+            [-3.3, 0, -3.5],  # Point 23
+            [-3.3, -9, -3.5],  # Point 24
         ]
 
         # Define attitude references (Euler angles)
@@ -494,6 +510,25 @@ class MissionPlanner(BasePlanner):
             for pos, att in zip(positions, attitudes)
         ]
 
+    def _closest_waypoint_index(self, position: np.ndarray) -> int:
+        distances = [
+            np.linalg.norm(position - waypoint.position) for waypoint in self.waypoints
+        ]
+        return int(np.argmin(distances))
+
+    def _closest_intermediate_index(self, position: np.ndarray) -> int:
+        if (
+            not hasattr(self, "_intermediate_reference")
+            or not self._intermediate_reference
+        ):
+            return self._closest_waypoint_index(position)
+
+        distances = [
+            np.linalg.norm(position - waypoint.position)
+            for waypoint in self._intermediate_reference
+        ]
+        return int(np.argmin(distances))
+
     def get_reference(self, obs: np.ndarray) -> np.ndarray:
         """
         Returns a reference point based on current observations
@@ -524,15 +559,23 @@ class MissionPlanner(BasePlanner):
                 self.idx_reference_point += 1
                 self.timer_started = False
 
+        # Visualize in viewer (if available)
+        self.visualize(
+            [waypoint.position for waypoint in self.waypoints],
+            size=[0.05, 0, 0],
+        )
+
         # Visualize the waypoints and corridor in the saved video
         self._visualize_renderer(
             [waypoint.position for waypoint in self.waypoints],
             size=[0.05, 0, 0],
         )
 
+        reference = self.waypoints[self.idx_reference_point % len(self.waypoints)]
+
         return (
-            self.waypoints[self.idx_reference_point].position.reshape(3, 1),
-            self.waypoints[self.idx_reference_point].attitude.reshape(4, 1),
+            reference.position.reshape(3, 1),
+            reference.attitude.reshape(4, 1),
         )
 
     def _get_reference_intermediate_wp_tracking(
@@ -540,18 +583,20 @@ class MissionPlanner(BasePlanner):
     ) -> tuple[np.ndarray, np.ndarray]:
 
         # Extract next tracking point
-        next_point = self._intermediate_reference[
-            self.idx_reference_point % len(self._intermediate_reference)
-        ]
+        next_point_idx = self.idx_reference_point % len(self._intermediate_reference)
+        next_point = self._intermediate_reference[next_point_idx]
 
-        dist = np.linalg.norm(
-            obs[0:3]
-            - self.waypoints[self.idx_reference_point % len(self.waypoints)].position
-        )
+        dist = np.linalg.norm(obs[0:3] - next_point.position)
 
         # Check if current state is close enough
         if dist < self.clearance_dist:
             self.idx_reference_point += 1
+
+        # Visualize in viewer (if available)
+        self.visualize(
+            [waypoint.position for waypoint in self._intermediate_reference],
+            size=[0.05, 0, 0],
+        )
 
         # Visualize the waypoints and corridor in the saved video
         self._visualize_renderer(
@@ -559,13 +604,13 @@ class MissionPlanner(BasePlanner):
             size=[0.05, 0, 0],
         )
 
+        reference = self._intermediate_reference[
+            self.idx_reference_point % len(self._intermediate_reference)
+        ]
+
         return (
-            self._intermediate_reference[self.idx_reference_point].position.reshape(
-                3, 1
-            ),
-            self._intermediate_reference[self.idx_reference_point].attitude.reshape(
-                4, 1
-            ),
+            reference.position.reshape(3, 1),
+            reference.attitude.reshape(4, 1),
         )
 
     def _generate_intermediate_reference(self) -> None:
@@ -626,16 +671,16 @@ class MissionPlanner(BasePlanner):
                 )
 
                 # Make the connector geometry
-                mujoco.mjv_makeConnector(
+                mujoco.mjv_connector(
                     self.viewer.user_scn.geoms[self.viewer.user_scn.ngeom - 1],
                     mujoco.mjtGeom.mjGEOM_CAPSULE,
-                    collision_radius,
-                    start_point[0],
-                    start_point[1],
-                    start_point[2],
-                    end_point[0],
-                    end_point[1],
-                    end_point[2],
+                    float(collision_radius),
+                    [
+                        float(start_point[0]),
+                        float(start_point[1]),
+                        float(start_point[2]),
+                    ],
+                    [float(end_point[0]), float(end_point[1]), float(end_point[2])],
                 )
 
         else:
@@ -674,16 +719,19 @@ class MissionPlanner(BasePlanner):
         if closest_segment_idx == 0:
             closest_arc_length = closest_absolute_arc_length
         else:
-            closest_arc_length = closest_absolute_arc_length + self.trajectory.intervals[closest_segment_idx - 1]
+            closest_arc_length = (
+                closest_absolute_arc_length
+                + self.trajectory.intervals[closest_segment_idx - 1]
+            )
 
         return (closest_point, closest_arc_length)
-    
+
     def distance_to_closest_waypoint(self, point: np.ndarray) -> float:
         """
         Calculates the distance from the given point to the closest Waypoint.
         Returns the distance and the index of the closest Waypoint.
         """
-        min_distance = float('inf')
+        min_distance = float("inf")
         closest_waypoint_index = -1
 
         for idx, waypoint in enumerate(self.waypoints):
@@ -693,7 +741,7 @@ class MissionPlanner(BasePlanner):
                 closest_waypoint_index = idx
 
         return min_distance
-    
+
     def _visualize_renderer(
         self, points: list[np.ndarray], color=[1, 0, 0, 2], size=[0.05, 0, 0]
     ) -> None:
@@ -745,16 +793,16 @@ class MissionPlanner(BasePlanner):
                 )
 
                 # Make the connector geometry
-                mujoco.mjv_makeConnector(
+                mujoco.mjv_connector(
                     self.renderer.scene.geoms[self.renderer.scene.ngeom - 1],
                     mujoco.mjtGeom.mjGEOM_CAPSULE,
-                    collision_radius,
-                    start_point[0],
-                    start_point[1],
-                    start_point[2],
-                    end_point[0],
-                    end_point[1],
-                    end_point[2],
+                    float(collision_radius),
+                    [
+                        float(start_point[0]),
+                        float(start_point[1]),
+                        float(start_point[2]),
+                    ],
+                    [float(end_point[0]), float(end_point[1]), float(end_point[2])],
                 )
 
             # Extract image from renderer and append it for post-processing
@@ -768,6 +816,7 @@ Cubic splines implementation
 """
 import numpy as np
 from scipy.interpolate import CubicSpline
+
 
 class MissionPlannerCubicSpline(MissionPlanner):
     """
@@ -792,7 +841,6 @@ class MissionPlannerCubicSpline(MissionPlanner):
         # Generate visualization waypoints
         self.visualization_points = self.get_visualization_points(spacing=0.1)
 
-
         super().__init__(env)
 
     def _load_waypoints_CS(self) -> None:
@@ -801,30 +849,30 @@ class MissionPlannerCubicSpline(MissionPlanner):
         """
         # Define positional references
         self.positions = [
-            [-3.3, -9, 0],         # Point 1
-            [-3.3, -18, 0],        # Point 2
-            [-1, -20, 5],          # Point 3
-            [16, 0, 23],           # Point 4
-            [16, 0, 0],            # Point 5
-            [16, 0, -23],          # Point 6
-            [16, 0, -26],          # Point 7
-            [7, 0, -26],           # Point 8
-            [7, 0, -4.5],          # Point 9
-            [3, 0, -4.5],          # Point 10
-            [3, 0, -8],            # Point 11
-            [3.6, 16, -8],         # Point 12
-            [3.6, 16, 0],          # Point 13
-            [-2.5, 16, 0],         # Point 14
-            [-1.5, 12, -2],        # Point 15
-            [-2.0, 6.0, 0],        # Point 16 
-            [-4.0, 5.5, 0],        # Point 17
-            [-10, 5, 0],           # Point 18
-            [-18, 10, 0],          # Point 19
-            [-18, 0, 0],           # Point 20
-            [-18, 0, -5],          # Point 21
-            [-8, 0, -5],           # Point 22
-            [-3.3, 0, -3.5],       # Point 23
-            [-3.3, -9, -3.5],      # Point 24
+            [-3.3, -9, 0],  # Point 1
+            [-3.3, -18, 0],  # Point 2
+            [-1, -20, 5],  # Point 3
+            [16, 0, 23],  # Point 4
+            [16, 0, 0],  # Point 5
+            [16, 0, -23],  # Point 6
+            [16, 0, -26],  # Point 7
+            [7, 0, -26],  # Point 8
+            [7, 0, -4.5],  # Point 9
+            [3, 0, -4.5],  # Point 10
+            [3, 0, -8],  # Point 11
+            [3.6, 16, -8],  # Point 12
+            [3.6, 16, 0],  # Point 13
+            [-2.5, 16, 0],  # Point 14
+            [-1.5, 12, -2],  # Point 15
+            [-2.0, 6.0, 0],  # Point 16
+            [-4.0, 5.5, 0],  # Point 17
+            [-10, 5, 0],  # Point 18
+            [-18, 10, 0],  # Point 19
+            [-18, 0, 0],  # Point 20
+            [-18, 0, -5],  # Point 21
+            [-8, 0, -5],  # Point 22
+            [-3.3, 0, -3.5],  # Point 23
+            [-3.3, -9, -3.5],  # Point 24
         ]
 
         attitudes = [
@@ -856,7 +904,7 @@ class MissionPlannerCubicSpline(MissionPlanner):
 
         # Convert attitudes from Euler angles (degrees) to quaternions
         # Assuming Euler angles are in ZYX order and scalar_first=True
-        self.attitudes = R.from_euler('ZYX', attitudes, degrees=True).as_quat()
+        self.attitudes = R.from_euler("ZYX", attitudes, degrees=True).as_quat()
         # Adjust to scalar_first format [w, x, y, z]
         self.attitudes = self.attitudes[:, [3, 0, 1, 2]]  # Reorder to [w, x, y, z]
 
@@ -877,7 +925,9 @@ class MissionPlannerCubicSpline(MissionPlanner):
         # Loop over each segment between waypoints, including the last segment back to the first waypoint
         for i in range(num_waypoints):
             start_point = waypoints[i]
-            end_point = waypoints[(i + 1) % num_waypoints]  # Wrap around to the first waypoint
+            end_point = waypoints[
+                (i + 1) % num_waypoints
+            ]  # Wrap around to the first waypoint
             start_attitude = attitudes[i]
             end_attitude = attitudes[(i + 1) % num_waypoints]
 
@@ -896,7 +946,7 @@ class MissionPlannerCubicSpline(MissionPlanner):
 
             # Reorder quaternions to [x, y, z, w] format for scipy Rotation
             start_attitude_xyzw = start_attitude[[1, 2, 3, 0]]  # [x, y, z, w]
-            end_attitude_xyzw = end_attitude[[1, 2, 3, 0]]      # [x, y, z, w]
+            end_attitude_xyzw = end_attitude[[1, 2, 3, 0]]  # [x, y, z, w]
 
             # Create rotations for slerp
             key_times = [0, 1]
@@ -909,7 +959,9 @@ class MissionPlannerCubicSpline(MissionPlanner):
                 # Interpolate position
                 point = (1 - t) * start_point + t * end_point
                 # Avoid adding duplicate points
-                if len(interpolated_points) > 0 and np.allclose(point, interpolated_points[-1]):
+                if len(interpolated_points) > 0 and np.allclose(
+                    point, interpolated_points[-1]
+                ):
                     continue
                 interpolated_points.append(point)
                 # Interpolate attitude using slerp
@@ -921,7 +973,9 @@ class MissionPlannerCubicSpline(MissionPlanner):
 
                 # Update cumulative arc lengths
                 if len(interpolated_points) > 1:
-                    delta_length = np.linalg.norm(interpolated_points[-1] - interpolated_points[-2])
+                    delta_length = np.linalg.norm(
+                        interpolated_points[-1] - interpolated_points[-2]
+                    )
                     cumulative_lengths.append(cumulative_lengths[-1] + delta_length)
 
         # Ensure periodicity by checking if the first and last points are the same
@@ -930,7 +984,9 @@ class MissionPlannerCubicSpline(MissionPlanner):
             interpolated_points.append(interpolated_points[0])
             interpolated_attitudes.append(interpolated_attitudes[0])
             # Update cumulative length
-            delta_length = np.linalg.norm(interpolated_points[-1] - interpolated_points[-2])
+            delta_length = np.linalg.norm(
+                interpolated_points[-1] - interpolated_points[-2]
+            )
             cumulative_lengths.append(cumulative_lengths[-1] + delta_length)
 
         # Convert to numpy arrays
@@ -942,7 +998,9 @@ class MissionPlannerCubicSpline(MissionPlanner):
         s_diff = np.diff(s)
         if not np.all(s_diff > 0):
             # Find indices where s increases
-            increasing_indices = np.where(s_diff > 0)[0] + 1  # indices where s increases
+            increasing_indices = (
+                np.where(s_diff > 0)[0] + 1
+            )  # indices where s increases
             valid_indices = np.concatenate(([0], increasing_indices))
             s = s[valid_indices]
             interpolated_points = interpolated_points[valid_indices]
@@ -952,9 +1010,9 @@ class MissionPlannerCubicSpline(MissionPlanner):
         self.total_length = s[-1]
 
         # Fit cubic splines x(s), y(s), z(s)
-        self.x_spline = CubicSpline(s, interpolated_points[:, 0], bc_type='periodic')
-        self.y_spline = CubicSpline(s, interpolated_points[:, 1], bc_type='periodic')
-        self.z_spline = CubicSpline(s, interpolated_points[:, 2], bc_type='periodic')
+        self.x_spline = CubicSpline(s, interpolated_points[:, 0], bc_type="periodic")
+        self.y_spline = CubicSpline(s, interpolated_points[:, 1], bc_type="periodic")
+        self.z_spline = CubicSpline(s, interpolated_points[:, 2], bc_type="periodic")
 
         # Store the interpolated attitudes and cumulative lengths for attitude interpolation
         self.interpolated_attitudes = interpolated_attitudes
@@ -991,7 +1049,6 @@ class MissionPlannerCubicSpline(MissionPlanner):
         interp_quat_wxyz = interp_quat_xyzw[[3, 0, 1, 2]]
         return interp_quat_wxyz
 
-
     def get_spline_parameters(self, s):
         """
         Given an arc length s, return the coefficients of the cubic spline segment that contains s.
@@ -999,7 +1056,7 @@ class MissionPlannerCubicSpline(MissionPlanner):
         # Apply modulo operation to handle wrapping around the trajectory
         s = s % self.total_length
         # Find the segment index corresponding to s
-        idx = np.searchsorted(self.x_spline.x, s, side='right') - 1
+        idx = np.searchsorted(self.x_spline.x, s, side="right") - 1
         idx = np.clip(idx, 0, len(self.x_spline.x) - 2)
         # Extract coefficients for x, y, z
         x_coeffs = self.x_spline.c[:, idx]
@@ -1009,11 +1066,11 @@ class MissionPlannerCubicSpline(MissionPlanner):
         s0 = self.x_spline.x[idx]
         s1 = self.x_spline.x[idx + 1]
         return {
-            'segment_index': idx,
-            's_range': (s0, s1),
-            'x_coeffs': x_coeffs,
-            'y_coeffs': y_coeffs,
-            'z_coeffs': z_coeffs,
+            "segment_index": idx,
+            "s_range": (s0, s1),
+            "x_coeffs": x_coeffs,
+            "y_coeffs": y_coeffs,
+            "z_coeffs": z_coeffs,
         }
 
     def get_visualization_points(self, spacing=0.1) -> list[IntermediateWaypoint]:
@@ -1075,8 +1132,8 @@ class MissionPlannerCubicSpline(MissionPlanner):
         res = minimize_scalar(
             objective,
             bounds=(0, self.total_length),
-            method='bounded',
-            options={'xatol': 1e-8}
+            method="bounded",
+            options={"xatol": 1e-8},
         )
 
         if res.success:
@@ -1087,4 +1144,6 @@ class MissionPlannerCubicSpline(MissionPlanner):
             closest_point = np.array([x_closest, y_closest, z_closest])
             return closest_point, s_closest
         else:
-            raise RuntimeError("Optimization failed to find the closest point on the trajectory.")
+            raise RuntimeError(
+                "Optimization failed to find the closest point on the trajectory."
+            )

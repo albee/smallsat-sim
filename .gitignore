@@ -44,3 +44,9 @@ wandb/
 
 # external libraries during development
 external/
+
+# docker-compose file in root directory (since it will be overwritten by symlink)
+docker-compose.yaml
+
+# .egg-info
+src/smallsat_sim.egg-info/

@@ -1,3 +1,6 @@
+from smallsat_sim.utils.xml_parser import generate_mujoco_xml_gateway
+
+
 def xmlify(array: list):
     """
     Converts a list of numbers into a string
@@ -5,11 +8,28 @@ def xmlify(array: list):
     return " ".join([str(x) for x in array])
 
 
+def _compiler_attributes(env_config) -> str:
+    """
+    Filtering out the convexhull compiler option since it was removed in MuJoCo 3.2.7.
+    """
+    compiler_config = getattr(env_config, "compiler", {}) or {}
+    filtered = {
+        key: value for key, value in compiler_config.items() if key != "convexhull"
+    }
+    if not filtered:
+        return ""
+    return " " + " ".join(f'{key}="{value}"' for key, value in filtered.items())
+
+
 def generate_mujoco_xml(env_config, model_config, use_flat_bed: bool = True):
     if use_flat_bed:
-        return generate_mujoco_xml_flat_bed(env_config, model_config, env_config.dof == "6d")
+        return generate_mujoco_xml_flat_bed(
+            env_config, model_config, env_config.dof == "6d"
+        )
     else:
-        return generate_mujoco_xml_gateway(env_config, model_config, env_config.dof == "6d")
+        return generate_mujoco_xml_gateway(
+            env_config, model_config, env_config.dof == "6d"
+        )
 
 
 def generate_mujoco_xml_flat_bed(env_config, model_config, free_floating: bool = False):
@@ -34,7 +54,7 @@ def generate_mujoco_xml_flat_bed(env_config, model_config, free_floating: bool =
 
     xml_content = f"""<?xml version="1.0" encoding="utf-8"?>
     <mujoco model="{env_config.model}">
-        <compiler convexhull="{env_config.compiler['convexhull']}" texturedir="src/smallsat_sim/model" meshdir="src/smallsat_sim/model" eulerseq="XYZ"/>
+        <compiler texturedir="src/smallsat_sim/model" meshdir="src/smallsat_sim/model" eulerseq="XYZ"{_compiler_attributes(env_config)}/>
         <visual>
             <headlight ambient="{env_config.visual['headlight']['ambient']}" specular="{env_config.visual['headlight']['specular']}" diffuse="{env_config.visual['headlight']['diffuse']}"/>
         </visual>
@@ -63,6 +83,7 @@ def generate_mujoco_xml_flat_bed(env_config, model_config, free_floating: bool =
     </mujoco>
     """
     return xml_content
+
 
 # File can be executed to test xml output
 if __name__ == "__main__":

@@ -1,1 +1,4 @@
+logs
 smallsat_sim
+tests
+videos

@@ -9,6 +9,8 @@ services:
       args:
         DISPLAY: ":0"
     container_name: smallsat
+    networks:
+      - x11
     volumes:
       - .:/code
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
@@ -45,3 +47,6 @@ services:
       # Serve local time source
       - NTP_SERVERS=127.127.1.1
       - LOG_LEVEL=0
+
+networks:
+  x11:

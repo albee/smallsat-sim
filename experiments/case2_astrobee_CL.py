@@ -52,4 +52,7 @@ env.get_sim_rendering(env.env_name)
 if args.log:
     env.logger.save_log()
 
+# Close the environment to avoid viewer/renderer issues
+env.close()
+
 print("Simulation complete.")

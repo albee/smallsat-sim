@@ -22,7 +22,7 @@ ctrl = NominalMPCController(env, planner)
 start_time = time.time()
 
 # Simulation loop
-while env.data.time <= env.env_cfg.sim.sim_time:
+while env.data.time <= env.env_cfg.sim.max_sim_time:
 
     real_time = time.time() - start_time
 

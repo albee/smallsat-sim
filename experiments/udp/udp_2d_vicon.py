@@ -43,11 +43,11 @@ def get_xyz_position_orientation_quat(tracker_inst, obj_name):
     return []
 
 def get_velocity(tracker_inst, obj_name):
-    # TODO Impelement
+    # TODO Implement
     return [0, 0, 0]
 
 def get_angular_vel(tracker_inst, obj_name):
-    # TODO Impelement
+    # TODO Implement
     return [0]
 
 def get_static_position(tracker_inst, obj_name, collect_frame_no):

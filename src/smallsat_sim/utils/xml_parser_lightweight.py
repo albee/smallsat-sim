@@ -5,6 +5,19 @@ def xmlify(array: list):
     return " ".join([str(x) for x in array])
 
 
+def _compiler_attributes(env_config) -> str:
+    """
+    Filtering out the convexhull compiler option since it was removed in MuJoCo 3.2.7.
+    """
+    compiler_config = getattr(env_config, "compiler", {}) or {}
+    filtered = {
+        key: value for key, value in compiler_config.items() if key != "convexhull"
+    }
+    if not filtered:
+        return ""
+    return " " + " ".join(f'{key}="{value}"' for key, value in filtered.items())
+
+
 def generate_mujoco_xml(env_config, model_config):
     """
     This function generates the xml string which is fed to MuJoCo for setting up the sim environment
@@ -20,7 +33,7 @@ def generate_mujoco_xml(env_config, model_config):
     # Loads all assets such as .obj files and corresponding meshes/texture
     xml_content = f"""<?xml version="1.0" encoding="utf-8"?>
     <mujoco model="{env_config.model}">
-        <compiler convexhull="{env_config.compiler['convexhull']}" texturedir="smallsat_sim/model" meshdir="smallsat_sim/model"/>
+        <compiler texturedir="src/smallsat_sim/model" meshdir="src/smallsat_sim/model"{_compiler_attributes(env_config)}/>
         <visual>
             <headlight ambient="{env_config.visual['headlight']['ambient']}" specular="{env_config.visual['headlight']['specular']}" diffuse="{env_config.visual['headlight']['diffuse']}"/>
         </visual>
@@ -178,7 +191,7 @@ def generate_mujoco_xml(env_config, model_config):
             <geom type="box" size="0.16 0.16 0.16" class="collision"/>\n"""
             for thruster in thrusters.thruster_list:
                 xml_content += f"            <site name='{body.name}_{thruster.site}' pos='{xmlify(thruster.pos)}' size='{thruster.size}'/>\n"
-        
+
             xml_content += "        </body>\n"
     else:
         # Define all free floating bodies
@@ -195,7 +208,7 @@ def generate_mujoco_xml(env_config, model_config):
                     xml_content += f"            <geom type='{geom.type}' size='{xmlify(geom.size)}' pos='{xmlify(geom.pos)}' euler='{xmlify(geom.euler)}'/>\n"
             for thruster in thrusters.thruster_list:
                 xml_content += f"            <site name='{body.name}_{thruster.site}' pos='{xmlify(thruster.pos)}' size='{thruster.size}'/>\n"
-                xml_content += "        </body>\n"
+            xml_content += "        </body>\n"
 
     xml_content += """    </worldbody>
 """
@@ -228,6 +241,6 @@ if __name__ == "__main__":
     model_config = ModelConfig()
     env = EnvConfig()
     xml = generate_mujoco_xml(env, model_config)
-    with open("cubesat.xml", "w") as f:
+    with open("astrobee.xml", "w") as f:
         f.write(xml)
     print(xml)
