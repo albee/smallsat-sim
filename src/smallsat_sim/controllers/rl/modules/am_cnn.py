@@ -2,7 +2,7 @@ from flax import nnx
 import jax.numpy as jnp
 
 
-class AdaptationModule(nnx.Module):
+class CNNAdaptationModule(nnx.Module):
     """
     Returns the extrinsics given the history of states and actions. Uses a 1-D CNN based to capture temporal correlations.
     """

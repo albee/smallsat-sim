@@ -32,6 +32,10 @@ class VecEnv(BaseEnv):
         # Flag to decide whether to use the adaptation module
         self.use_adaptive_approach = self.env_cfg.control.RL.use_adaptive_approach
 
+        # Adaptation module architecture
+        self.am_architecture = self.env_cfg.control.RL.am_architecture
+        self.history_len = self.env_cfg.control.RL.context_window_len
+
         super().__init__(args)
 
         # Mixer maps thruster commands to body-frame wrench
@@ -165,6 +169,23 @@ class VecEnv(BaseEnv):
             + angvel_pen_terminal
             + fuel_pen_terminal
         )
+
+        if self.use_adaptive_approach is True:
+            # Wrench residual penalty
+            residual_norm = jnp.linalg.norm(states[:, 12:18], axis=1)
+            lam_residual = jnp.asarray(
+                self.lam_wrench_residual, dtype=residual_norm.dtype
+            )
+            tolerance = jnp.asarray(
+                self.wrench_residual_tolerance, dtype=residual_norm.dtype
+            )
+            clip_value = jnp.asarray(
+                self.wrench_residual_clip, dtype=residual_norm.dtype
+            )
+            residual_excess = jnp.maximum(residual_norm - tolerance, 0.0)
+            residual_clipped = jnp.minimum(residual_excess, clip_value)
+            wrench_residual_pen = lam_residual * residual_clipped
+            penalties = penalties + wrench_residual_pen
 
         # Reward shaping
         rewards = phi_s_next - phi_s - penalties
@@ -635,3 +656,8 @@ class VecEnv(BaseEnv):
         self.lam_speed_terminal = self.env_cfg.control.RL.lam_speed_terminal
         self.lam_ang_speed_terminal = self.env_cfg.control.RL.lam_ang_speed_terminal
         self.lam_fuel_terminal = self.env_cfg.control.RL.lam_fuel_terminal
+        self.lam_wrench_residual = self.env_cfg.control.RL.lam_wrench_residual
+        self.wrench_residual_tolerance = (
+            self.env_cfg.control.RL.wrench_residual_tolerance
+        )
+        self.wrench_residual_clip = self.env_cfg.control.RL.wrench_residual_clip

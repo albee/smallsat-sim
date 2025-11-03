@@ -31,7 +31,9 @@ class Benchmarker(object):
         train_with_failures: bool,
         use_pretrained: bool,
         use_adaptive_approach: bool,
+        am_architecture: str | None = None,
         phase: int = 2,
+        pretrain_only: bool = False,
     ) -> None:
         """
         Train and evaluate the RL controller.
@@ -43,6 +45,7 @@ class Benchmarker(object):
             train_with_failures=train_with_failures,
             use_pretrained=use_pretrained,
             use_adaptive_approach=use_adaptive_approach,
+            am_architecture=am_architecture,
         )
 
         # Create planner
@@ -54,15 +57,16 @@ class Benchmarker(object):
         # Pretraining
         runner.pretrain()
 
-        # Learning
-        runner.learn()
+        if not pretrain_only:
+            # Learning
+            runner.learn()
 
-        # Adaptation module training
-        if use_adaptive_approach and phase == 2:
-            runner.train_adaptation_module_on_policy()
+            # Adaptation module training
+            if use_adaptive_approach and phase == 2:
+                runner.train_adaptation_module_on_policy()
 
-        # Evaluation
-        runner.evaluate(phase=phase)
+            # Evaluation
+            runner.evaluate(phase=phase)
 
         # Save log if logging is enabled
         if self.args.log:
@@ -76,6 +80,7 @@ class Benchmarker(object):
         train_with_failures: bool,
         use_pretrained: bool,
         use_adaptive_approach: bool,
+        am_architecture: str | None = None,
         phase: int = 2,
         ckpt_name: str | None = None,
         test_pd: bool = False,
@@ -92,6 +97,7 @@ class Benchmarker(object):
             train_with_failures=train_with_failures,
             use_pretrained=use_pretrained,
             use_adaptive_approach=use_adaptive_approach,
+            am_architecture=am_architecture,
         )
 
         # Create planner

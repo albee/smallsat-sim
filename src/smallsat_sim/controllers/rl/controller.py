@@ -9,7 +9,10 @@ from smallsat_sim.planners.base_planner import BasePlanner
 from smallsat_sim.controllers.pd.vectorized_controller import VectorizedPDController
 from smallsat_sim.controllers.rl.algorithms.vpg import VPG
 from smallsat_sim.controllers.rl.algorithms.ppo import PPO
-from smallsat_sim.controllers.rl.modules.adaptation_module import AdaptationModule
+from smallsat_sim.controllers.rl.modules.am_cnn import CNNAdaptationModule
+from smallsat_sim.controllers.rl.modules.am_transformer import (
+    TransformerAdaptationModule,
+)
 from smallsat_sim.controllers.rl.runners.runner_utils import load_trained_modules
 from smallsat_sim.utils.helpers_jax import normalize_obs
 
@@ -28,7 +31,8 @@ class RLController(object):
         base_key = self.env.next_rng_keys(1)[0]
         self._rng, agent_key = jax.random.split(base_key)
         self.agent = PPO(self.env, planner, rng_key=agent_key)
-        self.am = AdaptationModule(50, env.obs_dim + env.act_dim, env.ext_dim)
+        self.state_action_dim = self.env.obs_dim + self.env.act_dim
+        self.am = self._build_adaptation_module()
         self.pd_ctrl = VectorizedPDController(env, planner)
 
         # Deployment length (if applicable)
@@ -36,6 +40,7 @@ class RLController(object):
 
         # Path to the saved checkpoints
         self.ckpt_dir = "src/smallsat_sim/controllers/rl/checkpoints/"
+        self.adaptation_module_file_name = self._get_adaptation_module_file_name()
         if ckpt_name is not None:
             self.ckpt_filename = ckpt_name
         else:
@@ -79,7 +84,7 @@ class RLController(object):
                 )
                 if self.env.use_adaptive_approach and phase == 2:
                     adapt_module_state = load_trained_modules(
-                        self.ckpt_dir, "adapt_module_state.pkl"
+                        self.ckpt_dir, self.adaptation_module_file_name
                     )
                     nnx.update(self.am, adapt_module_state["am_model"])
             else:
@@ -102,14 +107,14 @@ class RLController(object):
 
         # No history in the beginning
         state_action_history = jnp.zeros(
-            (self.env.num_envs, 50, self.env.obs_dim + self.env.act_dim)
+            (self.env.num_envs, self.env.history_len, self.state_action_dim)
         )
         history_len = state_action_history.shape[1]
         history_counts = jnp.zeros(self.env.num_envs, dtype=jnp.int32)
 
         # Initialize residuals
         if self.env.use_adaptive_approach is True:
-            res = jnp.zeros(self.env.res_dim)
+            res = jnp.zeros((self.env.num_envs, self.env.res_dim))
             ext = jnp.zeros((self.env.num_envs, self.env.ext_dim))
         else:
             res = jnp.empty((self.env.num_envs, 0))
@@ -204,6 +209,28 @@ class RLController(object):
             if self.planner.completed_path.all():
                 break
 
+    def _build_adaptation_module(self):
+        """
+        Build the right adaptation module.
+        """
+        if self.env.am_architecture == "transformer":
+            return TransformerAdaptationModule(
+                self.env.history_len, self.state_action_dim, self.env.ext_dim
+            )
+        if self.env.am_architecture == "cnn":
+            return CNNAdaptationModule(
+                self.env.history_len, self.state_action_dim, self.env.ext_dim
+            )
+        raise ValueError(
+            f"Unknown adaptation module architecture '{self.env.am_architecture}'."
+        )
+
+    def _get_adaptation_module_file_name(self) -> str:
+        """
+        Get the adaptation module checkpoint.
+        """
+        return f"adapt_module_state_{self.env.am_architecture}.pkl"
+
     def _get_training_state_file_name(self) -> None:
         """
         Set the checkpoint file name for the training state.
@@ -218,3 +245,4 @@ class RLController(object):
             parts.append("nominal")
 
         self.ckpt_filename = "_".join(parts) + ".pkl"
+        self.adaptation_module_file_name = self._get_adaptation_module_file_name()

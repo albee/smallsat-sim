@@ -207,12 +207,14 @@ The structure of the core implementation in `controllers/rl` is:
 │   ├── base_agent.py
 │   ├── ppo.py
 │   └── vpg.py
+├── checkpoints
 ├── controller.py
 ├── modules
-│   ├── adaptation_module.py
 │   ├── base_network.py
 │   ├── base_policy.py
-│   └── mlp.py
+│   ├── cnn_am.py
+│   ├── mlp.py
+│   └── transformer_am.py
 ├── runners
 │   ├── on_policy_runner.py
 │   └── runner_utils.py
@@ -226,7 +228,7 @@ The vectorized environment in `envs/vec_env.py` is crucial training the RL agent
 
 The easiest way to get a good overview is to step through one iteration of the training loop using the debugger. The object that coordinates all RL activities is the `OnPolicyRunner` in `on_policy_runner.py`. In between pretraining, training and evaluation, the neural network weights of the actor and critic are saved as [pickle](https://docs.python.org/3/library/pickle.html) files.
 
-To achieve adaptive policies, the residual wrench (actual - desired) commanded by the smallsat's actuator's is fed to the base policy during training and depolyment. During the latter, the actual wrench (called extrinsics) is estimated by the `AdaptationModule`. This is turn is trained with supervised learning, using the state-action history and the ground extrinsics from simulation.
+To achieve adaptive policies, the residual wrench (actual - desired) commanded by the smallsat's actuator's is fed to the base policy during training and depolyment. During the latter, the actual wrench (called extrinsics) is estimated by the `CNNAdaptationModule` or `TransformerAdaptationModule`. This is turn is trained with supervised learning, using the state-action history and the ground extrinsics from simulation. The active adaptation architecture can be selected through `EnvConfig.control.RL.am_architecture` (default `"transformer"`).
 
 To deploy the trained RL controller, run `experiments/astrobee_RL.py`.
 

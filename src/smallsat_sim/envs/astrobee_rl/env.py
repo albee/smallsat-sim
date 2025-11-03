@@ -22,6 +22,7 @@ class AstrobeeEnvVectorized(VecEnv):
         train_with_failures: bool | None = None,
         use_pretrained: bool | None = None,
         use_adaptive_approach: bool | None = None,
+        am_architecture: str | None = None,
     ) -> None:
         # Run name for logging
         self.run_name = run_name
@@ -40,6 +41,8 @@ class AstrobeeEnvVectorized(VecEnv):
             self.env_cfg.control.RL.use_pretrained = use_pretrained
         if use_adaptive_approach is not None:
             self.env_cfg.control.RL.use_adaptive_approach = use_adaptive_approach
+        if am_architecture is not None:
+            self.env_cfg.control.RL.am_architecture = am_architecture
         super().__init__(args=args)
 
         # Instantiate perturbations

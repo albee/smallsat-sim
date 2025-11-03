@@ -11,7 +11,10 @@ from smallsat_sim.planners.oracle.oracle_rl import OraclePlannerRL
 from smallsat_sim.controllers.pd.vectorized_controller import VectorizedPDController
 from smallsat_sim.controllers.rl.algorithms.vpg import VPG
 from smallsat_sim.controllers.rl.algorithms.ppo import PPO
-from smallsat_sim.controllers.rl.modules.adaptation_module import AdaptationModule
+from smallsat_sim.controllers.rl.modules.am_cnn import CNNAdaptationModule
+from smallsat_sim.controllers.rl.modules.am_transformer import (
+    TransformerAdaptationModule,
+)
 from smallsat_sim.controllers.rl.storage.replay_buffer import ReplayBuffer
 from smallsat_sim.controllers.rl.runners.runner_utils import (
     save_training_data,
@@ -22,7 +25,6 @@ from smallsat_sim.controllers.rl.runners.runner_utils import (
 )
 from smallsat_sim.utils.helpers_jax import (
     train_val_split,
-    batch_mse_loss_fn,
     mae_loss_fn,
     normalize_obs,
     calc_lateral_tracking_error,
@@ -44,7 +46,8 @@ class OnPolicyRunner(object):
         base_key = self.env.next_rng_keys(1)[0]
         self._rng, agent_key = jax.random.split(base_key)
         self.agent = PPO(self.env, planner, rng_key=agent_key)
-        self.am = AdaptationModule(50, env.obs_dim + env.act_dim, env.ext_dim)
+        self.state_action_dim = self.env.obs_dim + self.env.act_dim
+        self.am = self._build_adaptation_module()
         self.reference_point = planner.get_reference(
             self.env.get_obs()
         )  # Is re-used in every episode
@@ -53,10 +56,12 @@ class OnPolicyRunner(object):
 
         # Vectorize adaptation module
         self.adaptation_module = jax.vmap(self.am)
+        self.am_kl_weight = self.env.env_cfg.control.RL.am_kl_weight
+        self.am_loss_fn = self._select_am_loss_fn()
 
         # JIT-compile the adaptation module updates
         self.jitted_batched_am_loss_and_grad = nnx.jit(
-            nnx.value_and_grad(batch_mse_loss_fn), static_argnums=()
+            nnx.value_and_grad(self.am_loss_fn), static_argnums=()
         )
 
         # Path to save the checkpoints
@@ -265,16 +270,6 @@ class OnPolicyRunner(object):
         print("Training agent...\n")
 
         # Set up buffer
-        buffer = ReplayBuffer(
-            self.env.num_envs,
-            self.env.obs_dim,
-            self.env.act_dim,
-            self.env.res_dim,
-            self.steps_per_epoch,
-            self.gamma,
-            self.lam,
-        )
-
         # Initialize the environment
         self.env.reset()
         self.env.reset_perturbations()
@@ -286,7 +281,7 @@ class OnPolicyRunner(object):
         episode_counter = 0
 
         if self.env.use_adaptive_approach is True:
-            res = jnp.zeros(self.env.res_dim)
+            res = jnp.zeros((self.env.num_envs, self.env.res_dim))
         else:
             res = jnp.empty((self.env.num_envs, 0))
 
@@ -388,7 +383,7 @@ class OnPolicyRunner(object):
                     )
 
                     if self.env.use_adaptive_approach is True:
-                        res = jnp.zeros(self.env.res_dim)
+                        res = jnp.zeros((self.env.num_envs, self.env.res_dim))
                     else:
                         res = jnp.empty((self.env.num_envs, 0))
 
@@ -508,7 +503,7 @@ class OnPolicyRunner(object):
             return
 
         # Check if adaptation module has already been trained
-        file_path = os.path.join(self.ckpt_dir, "adapt_module_state.pkl")
+        file_path = os.path.join(self.ckpt_dir, self.adaptation_module_file_name)
         if os.path.isfile(file_path):
             return
 
@@ -550,12 +545,12 @@ class OnPolicyRunner(object):
 
         # No history in the beginning
         state_action_history = jnp.zeros(
-            (self.env.num_envs, 50, self.env.obs_dim + self.env.act_dim)
+            (self.env.num_envs, self.env.history_len, self.state_action_dim)
         )
         history_len = state_action_history.shape[1]
 
         # Initialize residuals
-        res = jnp.zeros(self.env.res_dim)
+        res = jnp.zeros((self.env.num_envs, self.env.res_dim))
 
         # Create PRNG keys
         subkeys_train = self._take_keys(self.epochs)
@@ -580,12 +575,14 @@ class OnPolicyRunner(object):
         )
 
         # Main training loop
+        state_action_history = jnp.zeros(
+            (self.env.num_envs, history_len, self.state_action_dim)
+        )
+        history_counts = jnp.zeros(self.env.num_envs, dtype=jnp.int32)
         for epoch in range(self.epochs):
-            # Reset history buffer and counters at the start of each epoch.
-            state_action_history = jnp.zeros(
-                (self.env.num_envs, history_len, self.env.obs_dim + self.env.act_dim)
-            )
-            history_counts = jnp.zeros(self.env.num_envs, dtype=jnp.int32)
+            obs_buffer = []
+            act_buffer = []
+            extrinsics_buffer = []
             history_full_records: list[jnp.ndarray] = []
             ramp_duration = max(self.epochs // 2, 1)
             ramp_progress = min((epoch - ramp_duration) / ramp_duration, 1.0)
@@ -637,11 +634,9 @@ class OnPolicyRunner(object):
                 res = actual_wrench - desired_wrench
                 ext_gt = actual_wrench  # Ground truth extrinsics
 
-                # Log transition
-                placeholder = jnp.zeros(self.env.num_envs)
-                buffer.store(
-                    states, a, placeholder, placeholder, placeholder, ext_gt
-                )  # Use ReplayBuffer to store extrinsics
+                obs_buffer.append(states)
+                act_buffer.append(a)
+                extrinsics_buffer.append(ext_gt)
 
                 # Compute and log mean errors
                 obs = self.env.get_obs()
@@ -684,24 +679,19 @@ class OnPolicyRunner(object):
                     )
                     states_normalized = states
 
-                    res = jnp.zeros(self.env.res_dim)
+                    res = jnp.zeros((self.env.num_envs, self.env.res_dim))
                     state_action_history = jnp.zeros(
                         (
                             self.env.num_envs,
                             history_len,
-                            self.env.obs_dim + self.env.act_dim,
+                            self.state_action_dim,
                         )
                     )
                     history_counts = jnp.zeros(self.env.num_envs, dtype=jnp.int32)
 
-            # Get the data from the training loop
-            data = buffer.get()
-
-            obs = data["obs"]
-            act = data["act"]
-            extrinsics = data[
-                "residuals"
-            ]  # Here, residuals store the ground truth extrinsics
+            obs = jnp.stack(obs_buffer, axis=0)
+            act = jnp.stack(act_buffer, axis=0)
+            extrinsics = jnp.stack(extrinsics_buffer, axis=0)
 
             state_action_data = jnp.concatenate([obs, act], axis=2)
             # Reconstruct stride-1 windows and drop entries captured during the warm-up phase.
@@ -780,7 +770,9 @@ class OnPolicyRunner(object):
                 )
 
             # Save the adaptation module weights
-            save_adaptation_module(self.am, self.ckpt_dir, "adapt_module_state.pkl")
+            save_adaptation_module(
+                self.am, self.ckpt_dir, self.adaptation_module_file_name
+            )
 
     def posttrain(self) -> None:
         """
@@ -807,7 +799,7 @@ class OnPolicyRunner(object):
             nnx.update(self.agent.critic.v_net, restored_state["critic_model"].v_net)
             if self.env.use_adaptive_approach and phase == 2:
                 adapt_module_state = load_trained_modules(
-                    self.ckpt_dir, "adapt_module_state.pkl"
+                    self.ckpt_dir, self.adaptation_module_file_name
                 )
                 nnx.update(self.am, adapt_module_state["am_model"])
         else:
@@ -828,12 +820,14 @@ class OnPolicyRunner(object):
 
             # No history in the beginning
             state_action_history = jnp.zeros(
-                (self.env.num_envs, 50, self.env.obs_dim + self.env.act_dim)
+                (self.env.num_envs, self.env.history_len, self.state_action_dim)
             )
 
             # Initialize residuals
             if self.env.use_adaptive_approach is True:
-                res = jnp.zeros(self.env.res_dim)  # No control input yet
+                res = jnp.zeros(
+                    (self.env.num_envs, self.env.res_dim)
+                )  # No control input yet
             else:
                 res = jnp.empty((self.env.num_envs, 0))
 
@@ -971,7 +965,7 @@ class OnPolicyRunner(object):
         states_normalized = states
 
         if self.env.use_adaptive_approach is True:
-            res = jnp.zeros(self.env.res_dim)
+            res = jnp.zeros((self.env.num_envs, self.env.res_dim))
         else:
             res = jnp.empty((self.env.num_envs, 0))
 
@@ -1038,13 +1032,55 @@ class OnPolicyRunner(object):
                 states_normalized = states
 
                 if self.env.use_adaptive_approach is True:
-                    res = jnp.zeros(self.env.res_dim)
+                    res = jnp.zeros((self.env.num_envs, self.env.res_dim))
                 else:
                     res = jnp.empty((self.env.num_envs, 0))
 
         # Get the data from the training loop and save it
         data = buffer.get()
         save_training_data(self.ckpt_dir, self.pretraining_data_file_name, data)
+
+    def _build_adaptation_module(self):
+        if self.env.am_architecture == "transformer":
+            return TransformerAdaptationModule(
+                self.env.history_len, self.state_action_dim, self.env.ext_dim
+            )
+        if self.env.am_architecture == "cnn":
+            return CNNAdaptationModule(
+                self.env.history_len, self.state_action_dim, self.env.ext_dim
+            )
+        raise ValueError(
+            f"Unknown adaptation module architecture '{self.env.am_architecture}'."
+        )
+
+    def _select_am_loss_fn(self):
+        if self.env.am_architecture == "transformer":
+            kl_weight = float(self.am_kl_weight)
+
+            def _loss(model, X: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
+                mu, log_sigma = jax.vmap(lambda hist: model(hist, return_stats=True))(X)
+                target = y[:, -1, :]
+                log_sigma = jnp.clip(log_sigma, -6.0, 2.0)
+                sigma_sq = jnp.exp(2.0 * log_sigma)
+                nll = 0.5 * jnp.sum(
+                    ((target - mu) ** 2) / sigma_sq + 2.0 * log_sigma, axis=-1
+                )
+                if kl_weight > 0.0:
+                    kl = 0.5 * jnp.sum(
+                        mu**2 + sigma_sq - 1.0 - jnp.log(sigma_sq + 1e-8), axis=-1
+                    )
+                    return jnp.mean(nll + kl_weight * kl)
+                return jnp.mean(nll)
+
+            return _loss
+
+        def _mse_loss(model, X: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
+            preds = jax.vmap(model)(X)
+            target = y[:, -1, :]
+            mse = jnp.square(preds - target)
+            return jnp.mean(jnp.sum(mse, axis=-1))
+
+        return _mse_loss
 
     def _build_sliding_windows(
         self,
@@ -1171,3 +1207,6 @@ class OnPolicyRunner(object):
         # Training filenames
         self.training_data_file_name = build_name("training_data")
         self.training_state_file_name = build_name("training_state")
+        self.adaptation_module_file_name = (
+            f"adapt_module_state_{self.env.am_architecture}.pkl"
+        )
