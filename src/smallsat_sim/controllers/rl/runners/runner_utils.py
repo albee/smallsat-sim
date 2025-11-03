@@ -42,7 +42,7 @@ def load_training_data(data_path: str, data_filename: str):
     """
     with open(data_path + data_filename, "rb") as file:
         data = pickle.load(file)
-    print(f"Checkpoint loaded from {data_filename}")
+    print(f"Checkpoint data loaded from {data_filename}")
 
     return data
 
