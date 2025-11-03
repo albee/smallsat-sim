@@ -6,6 +6,56 @@ import matplotlib.pyplot as plt
 from smallsat_sim.utils.logger import Logger
 
 
+RESULTS_DIR = Path("experiments/rl_results/")
+
+ERROR_METRICS = [
+    "mean_tracking_error",
+    "mean_angle_error",
+    "mean_extrinsic_error",
+]
+
+STAGE_METRICS_TRAIN = {
+    "policy_training": [
+        "mean_tracking_error",
+        "mean_angle_error",
+        "mean_extrinsic_error",
+        "mean_episodic_returns",
+        "mean_rewards",
+        "actor_loss",
+        "critic_loss",
+        "num_terminal",
+        "mean_log_std",
+        "mean_std",
+    ],
+    "am_training": [
+        "mean_tracking_error",
+        "mean_angle_error",
+        "mean_extrinsic_error",
+        "am_train_loss",
+        "am_val_loss",
+    ],
+    "evaluation": [
+        "mean_tracking_error",
+        "mean_angle_error",
+        "mean_extrinsic_error",
+        "mean_episodic_returns",
+        "num_terminal",
+    ],
+}
+
+DEPLOYMENT_STAGES = [
+    "deployment",
+    "stuck_off_deployment",
+    "stuck_on_deployment",
+    "faulty_valve_deployment",
+    "saturated_thrust_deployment",
+    "thrust_instability_deployment",
+    "constant_force_disturbances_deployment",
+]
+
+STAGE_METRICS_TEST = {stage: ERROR_METRICS for stage in DEPLOYMENT_STAGES}
+
+
 def plot_results(logger: Logger, run_name: str) -> None:
     """
     Plot the results of a simulation run (based on the logged data).
@@ -26,40 +76,11 @@ def plot_results(logger: Logger, run_name: str) -> None:
         return
 
     # Define base output directory and keep runs grouped by stage
-    dir_name = Path("experiments/rl_results/")
-
-    # Define a mapping from stage names to the list of metrics to plot
-    stage_metrics_train = {
-        "policy_training": [
-            "mean_tracking_error",
-            "mean_angle_error",
-            "mean_episodic_returns",
-            "mean_rewards",
-            "actor_loss",
-            "critic_loss",
-            "num_terminal",
-            "mean_log_std",
-            "mean_std",
-        ],
-        "am_training": [
-            "mean_tracking_error",
-            "mean_angle_error",
-            "mean_extrinsic_error",
-            "am_train_loss",
-            "am_val_loss",
-        ],
-        "evaluation": [
-            "mean_tracking_error",
-            "mean_angle_error",
-            "mean_extrinsic_error",  # Only relevant if in phase 2
-            "mean_episodic_returns",
-            "num_terminal",
-        ],
-    }
+    dir_name = RESULTS_DIR
 
     # If the stage column exists, loop over the stage-metrics mapping
     if "stage" in df_run.columns:
-        for stage_name, metrics in stage_metrics_train.items():
+        for stage_name, metrics in STAGE_METRICS_TRAIN.items():
             stage_data = df_run[df_run["stage"] == stage_name]
             if stage_data.empty:
                 print(f"No rows with stage '{stage_name}' found. Nothing to plot.")
@@ -82,24 +103,9 @@ def plot_results(logger: Logger, run_name: str) -> None:
                         x_col="step",
                     )
 
-    errors = [
-        "mean_tracking_error",
-        "mean_angle_error",
-        "mean_extrinsic_error",
-    ]  # mean_extrinsic_error only relevant if in phase 2
-    stage_metrics_test = {
-        "deployment": errors,
-        "stuck_off_deployment": errors,
-        "stuck_on_deployment": errors,
-        "faulty_valve_deployment": errors,
-        "saturated_thrust_deployment": errors,
-        "thrust_instability_deployment": errors,
-        "constant_force_disturbances_deployment": errors,
-    }
-
     # If the stage column exists, loop over the stage-metrics mapping
     if "stage" in df_run.columns:
-        for stage_name, metrics in stage_metrics_test.items():
+        for stage_name, metrics in STAGE_METRICS_TEST.items():
             stage_data = df_run[df_run["stage"] == stage_name]
             if stage_data.empty:
                 print(f"No rows with stage '{stage_name}' found. Nothing to plot.")
@@ -177,6 +183,125 @@ def plot_metric(
     plt.close()
 
 
+def plot_metric_multi_run(
+    df: pd.DataFrame,
+    metric_name: str,
+    base_dir: Path,
+    stage_name: str,
+    xlabel: str,
+    x_col: str | None,
+    to_seconds: bool = False,
+) -> None:
+    """
+    Plot the specified metric for all run names present in the DataFrame.
+    """
+    if metric_name not in df.columns:
+        return
+    if "run_name" not in df.columns:
+        print("Column 'run_name' not found in DataFrame. Skipping multi-run plot.")
+        return
+
+    resolved_x_col = _resolve_column_name(df, x_col)
+    if x_col and resolved_x_col is None:
+        print(
+            f"Column '{x_col}' not found in DataFrame. Skipping multi-run plot for {metric_name}."
+        )
+        return
+
+    plt.figure(figsize=(8, 6))
+    plotted = False
+
+    for run_name, run_df in df.groupby("run_name"):
+        columns = [metric_name]
+        if resolved_x_col:
+            columns.append(resolved_x_col)
+
+        run_metric_df = run_df[columns].dropna()
+        if run_metric_df.empty:
+            continue
+
+        if resolved_x_col:
+            run_metric_df = run_metric_df.sort_values(resolved_x_col)
+            metric_series = run_metric_df[metric_name]
+            x_series = _prepare_x_data(
+                run_metric_df[resolved_x_col], to_seconds=to_seconds
+            )
+            valid_mask = x_series.notna()
+            metric_series = metric_series[valid_mask]
+            x_series = x_series[valid_mask]
+        else:
+            metric_series = run_metric_df[metric_name]
+            x_series = metric_series.index
+
+        if metric_series.empty:
+            continue
+
+        plt.plot(x_series, metric_series, label=run_name)
+        plotted = True
+
+    if not plotted:
+        plt.close()
+        return
+
+    plt.xlabel(xlabel)
+    plt.ylabel(metric_name.replace("_", " ").title())
+    clean_name = metric_name.replace("_", " ").title()
+    stage_label = stage_name.replace("_", " ").title()
+    plt.title(f"{clean_name} Across Runs ({stage_label})")
+    plt.legend()
+
+    output_dir = base_dir / "all_runs" / stage_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = f"{metric_name}_all_runs"
+    plt.savefig(output_dir / f"{filename}.svg", format="svg")
+    plt.savefig(output_dir / f"{filename}.pdf", format="pdf")
+    plt.close()
+
+
+def plot_deployment_errors_all_runs(logger: Logger) -> None:
+    """
+    Generate comparison plots for the error metrics across all run names for each
+    deployment stage.
+    """
+    try:
+        df = logger.load_all_logs(run_id=0)
+    except FileNotFoundError as exc:
+        print(f"Unable to load logs for multi-run deployment plots: {exc}")
+        return
+
+    if df.empty:
+        print("No log data available for multi-run deployment plots.")
+        return
+
+    if "stage" not in df.columns:
+        print("Column 'stage' not found in DataFrame. Cannot generate multi-run plots.")
+        return
+
+    if "run_name" not in df.columns:
+        print(
+            "Column 'run_name' not found in DataFrame. Cannot generate multi-run plots."
+        )
+        return
+
+    for stage_name in DEPLOYMENT_STAGES:
+        stage_data = df[df["stage"] == stage_name]
+        if stage_data.empty:
+            continue
+        for metric in ERROR_METRICS:
+            if metric not in stage_data.columns:
+                continue
+            plot_metric_multi_run(
+                stage_data,
+                metric,
+                RESULTS_DIR,
+                stage_name,
+                "Time (s)",
+                x_col="timestamp",
+                to_seconds=True,
+            )
+
+
 def _resolve_column_name(df: pd.DataFrame, column: str | None) -> str | None:
     """
     Return the actual column name in the DataFrame that matches the requested column,
@@ -234,6 +359,8 @@ def main():
         "pretrained_ppo_adaptive",
     ]:
         plot_results(logger, run_name)
+
+    plot_deployment_errors_all_runs(logger)
 
 
 if __name__ == "__main__":
