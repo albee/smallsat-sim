@@ -6,7 +6,7 @@ os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True "
 from experiments.rl_benchmarking.rl_benchmarker import Benchmarker
 
 
-benchmarker = Benchmarker()
+benchmarker = Benchmarker(run_name="pd_controller")
 
 benchmarker.deploy_and_test(
     train_with_failures=True,
