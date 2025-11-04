@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # Scripts to run
-scripts=("experiments/rl_benchmarking/pd_controller.py" 
-        "experiments/rl_benchmarking/nn_controller.py"
-        "experiments/rl_benchmarking/nn_controller_adaptive.py"
+scripts=(
+        # "experiments/rl_benchmarking/pd_controller.py" 
+        # "experiments/rl_benchmarking/nn_controller.py"
+        # "experiments/rl_benchmarking/nn_controller_adaptive.py"
         "experiments/rl_benchmarking/ppo_nominal.py"
         "experiments/rl_benchmarking/ppo_plain.py"
         "experiments/rl_benchmarking/ppo_adaptive_sim.py"
