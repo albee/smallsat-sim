@@ -54,8 +54,9 @@ class Benchmarker(object):
         # Create runner
         runner = OnPolicyRunner(env, planner)
 
-        # Pretraining
-        runner.pretrain()
+        if use_pretrained:
+            # Pretraining
+            runner.pretrain()
 
         if not pretrain_only:
             # Learning
