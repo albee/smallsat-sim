@@ -86,9 +86,11 @@ class OraclePlannerRL(BasePlanner):
         v1 = B1 - A1  # shape: (num_envs, 3)
         dot1 = jnp.sum((pos - A1) * v1, axis=1)  # shape: (num_envs,)
         norm_sq1 = jnp.sum(v1 * v1, axis=1)  # shape: (num_envs,)
-        t1 = dot1 / norm_sq1
+        valid1 = norm_sq1 > 1e-8
+        t1 = jnp.where(valid1, dot1 / norm_sq1, 0.0)
         t1 = jnp.clip(t1, 0.0, 1.0)  # ensure projection lies on the segment
-        candidate1 = A1 + t1[:, None] * v1  # shape: (num_envs, 3)
+        proj1 = A1 + t1[:, None] * v1  # shape: (num_envs, 3)
+        candidate1 = jnp.where(valid1[:, None], proj1, B1)
 
         # Candidate 2: projection on the segment from the closest point to the next point
         A2 = self.reference_points[i_closest]  # shape: (num_envs, 3)
@@ -96,9 +98,11 @@ class OraclePlannerRL(BasePlanner):
         v2 = B2 - A2  # shape: (num_envs, 3)
         dot2 = jnp.sum((pos - A2) * v2, axis=1)  # shape: (num_envs,)
         norm_sq2 = jnp.sum(v2 * v2, axis=1)  # shape: (num_envs,)
-        t2 = dot2 / norm_sq2
+        valid2 = norm_sq2 > 1e-8
+        t2 = jnp.where(valid2, dot2 / norm_sq2, 0.0)
         t2 = jnp.clip(t2, 0.0, 1.0)
-        candidate2 = A2 + t2[:, None] * v2  # shape: (num_envs, 3)
+        proj2 = A2 + t2[:, None] * v2  # shape: (num_envs, 3)
+        candidate2 = jnp.where(valid2[:, None], proj2, A2)
 
         # Compute distances from pos to each candidate projection
         d1 = jnp.linalg.norm(pos - candidate1, axis=1)
