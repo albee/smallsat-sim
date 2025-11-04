@@ -75,7 +75,7 @@ class OnPolicyRunner(object):
             setup_wandb()
             wandb.init(
                 project="Astrobee-training",
-                name=self.env.run_name,
+                name=f"{self.env.run_name}_{self.env.run_id}",
                 config={
                     "num_envs": self.env.num_envs,
                     "steps_per_epoch": self.steps_per_epoch,
@@ -83,8 +83,8 @@ class OnPolicyRunner(object):
                     "max_ep_len": self.max_ep_len,
                     "gamma": self.gamma,
                     "lam": self.lam,
-                    "actor_lr": self.actor_lr,
-                    "critic_lr": self.critic_lr,
+                    "actor_lr": self.agent.actor_lr,
+                    "critic_lr": self.agent.critic_lr,
                     "episode_len": self.episode_len,
                     "n_evals": self.n_evals,
                 },
@@ -270,6 +270,16 @@ class OnPolicyRunner(object):
         print("Training agent...\n")
 
         # Set up buffer
+        buffer = ReplayBuffer(
+            self.env.num_envs,
+            self.env.obs_dim,
+            self.env.act_dim,
+            self.env.res_dim,
+            self.steps_per_epoch,
+            self.gamma,
+            self.lam,
+        )
+
         # Initialize the environment
         self.env.reset()
         self.env.reset_perturbations()
@@ -285,23 +295,23 @@ class OnPolicyRunner(object):
         else:
             res = jnp.empty((self.env.num_envs, 0))
 
-        # Create PRNG keys
-        subkeys_train = self._take_keys(self.epochs)
-
         # Main training loop
         for epoch in range(self.epochs):
+            epoch_key = self._take_keys()
+            actor_key = epoch_key
             # Apply perturbations ramp-up
             if self.env.train_with_failures and epoch >= self.epochs // 2:
                 ramp_duration = max(self.epochs // 2, 1)
                 ramp_progress = min((epoch - ramp_duration) / ramp_duration, 1.0)
                 self.env.reset_perturbations()  # avoid accumulating failures across epochs
+                perturb_key, disturb_key, actor_key = jax.random.split(epoch_key, 3)
                 self.env.apply_random_perturbations(
-                    key=subkeys_train[epoch],
+                    key=perturb_key,
                     fraction_perturbed_envs=0.05
                     + (0.5 - 0.05) * max(ramp_progress, 0.0),
                 )
                 self.env.apply_random_disturbance(
-                    key=subkeys_train[epoch],
+                    key=disturb_key,
                     fraction_disturbed_envs=0.05
                     + (0.15 - 0.05) * max(ramp_progress, 0.0),
                 )
@@ -444,7 +454,7 @@ class OnPolicyRunner(object):
 
             # Update the policy gradient and the value function
             actor_loss, critic_loss = self.agent.update_actor_critic_minibatch(
-                subkeys_train[epoch],
+                actor_key,
                 jnp.concatenate([obs, residuals], axis=1),
                 actions,
                 tdres,
@@ -521,17 +531,6 @@ class OnPolicyRunner(object):
             )
 
         print("Training adaptation module...\n")
-
-        # Set up buffer
-        buffer = ReplayBuffer(
-            self.env.num_envs,
-            self.env.obs_dim,
-            self.env.act_dim,
-            self.env.res_dim,
-            self.steps_per_epoch,
-            self.gamma,
-            self.lam,
-        )
 
         # Initialize the environment
         self.env.reset()
