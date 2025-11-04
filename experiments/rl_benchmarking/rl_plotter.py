@@ -352,11 +352,13 @@ def main():
         "ppo_nominal",
         "ppo_plain",
         "ppo_adaptive_sim",
-        "ppo_adaptive",
+        "ppo_adaptive_cnn",
+        "ppo_adaptive_transformer",
         "pretrained_ppo_nominal",
         "pretrained_ppo",
         "pretrained_ppo_adaptive_sim",
-        "pretrained_ppo_adaptive",
+        "pretrained_ppo_adaptive_cnn",
+        "pretrained_ppo_adaptive_transformer",
     ]:
         plot_results(logger, run_name)
 
