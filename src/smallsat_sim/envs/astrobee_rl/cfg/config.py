@@ -51,6 +51,9 @@ class EnvConfig(BaseEnvConfig):
         class RL:
             control_decimation = 25
 
+            # Run ID
+            rl_run_id = 0
+
             # Number of environments
             num_envs = 2048
 
