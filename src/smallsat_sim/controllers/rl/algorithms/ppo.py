@@ -579,24 +579,8 @@ def _actor_critic_epochs_jit(
                 )
 
                 def skip_fn(op):
-                    (
-                        state_skip,
-                        stop_skip,
-                        actor_loss_skip,
-                        critic_loss_skip,
-                        kl_skip,
-                        *_,
-                    ) = op
-                    return (
-                        state_skip,
-                        stop_skip,
-                        actor_loss_skip,
-                        critic_loss_skip,
-                        last_actor_sum_skip,
-                        last_critic_sum_skip,
-                        last_steps_skip,
-                        kl_skip,
-                    )
+                    # Preserve the running statistics when we skip an update.
+                    return op[:8]
 
                 def update_fn(op):
                     (
