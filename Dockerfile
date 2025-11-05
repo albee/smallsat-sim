@@ -10,6 +10,7 @@ ENV USE_CUDA=${USE_CUDA}
 ENV CUDA_HOME=/usr/local/cuda \
     CUDA_PATH=/usr/local/cuda \
     LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH \
+    XLA_FLAGS="--xla_gpu_cuda_data_dir=/usr/local/cuda" \
     TZ=US \
     DEBIAN_FRONTEND=noninteractive
 
@@ -79,6 +80,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     ffmpeg \
     libsm6 \
     libxext6 \
+    openssh-server \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Default to an off-screen MuJoCo GL backend; override at runtime if needed (e.g. MUJOCO_GL=egl or osmesa)
@@ -100,6 +102,9 @@ RUN ./.setup/ubuntu/install_tera_renderer.sh
 RUN ./.setup/ubuntu/install_l4acados.sh
 # ENV ACADOS_SOURCE_DIR="/acados"
 # ENV LD_LIBRARY_PATH="/acados/lib:$LD_LIBRARY_PATH"
+
+# Make CUDA libraries discoverable for components that rely on ldconfig lookups
+RUN echo /usr/local/cuda/lib64 > /etc/ld.so.conf.d/cuda.conf && ldconfig
 
 # ===============================
 # Install Python dependencies
@@ -130,9 +135,9 @@ RUN apt-get update && \
 # Install dependencies and the package in editable mode
 RUN pip install -e .
 
-# Force install CUDA-enabled JAX when requested (same version as in pyproject.toml)
+# Force install CUDA-enabled JAX against the system CUDA when requested (same version as in pyproject.toml)
 RUN if [ "$USE_CUDA" = "1" ]; then \
-        pip install "jax[cuda12]==0.6.2" --force-reinstall --no-cache-dir; \
+        pip install --no-cache-dir "jax[cuda12_local]==0.6.2" --force-reinstall; \
     fi
 
 
