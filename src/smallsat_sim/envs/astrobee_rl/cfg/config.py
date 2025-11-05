@@ -87,9 +87,9 @@ class EnvConfig(BaseEnvConfig):
                 max_ep_len = 1024
                 gamma = 0.99
                 lam = 0.95
-                actor_lr = 5e-4
-                critic_lr = 5e-3
-                entropy_coef = 1e-3
+                actor_lr = 3e-4
+                critic_lr = 1e-3
+                entropy_coef = 3e-3
 
             # Mission tolerances
             sigma_pos = 0.2
@@ -113,10 +113,10 @@ class EnvConfig(BaseEnvConfig):
             context_window_len = 50
 
             # Hyperparams for the adaptation module training
-            am_lr = 1e-3
-            am_weight_decay = 0.0
+            am_lr = 3e-4
+            am_weight_decay = 0.05
             am_grad_clip_norm = 1.0
-            am_kl_weight = 0.0
+            am_kl_weight = 0.01
 
             # Hyperparams for the evaluation loop
             episode_len = 700
