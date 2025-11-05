@@ -321,6 +321,8 @@ class OnPolicyRunner(object):
             epoch_angle_history = []
             epoch_terminal_flags = []
             epoch_episode_returns = []
+            epoch_reward_sums: dict[str, jnp.ndarray] = {}
+            epoch_reward_counts: dict[str, int] = {}
 
             for t in range(self.steps_per_epoch):
                 # Get actions from the agent
@@ -332,6 +334,15 @@ class OnPolicyRunner(object):
                 r, terminal = self.env.transition(
                     a, states, self.reference_point, epoch
                 )
+                reward_components = self.env.get_last_reward_components()
+                for name, values in reward_components.items():
+                    mean_val = jnp.mean(values)
+                    if name in epoch_reward_sums:
+                        epoch_reward_sums[name] = epoch_reward_sums[name] + mean_val
+                        epoch_reward_counts[name] += 1
+                    else:
+                        epoch_reward_sums[name] = mean_val
+                        epoch_reward_counts[name] = 1
                 epoch_terminal_flags.append(terminal)
                 ep_ret += r
                 ep_len += 1
@@ -436,6 +447,11 @@ class OnPolicyRunner(object):
             else:
                 residuals = jnp.empty((self.steps_per_epoch * self.env.num_envs, 0))
 
+            reward_component_means = {
+                name: epoch_reward_sums[name] / epoch_reward_counts[name]
+                for name in epoch_reward_sums
+            }
+
             # # Policy gradient update
             # actor_loss = self.agent.update_policy_gradient(
             #     subkeys_train[epoch],
@@ -453,7 +469,12 @@ class OnPolicyRunner(object):
             # )
 
             # Update the policy gradient and the value function
-            actor_loss, critic_loss = self.agent.update_actor_critic_minibatch(
+            (
+                last_actor_loss,
+                last_critic_loss,
+                mean_actor_loss,
+                mean_critic_loss,
+            ) = self.agent.update_actor_critic_minibatch(
                 actor_key,
                 jnp.concatenate([obs, residuals], axis=1),
                 actions,
@@ -462,13 +483,24 @@ class OnPolicyRunner(object):
                 returns,
             )
 
+            actor_loss_last_f = float(last_actor_loss)
+            critic_loss_last_f = float(last_critic_loss)
+            actor_loss_mean_f = float(mean_actor_loss)
+            critic_loss_mean_f = float(mean_critic_loss)
+
             # Monitor key RL metrics during training using Weights & Biases
             if self.env.use_wandb:
+                wandb_reward_payload = {
+                    f"reward_components/{metric_name}": float(metric_value)
+                    for metric_name, metric_value in reward_component_means.items()
+                }
                 wandb.log(
                     {
                         "mean_rewards": float(rews.mean()),
-                        "actor_loss": float(actor_loss),
-                        "critic_loss": float(critic_loss),
+                        "actor_loss_last": actor_loss_last_f,
+                        "critic_loss_last": critic_loss_last_f,
+                        "actor_loss_mean": actor_loss_mean_f,
+                        "critic_loss_mean": critic_loss_mean_f,
                         "mean_episodic_returns": float(mean_ep_return_epoch),
                         "num_terminal": float(terminal_count_epoch),
                         "mean_log_std": float(self.agent.actor.log_std.value.mean()),
@@ -477,7 +509,8 @@ class OnPolicyRunner(object):
                         ),
                         "mean_tracking_error": float(tracking_error_epoch),
                         "mean_angle_error": float(angle_error_epoch),
-                    }
+                        **wandb_reward_payload,
+                    },
                 )
 
             # Log key RL metrics
@@ -489,8 +522,10 @@ class OnPolicyRunner(object):
                     run_name=self.env.run_name,
                     stage="policy_training",
                     mean_rewards=float(rews.mean()),
-                    actor_loss=float(actor_loss),
-                    critic_loss=float(critic_loss),
+                    actor_loss_last=actor_loss_last_f,
+                    critic_loss_last=critic_loss_last_f,
+                    actor_loss_mean=actor_loss_mean_f,
+                    critic_loss_mean=critic_loss_mean_f,
                     num_terminal=float(terminal_count_epoch),
                     mean_log_std=float(self.agent.actor.log_std.value.mean()),
                     mean_std=float(jnp.exp(self.agent.actor.log_std.value).mean()),
@@ -724,6 +759,13 @@ class OnPolicyRunner(object):
                 shuffle=False,
             )
 
+            train_loss_sum = 0.0
+            train_loss_count = 0
+            val_loss_sum = 0.0
+            val_loss_count = 0
+            last_val_loss = None
+            am_train_loss_value = 0.0
+
             # Training loop
             for nn_epoch in range(num_nn_epochs):
                 # Compute the loss
@@ -732,7 +774,10 @@ class OnPolicyRunner(object):
                     X_train,
                     y_train,
                 )
-                print(f"{am_train_loss = }\n")
+                am_train_loss_value = float(am_train_loss)
+                train_loss_sum += am_train_loss_value
+                train_loss_count += 1
+                print(f"{am_train_loss_value = }\n")
                 self.am_optimizer.update(grads)
 
                 # Periodically evaluate on the validation set (e.g., every 10 nn_epoch)
@@ -740,16 +785,33 @@ class OnPolicyRunner(object):
                     am_val_loss, _ = self.jitted_batched_am_loss_and_grad(
                         self.am, X_val, y_val
                     )
+                    am_val_loss_value = float(am_val_loss)
+                    val_loss_sum += am_val_loss_value
+                    val_loss_count += 1
+                    last_val_loss = am_val_loss_value
                     print(
-                        f"Epoch {nn_epoch}: Train Loss = {am_train_loss:.4f}, Val Loss = {am_val_loss:.4f}\n"
+                        f"Epoch {nn_epoch}: Train Loss = {am_train_loss_value:.4f}, Val Loss = {am_val_loss_value:.4f}\n"
                     )
+
+            mean_am_train_loss = (
+                train_loss_sum / train_loss_count if train_loss_count > 0 else 0.0
+            )
+            mean_am_val_loss = (
+                val_loss_sum / val_loss_count if val_loss_count > 0 else 0.0
+            )
 
             # Monitor key RL metrics during training using Weights & Biases
             if self.env.use_wandb:
                 wandb.log(
                     {
-                        "am_train_loss": am_train_loss,
-                        "am_val_loss": am_val_loss,
+                        "am_train_loss_last": am_train_loss_value,
+                        "am_train_loss_mean": mean_am_train_loss,
+                        "am_val_loss_last": last_val_loss
+                        if last_val_loss is not None
+                        else float("nan"),
+                        "am_val_loss_mean": mean_am_val_loss
+                        if val_loss_count > 0
+                        else float("nan"),
                     }
                 )
 
@@ -761,8 +823,10 @@ class OnPolicyRunner(object):
                     step=int(epoch),
                     run_name=self.env.run_name,
                     stage="am_training",
-                    am_train_loss=am_train_loss,
-                    am_val_loss=am_val_loss,
+                    am_train_loss_last=am_train_loss_value,
+                    am_train_loss_mean=mean_am_train_loss,
+                    am_val_loss_last=last_val_loss if last_val_loss is not None else 0.0,
+                    am_val_loss_mean=mean_am_val_loss,
                     mean_tracking_error=ep_mean_tracking_error.mean(),
                     mean_angle_error=ep_mean_angle_error.mean(),
                     mean_extrinsic_error=ep_mean_extrinsic_error.mean(),

@@ -71,6 +71,9 @@ class VecEnv(BaseEnv):
         # Perform a Just In Time compilation of mjx.step() so that it runs efficiently on GPU
         self.jit_step = jax.jit(jax.vmap(mjx.step, in_axes=(None, 0)))
         self.jit_forward = jax.jit(jax.vmap(mjx.forward, in_axes=(None, 0)))
+
+        # Cache for the reward breakdown after each transition (used for logging)
+        self._last_reward_components: dict[str, jnp.ndarray] = {}
         self.reset()
 
     def next_rng_keys(self, count: int = 1) -> jnp.ndarray:
@@ -120,11 +123,10 @@ class VecEnv(BaseEnv):
         Apply input action on the environment. Returns the rewards and whether the terminal state has been reached.
         """
 
-        def phi(st):
+        def _reward_components(st):
             """
-            Potential for reward shaping.
+            Potential-based shaping terms, weighted by the configured reward weights.
             """
-            # Reward kernels (normalize errors by tolerances)
             pos_term = jnp.exp(-jnp.sum((st[:, 0:3] / self.sigma_pos) ** 2, axis=1))
             vel_term = jnp.exp(-jnp.sum((st[:, 6:9] / self.sigma_vel) ** 2, axis=1))
             att_term = jnp.exp(
@@ -132,15 +134,23 @@ class VecEnv(BaseEnv):
             )
             ang_term = jnp.exp(-jnp.sum((st[:, 9:12] / self.sigma_angvel) ** 2, axis=1))
 
-            return (
-                self.w_pos * pos_term
-                + self.w_vel * vel_term
-                + self.w_att * att_term
-                + self.w_angvel * ang_term
-            )
+            pos_reward = self.w_pos * pos_term
+            vel_reward = self.w_vel * vel_term
+            att_reward = self.w_att * att_term
+            ang_reward = self.w_angvel * ang_term
+
+            return pos_reward, vel_reward, att_reward, ang_reward
 
         # Pre-step potential
-        phi_s = phi(states)
+        (
+            pos_reward_curr,
+            vel_reward_curr,
+            att_reward_curr,
+            ang_reward_curr,
+        ) = _reward_components(states)
+        phi_s = (
+            pos_reward_curr + vel_reward_curr + att_reward_curr + ang_reward_curr
+        )
 
         # Step the environment
         self.step(input=actions)
@@ -149,7 +159,15 @@ class VecEnv(BaseEnv):
         next_states = self.get_states(next_waypoint)
 
         # Post-step potential
-        phi_s_next = phi(next_states)
+        (
+            pos_reward_next,
+            vel_reward_next,
+            att_reward_next,
+            ang_reward_next,
+        ) = _reward_components(next_states)
+        phi_s_next = (
+            pos_reward_next + vel_reward_next + att_reward_next + ang_reward_next
+        )
 
         # Check if the agent is out-of-bounds or has reached the goal
         is_terminal = jax.vmap(self._in_terminal_set)
@@ -166,12 +184,8 @@ class VecEnv(BaseEnv):
             terminal, self.lam_ang_speed_terminal * ang_speed_sq, 0.0
         )
         fuel_pen_terminal = jnp.where(terminal, self.lam_fuel_terminal * fuel_pen, 0.0)
-        penalties = (
-            self.lam_fuel * fuel_pen
-            + vel_pen_terminal
-            + angvel_pen_terminal
-            + fuel_pen_terminal
-        )
+        fuel_penalty = self.lam_fuel * fuel_pen
+        penalties = fuel_penalty + vel_pen_terminal + angvel_pen_terminal + fuel_pen_terminal
 
         if self.use_adaptive_approach is True:
             # Wrench residual penalty
@@ -189,11 +203,45 @@ class VecEnv(BaseEnv):
             residual_clipped = jnp.minimum(residual_excess, clip_value)
             wrench_residual_pen = lam_residual * residual_clipped
             penalties = penalties + wrench_residual_pen
+        else:
+            wrench_residual_pen = jnp.zeros_like(fuel_penalty)
 
         # Reward shaping
         rewards = phi_s_next - phi_s - penalties
 
+        # Cache reward breakdown for downstream logging/analysis
+        shaping_deltas = jnp.stack(
+            [
+                pos_reward_next - pos_reward_curr,
+                vel_reward_next - vel_reward_curr,
+                att_reward_next - att_reward_curr,
+                ang_reward_next - ang_reward_curr,
+            ],
+            axis=1,
+        )
+        total_shaping = shaping_deltas.sum(axis=1)
+        self._last_reward_components = {
+            "shaping_pos": shaping_deltas[:, 0],
+            "shaping_vel": shaping_deltas[:, 1],
+            "shaping_att": shaping_deltas[:, 2],
+            "shaping_angvel": shaping_deltas[:, 3],
+            "shaping_total": total_shaping,
+            "penalty_fuel": fuel_penalty,
+            "penalty_terminal_speed": vel_pen_terminal,
+            "penalty_terminal_ang_speed": angvel_pen_terminal,
+            "penalty_terminal_fuel": fuel_pen_terminal,
+            "penalty_wrench_residual": wrench_residual_pen,
+            "penalty_total": penalties,
+            "reward_total": rewards,
+        }
+
         return rewards, terminal
+
+    def get_last_reward_components(self) -> dict[str, jnp.ndarray]:
+        """
+        Return the shaped reward and penalty breakdown from the most recent transition.
+        """
+        return self._last_reward_components
 
     def step(self, input) -> None:
         """
