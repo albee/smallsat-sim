@@ -10,6 +10,20 @@ from smallsat_sim.controllers.rl.modules.base_network import Critic
 from smallsat_sim.controllers.rl.modules.base_policy import Actor
 
 
+def _sample_policy(
+    actor: Actor, critic: Critic, states_ext: jnp.ndarray, key: jnp.ndarray
+):
+    """
+    Jitted helper that samples actions, evaluates the critic, and computes log-probabilities.
+    """
+    pi, _ = actor.forward(states_ext)
+    pre_actions = pi.sample(seed=key)
+    actions = actor.apply_action_bounds(pre_actions)
+    values = critic.forward(states_ext)
+    logp = jnp.asarray(actor._log_prob_from_dist(pi, actions))
+    return actions, values, logp
+
+
 class BaseAgent(BaseController):
     """
     Base implementation for actor-critic agents.
@@ -49,6 +63,7 @@ class BaseAgent(BaseController):
         )
         self.critic = Critic(env.obs_dim, hidden_sizes, activation, env.res_dim)
         self.key = rng_key
+        self._sample_policy = nnx.jit(_sample_policy, static_argnums=())
 
     def act(
         self, states_ext: jnp.ndarray, log: bool = False
@@ -56,12 +71,10 @@ class BaseAgent(BaseController):
         """
         Return actions, value functions, and log-likelihood of chosen actions for given states.
         """
-        pi, _ = self.actor.forward(states_ext)
         self.key, subkey = jax.random.split(self.key)
-        pre_actions = pi.sample(seed=subkey)
-        actions = self.actor.apply_action_bounds(pre_actions)
-        values = self.critic.forward(states_ext)
-        logp = jnp.asarray(self.actor._log_prob_from_dist(pi, actions))
+        actions, values, logp = self._sample_policy(
+            self.actor, self.critic, states_ext, subkey
+        )
 
         return actions, values, logp
 
