@@ -106,6 +106,14 @@ RUN ./.setup/ubuntu/install_l4acados.sh
 # Make CUDA libraries discoverable for components that rely on ldconfig lookups
 RUN echo /usr/local/cuda/lib64 > /etc/ld.so.conf.d/cuda.conf && ldconfig
 
+# -------------------------------
+# Install cuDNN for CUDA workloads
+# -------------------------------
+RUN apt-get update && \
+    apt-get install -y libcudnn9-cuda-12 libcudnn9-dev-cuda-12 && \
+    ldconfig && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # ===============================
 # Install Python dependencies
 # ===============================
