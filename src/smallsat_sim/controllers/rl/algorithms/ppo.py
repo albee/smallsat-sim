@@ -116,6 +116,7 @@ class PPO(BaseAgent):
         # Set the clip ratio and the target kl divergence
         self.clip_ratio = 0.2
         self.target_kl = 0.01
+        self._jit_warmup_done = False
 
     def update_policy_gradient(
         self,
@@ -269,6 +270,50 @@ class PPO(BaseAgent):
         )
 
         return last_actor_loss, last_critic_loss, mean_actor_loss, mean_critic_loss
+
+    def warmup_jit(self) -> None:
+        """
+        Trigger compilation of the jitted PPO update without mutating live parameters.
+        """
+        if getattr(self, "_jit_warmup_done", False):
+            return
+
+        obs_dim_total = self.env.obs_dim + self.env.res_dim
+        batch = self.batch_size
+        dummy_obs = jnp.zeros((batch, obs_dim_total), dtype=jnp.float32)
+        dummy_actions = jnp.zeros((batch, self.env.act_dim), dtype=jnp.float32)
+        dummy_tdres = jnp.zeros((batch,), dtype=jnp.float32)
+        dummy_logp = jnp.zeros((batch,), dtype=jnp.float32)
+        dummy_returns = jnp.zeros((batch,), dtype=jnp.float32)
+
+        joint_graphdef, joint_state = nnx.split(
+            (
+                self.actor,
+                self.actor_optimizer,
+                self.critic,
+                self.critic_optimizer,
+            )
+        )
+        warmup_keys = jax.random.split(
+            jax.random.PRNGKey(0), self.actor_critic_training_epochs
+        )
+        warmup_result = _actor_critic_epochs_jit(
+            joint_graphdef,
+            joint_state,
+            warmup_keys,
+            dummy_obs,
+            dummy_actions,
+            dummy_tdres,
+            dummy_logp,
+            dummy_returns,
+            self.clip_ratio,
+            self.entropy_coef,
+            self.target_kl,
+            self.num_minibatches,
+            self.minibatch_size,
+        )
+        jax.block_until_ready(warmup_result[0])
+        self._jit_warmup_done = True
 
     def _load_ppo_hyperparams(self) -> None:
         """
