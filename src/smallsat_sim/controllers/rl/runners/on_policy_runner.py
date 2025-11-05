@@ -297,6 +297,7 @@ class OnPolicyRunner(object):
 
         # Main training loop
         for epoch in range(self.epochs):
+            epoch_start_time = time.perf_counter()
             epoch_key = self._take_keys()
             actor_key = epoch_key
             # Apply perturbations ramp-up
@@ -321,28 +322,32 @@ class OnPolicyRunner(object):
             epoch_angle_history = []
             epoch_terminal_flags = []
             epoch_episode_returns = []
-            epoch_reward_sums: dict[str, jnp.ndarray] = {}
-            epoch_reward_counts: dict[str, int] = {}
+            epoch_reward_traces: dict[str, list[jnp.ndarray]] = {}
+            act_time = 0.0
+            env_step_time = 0.0
+            buffer_time = 0.0
+            metrics_time = 0.0
 
             for t in range(self.steps_per_epoch):
                 # Get actions from the agent
+                act_start = time.perf_counter()
                 a, v, logp = self.agent.act(
                     jnp.concatenate([states, res], axis=1), log=True
                 )  # Use un-normalized states
+                act_time += time.perf_counter() - act_start
 
                 # Perform environment transition
+                env_start = time.perf_counter()
                 r, terminal = self.env.transition(
                     a, states, self.reference_point, epoch
                 )
+                env_step_time += time.perf_counter() - env_start
+
                 reward_components = self.env.get_last_reward_components()
                 for name, values in reward_components.items():
-                    mean_val = jnp.mean(values)
-                    if name in epoch_reward_sums:
-                        epoch_reward_sums[name] = epoch_reward_sums[name] + mean_val
-                        epoch_reward_counts[name] += 1
-                    else:
-                        epoch_reward_sums[name] = mean_val
-                        epoch_reward_counts[name] = 1
+                    if name not in epoch_reward_traces:
+                        epoch_reward_traces[name] = []
+                    epoch_reward_traces[name].append(values)
                 epoch_terminal_flags.append(terminal)
                 ep_ret += r
                 ep_len += 1
@@ -356,13 +361,17 @@ class OnPolicyRunner(object):
                     res = jnp.empty((self.env.num_envs, 0))
 
                 # Log transition
+                buffer_start = time.perf_counter()
                 buffer.store(states, a, r, v, logp, res)  # Use un-normalized states
+                buffer_time += time.perf_counter() - buffer_start
 
                 # Compute and log mean errors
+                metrics_start = time.perf_counter()
                 obs = self.env.get_obs()
                 tracking_mean, angle_mean, _ = self._compute_mean_errors(obs)
                 epoch_tracking_history.append(tracking_mean)
                 epoch_angle_history.append(angle_mean)
+                metrics_time += time.perf_counter() - metrics_start
 
                 # Update state
                 states = self.env.get_states(self.reference_point)
@@ -410,9 +419,12 @@ class OnPolicyRunner(object):
 
                     episode_counter += 1
 
+            rollout_duration = time.perf_counter() - epoch_start_time
+
             # Get the data from the training loop and save it
             data = buffer.get()
-            save_training_data(self.ckpt_dir, self.training_data_file_name, data)
+            if epoch == self.epochs - 1:
+                save_training_data(self.ckpt_dir, self.training_data_file_name, data)
 
             tracking_error_epoch = (
                 jnp.stack(epoch_tracking_history).mean()
@@ -448,10 +460,14 @@ class OnPolicyRunner(object):
                 residuals = jnp.empty((self.steps_per_epoch * self.env.num_envs, 0))
 
             reward_component_means = {
-                name: epoch_reward_sums[name] / epoch_reward_counts[name]
-                for name in epoch_reward_sums
+                name: jnp.stack(values).mean()
+                for name, values in epoch_reward_traces.items()
             }
+            other_rollout_time = max(
+                0.0, rollout_duration - (act_time + env_step_time + buffer_time + metrics_time)
+            )
 
+            update_start_time = time.perf_counter()
             # # Policy gradient update
             # actor_loss = self.agent.update_policy_gradient(
             #     subkeys_train[epoch],
@@ -481,6 +497,14 @@ class OnPolicyRunner(object):
                 tdres,
                 logp,
                 returns,
+            )
+            update_duration = time.perf_counter() - update_start_time
+            epoch_total_duration = time.perf_counter() - epoch_start_time
+            print(
+                f"[Timing] Epoch {epoch + 1}/{self.epochs}: "
+                f"rollout {rollout_duration:.2f}s "
+                f"(act {act_time:.2f}s, env {env_step_time:.2f}s, buffer {buffer_time:.2f}s, metrics {metrics_time:.2f}s, other {other_rollout_time:.2f}s) | "
+                f"update {update_duration:.2f}s | total {epoch_total_duration:.2f}s"
             )
 
             actor_loss_last_f = float(last_actor_loss)
