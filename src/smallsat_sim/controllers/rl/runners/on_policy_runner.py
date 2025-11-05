@@ -280,6 +280,9 @@ class OnPolicyRunner(object):
             self.lam,
         )
 
+        # Trigger compilation of jitted updates before the main loop
+        self.agent.warmup_jit()
+
         # Initialize the environment
         self.env.reset()
         self.env.reset_perturbations()
@@ -318,15 +321,13 @@ class OnPolicyRunner(object):
                 )
 
             # Accumulate rollout stats to emit once per epoch
-            epoch_tracking_history = []
-            epoch_angle_history = []
-            epoch_terminal_flags = []
-            epoch_episode_returns = []
             epoch_reward_traces: dict[str, list[jnp.ndarray]] = {}
             act_time = 0.0
             env_step_time = 0.0
             buffer_time = 0.0
-            metrics_time = 0.0
+            terminal_count = 0.0
+            episode_return_sum = 0.0
+            episode_counter_epoch = 0
 
             for t in range(self.steps_per_epoch):
                 # Get actions from the agent
@@ -343,12 +344,12 @@ class OnPolicyRunner(object):
                 )
                 env_step_time += time.perf_counter() - env_start
 
-                reward_components = self.env.get_last_reward_components()
-                for name, values in reward_components.items():
-                    if name not in epoch_reward_traces:
-                        epoch_reward_traces[name] = []
-                    epoch_reward_traces[name].append(values)
-                epoch_terminal_flags.append(terminal)
+                if self.env.collect_reward_components:
+                    reward_components = self.env.get_last_reward_components()
+                    for name, values in reward_components.items():
+                        if name not in epoch_reward_traces:
+                            epoch_reward_traces[name] = []
+                        epoch_reward_traces[name].append(values)
                 ep_ret += r
                 ep_len += 1
 
@@ -364,14 +365,7 @@ class OnPolicyRunner(object):
                 buffer_start = time.perf_counter()
                 buffer.store(states, a, r, v, logp, res)  # Use un-normalized states
                 buffer_time += time.perf_counter() - buffer_start
-
-                # Compute and log mean errors
-                metrics_start = time.perf_counter()
-                obs = self.env.get_obs()
-                tracking_mean, angle_mean, _ = self._compute_mean_errors(obs)
-                epoch_tracking_history.append(tracking_mean)
-                epoch_angle_history.append(angle_mean)
-                metrics_time += time.perf_counter() - metrics_start
+                terminal_count += float(terminal.sum())
 
                 # Update state
                 states = self.env.get_states(self.reference_point)
@@ -392,7 +386,9 @@ class OnPolicyRunner(object):
                         v = jnp.zeros(self.env.num_envs)
 
                     buffer.end_traj(v)
-                    epoch_episode_returns.append(ep_ret.mean())
+                    mean_ep_return = float(ep_ret.mean())
+                    episode_return_sum += mean_ep_return
+                    episode_counter_epoch += 1
 
                     if self.agent.has_logger:
                         self.env.logger.log(
@@ -426,28 +422,6 @@ class OnPolicyRunner(object):
             if epoch == self.epochs - 1:
                 save_training_data(self.ckpt_dir, self.training_data_file_name, data)
 
-            tracking_error_epoch = (
-                jnp.stack(epoch_tracking_history).mean()
-                if epoch_tracking_history
-                else jnp.array(0.0)
-            )
-            angle_error_epoch = (
-                jnp.stack(epoch_angle_history).mean()
-                if epoch_angle_history
-                else jnp.array(0.0)
-            )
-
-            terminal_count_epoch = (
-                jnp.stack(epoch_terminal_flags).sum()
-                if epoch_terminal_flags
-                else jnp.array(0.0)
-            )
-            mean_ep_return_epoch = (
-                jnp.stack(epoch_episode_returns).mean()
-                if epoch_episode_returns
-                else jnp.array(0.0)
-            )
-
             obs = data["obs"].reshape(-1, self.env.obs_dim)
             actions = data["act"].reshape(-1, self.env.act_dim)
             rews = data["rews"].reshape(-1)
@@ -459,12 +433,32 @@ class OnPolicyRunner(object):
             else:
                 residuals = jnp.empty((self.steps_per_epoch * self.env.num_envs, 0))
 
-            reward_component_means = {
-                name: jnp.stack(values).mean()
-                for name, values in epoch_reward_traces.items()
-            }
+            if obs.size:
+                tracking_error_epoch = calc_lateral_tracking_error(
+                    obs, self.planner
+                ).mean()
+                angle_error_epoch = jnp.degrees(calc_attitude_error(obs)).mean()
+            else:
+                tracking_error_epoch = jnp.array(0.0)
+                angle_error_epoch = jnp.array(0.0)
+
+            terminal_count_epoch = jnp.asarray(terminal_count)
+            mean_ep_return_epoch = (
+                jnp.asarray(episode_return_sum / episode_counter_epoch)
+                if episode_counter_epoch > 0
+                else jnp.array(0.0)
+            )
+
+            reward_component_means = (
+                {
+                    name: jnp.stack(values).mean()
+                    for name, values in epoch_reward_traces.items()
+                }
+                if epoch_reward_traces
+                else {}
+            )
             other_rollout_time = max(
-                0.0, rollout_duration - (act_time + env_step_time + buffer_time + metrics_time)
+                0.0, rollout_duration - (act_time + env_step_time + buffer_time)
             )
 
             update_start_time = time.perf_counter()
@@ -503,7 +497,7 @@ class OnPolicyRunner(object):
             print(
                 f"[Timing] Epoch {epoch + 1}/{self.epochs}: "
                 f"rollout {rollout_duration:.2f}s "
-                f"(act {act_time:.2f}s, env {env_step_time:.2f}s, buffer {buffer_time:.2f}s, metrics {metrics_time:.2f}s, other {other_rollout_time:.2f}s) | "
+                f"(act {act_time:.2f}s, env {env_step_time:.2f}s, buffer {buffer_time:.2f}s, other {other_rollout_time:.2f}s) | "
                 f"update {update_duration:.2f}s | total {epoch_total_duration:.2f}s"
             )
 
@@ -513,7 +507,7 @@ class OnPolicyRunner(object):
             critic_loss_mean_f = float(mean_critic_loss)
 
             # Monitor key RL metrics during training using Weights & Biases
-            if self.env.use_wandb:
+            if self.env.use_wandb and (epoch % 5 == 0):
                 wandb_reward_payload = {
                     f"reward_components/{metric_name}": float(metric_value)
                     for metric_name, metric_value in reward_component_means.items()

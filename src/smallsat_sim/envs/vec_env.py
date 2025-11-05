@@ -74,6 +74,9 @@ class VecEnv(BaseEnv):
 
         # Cache for the reward breakdown after each transition (used for logging)
         self._last_reward_components: dict[str, jnp.ndarray] = {}
+        self.collect_reward_components = getattr(args, "wandb", False) or getattr(
+            args, "log", False
+        )
         self.reset()
 
     def next_rng_keys(self, count: int = 1) -> jnp.ndarray:
@@ -111,6 +114,7 @@ class VecEnv(BaseEnv):
         self.mjx_batch = self.mjx_batch.replace(qpos=tmp_batch.qpos)
         self.mjx_batch = self.mjx_batch.replace(qvel=self.init_qvel)
         self.mjx_batch = self.jit_forward(self.mjx_model, self.mjx_batch)
+        self._state = VecEnvState(self._rng, self.mjx_batch)
 
     def transition(
         self,
@@ -209,31 +213,33 @@ class VecEnv(BaseEnv):
         # Reward shaping
         rewards = phi_s_next - phi_s - penalties
 
-        # Cache reward breakdown for downstream logging/analysis
-        shaping_deltas = jnp.stack(
-            [
-                pos_reward_next - pos_reward_curr,
-                vel_reward_next - vel_reward_curr,
-                att_reward_next - att_reward_curr,
-                ang_reward_next - ang_reward_curr,
-            ],
-            axis=1,
-        )
-        total_shaping = shaping_deltas.sum(axis=1)
-        self._last_reward_components = {
-            "shaping_pos": shaping_deltas[:, 0],
-            "shaping_vel": shaping_deltas[:, 1],
-            "shaping_att": shaping_deltas[:, 2],
-            "shaping_angvel": shaping_deltas[:, 3],
-            "shaping_total": total_shaping,
-            "penalty_fuel": fuel_penalty,
-            "penalty_terminal_speed": vel_pen_terminal,
-            "penalty_terminal_ang_speed": angvel_pen_terminal,
-            "penalty_terminal_fuel": fuel_pen_terminal,
-            "penalty_wrench_residual": wrench_residual_pen,
-            "penalty_total": penalties,
-            "reward_total": rewards,
-        }
+        if self.collect_reward_components:
+            shaping_deltas = jnp.stack(
+                [
+                    pos_reward_next - pos_reward_curr,
+                    vel_reward_next - vel_reward_curr,
+                    att_reward_next - att_reward_curr,
+                    ang_reward_next - ang_reward_curr,
+                ],
+                axis=1,
+            )
+            total_shaping = shaping_deltas.sum(axis=1)
+            self._last_reward_components = {
+                "shaping_pos": shaping_deltas[:, 0],
+                "shaping_vel": shaping_deltas[:, 1],
+                "shaping_att": shaping_deltas[:, 2],
+                "shaping_angvel": shaping_deltas[:, 3],
+                "shaping_total": total_shaping,
+                "penalty_fuel": fuel_penalty,
+                "penalty_terminal_speed": vel_pen_terminal,
+                "penalty_terminal_ang_speed": angvel_pen_terminal,
+                "penalty_terminal_fuel": fuel_pen_terminal,
+                "penalty_wrench_residual": wrench_residual_pen,
+                "penalty_total": penalties,
+                "reward_total": rewards,
+            }
+        else:
+            self._last_reward_components = {"reward_total": rewards}
 
         return rewards, terminal
 
