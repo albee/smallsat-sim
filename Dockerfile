@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:experimental
 
 # Use a CUDA container
-FROM nvidia/cuda:12.4.0-devel-ubuntu22.04
+FROM nvidia/cuda:12.6.0-devel-ubuntu22.04
 
 ARG USE_CUDA=0
 ENV USE_CUDA=${USE_CUDA}
