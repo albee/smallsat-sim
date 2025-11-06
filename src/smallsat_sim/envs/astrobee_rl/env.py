@@ -49,11 +49,19 @@ class AstrobeeEnvVectorized(VecEnv):
         perturbation_keys = self.next_rng_keys(5)
         self.perturbations = PerturbationList(
             [
-                StuckOffThrusters(self.env_cfg, self.model_cfg, perturbation_keys[0]),  # 0
-                StuckOnThrusters(self.env_cfg, self.model_cfg, perturbation_keys[1]),  # 1
+                StuckOffThrusters(
+                    self.env_cfg, self.model_cfg, perturbation_keys[0]
+                ),  # 0
+                StuckOnThrusters(
+                    self.env_cfg, self.model_cfg, perturbation_keys[1]
+                ),  # 1
                 FaultyValve(self.env_cfg, self.model_cfg, perturbation_keys[2]),  # 2
-                SaturatedThrust(self.env_cfg, self.model_cfg, perturbation_keys[3]),  # 3
-                ThrustInstability(self.env_cfg, self.model_cfg, perturbation_keys[4]),  # 4
+                SaturatedThrust(
+                    self.env_cfg, self.model_cfg, perturbation_keys[3]
+                ),  # 3
+                ThrustInstability(
+                    self.env_cfg, self.model_cfg, perturbation_keys[4]
+                ),  # 4
             ]
         )
 
@@ -62,6 +70,7 @@ class AstrobeeEnvVectorized(VecEnv):
         self.disturbances = DisturbanceList(
             [ConstantForceDisturbance(self.env_cfg, disturbance_key)]
         )
+        self._refresh_effect_states()
 
     def reset_perturbations(self) -> None:
         """
@@ -70,10 +79,19 @@ class AstrobeeEnvVectorized(VecEnv):
         perturbation_keys = self.next_rng_keys(5)
         self.perturbations = PerturbationList(
             [
-                StuckOffThrusters(self.env_cfg, self.model_cfg, perturbation_keys[0]),  # 0
-                StuckOnThrusters(self.env_cfg, self.model_cfg, perturbation_keys[1]),  # 1
+                StuckOffThrusters(
+                    self.env_cfg, self.model_cfg, perturbation_keys[0]
+                ),  # 0
+                StuckOnThrusters(
+                    self.env_cfg, self.model_cfg, perturbation_keys[1]
+                ),  # 1
                 FaultyValve(self.env_cfg, self.model_cfg, perturbation_keys[2]),  # 2
-                SaturatedThrust(self.env_cfg, self.model_cfg, perturbation_keys[3]),  # 3
-                ThrustInstability(self.env_cfg, self.model_cfg, perturbation_keys[4]),  # 4
+                SaturatedThrust(
+                    self.env_cfg, self.model_cfg, perturbation_keys[3]
+                ),  # 3
+                ThrustInstability(
+                    self.env_cfg, self.model_cfg, perturbation_keys[4]
+                ),  # 4
             ]
         )
+        self._refresh_effect_states()

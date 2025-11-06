@@ -10,17 +10,34 @@ from smallsat_sim.controllers.rl.modules.base_network import Critic
 from smallsat_sim.controllers.rl.modules.base_policy import Actor
 
 
-def _sample_policy(
+def _sample_policy_from_modules(
     actor: Actor, critic: Critic, states_ext: jnp.ndarray, key: jnp.ndarray
 ):
     """
-    Jitted helper that samples actions, evaluates the critic, and computes log-probabilities.
+    Helper that samples actions, evaluates the critic, and computes log-probabilities.
     """
     pi, _ = actor.forward(states_ext)
     pre_actions = pi.sample(seed=key)
     actions = actor.apply_action_bounds(pre_actions)
     values = critic.forward(states_ext)
     logp = jnp.asarray(actor._log_prob_from_dist(pi, actions))
+    return actions, values, logp
+
+
+def policy_sample_from_state(
+    actor_graphdef,
+    actor_state,
+    critic_graphdef,
+    critic_state,
+    states_ext: jnp.ndarray,
+    key: jnp.ndarray,
+):
+    """
+    Pure helper to sample policy outputs given actor/critic state containers.
+    """
+    actor = nnx.merge(actor_graphdef, actor_state)
+    critic = nnx.merge(critic_graphdef, critic_state)
+    actions, values, logp = _sample_policy_from_modules(actor, critic, states_ext, key)
     return actions, values, logp
 
 
@@ -63,7 +80,12 @@ class BaseAgent(BaseController):
         )
         self.critic = Critic(env.obs_dim, hidden_sizes, activation, env.res_dim)
         self.key = rng_key
-        self._sample_policy = nnx.jit(_sample_policy, static_argnums=())
+        self._sample_policy = nnx.jit(_sample_policy_from_modules, static_argnums=())
+        self._actor_graphdef = nnx.graphdef(self.actor)
+        self._critic_graphdef = nnx.graphdef(self.critic)
+        self._policy_sample_fn = nnx.jit(
+            policy_sample_from_state, static_argnums=(0, 2)
+        )
 
     def act(
         self, states_ext: jnp.ndarray, log: bool = False
@@ -77,6 +99,31 @@ class BaseAgent(BaseController):
         )
 
         return actions, values, logp
+
+    def actor_critic_state(self):
+        """
+        Snapshot the actor and critic modules into immutable state containers.
+        """
+        return nnx.state(self.actor), nnx.state(self.critic)
+
+    def functional_act(
+        self,
+        actor_state,
+        critic_state,
+        states_ext: jnp.ndarray,
+        key: jnp.ndarray,
+    ):
+        """
+        Pure interface for sampling using externally provided actor/critic states.
+        """
+        return self._policy_sample_fn(
+            self._actor_graphdef,
+            actor_state,
+            self._critic_graphdef,
+            critic_state,
+            states_ext,
+            key,
+        )
 
     def get_control_input(
         self,

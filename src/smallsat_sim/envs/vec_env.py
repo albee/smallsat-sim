@@ -1,4 +1,6 @@
 from argparse import Namespace
+from dataclasses import dataclass, replace
+from typing import Optional, Tuple, Dict
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -7,8 +9,706 @@ import mujoco.viewer
 from mujoco import mjx
 
 from smallsat_sim.envs.base_env import BaseEnv
-from smallsat_sim.envs.disturbances import DisturbanceStatus
+from smallsat_sim.envs.disturbances import (
+    DisturbanceStatus,
+    DisturbanceState,
+    constant_force_apply_from_state,
+    disturbance_state_from_serializable,
+    disturbance_state_to_serializable,
+)
+from smallsat_sim.envs.perturbations_rl import (
+    PerturbationState,
+    PerturbationStatus,
+    gp_apply_from_state,
+    perturbation_state_from_serializable,
+    perturbation_state_to_serializable,
+    stuck_off_apply_from_state,
+    stuck_on_apply_from_state,
+)
 from smallsat_sim.utils import xml_parser_lightweight
+
+# JIT-friendly MuJoCo step that advances each environment in parallel.
+VMAP_MJX_STEP = jax.vmap(mjx.step, in_axes=(None, 0))
+
+
+@dataclass
+class VecEnvState:
+    """
+    Minimal container for the mutable pieces of the vectorised environment.
+
+    Storing the RNG key alongside the MJX batch makes it easier to convert the
+    environment into a pure functional representation in later steps.
+    """
+
+    rng: jnp.ndarray
+    mjx_batch: mjx.Data
+    disturbance_states: Tuple[Optional[DisturbanceState], ...] = ()
+    perturbation_states: Tuple[Optional[PerturbationState], ...] = ()
+
+    def replace(self, **updates) -> "VecEnvState":
+        return replace(self, **updates)
+
+
+@dataclass(eq=False)
+class VecEnvStepConfig:
+    """
+    Static configuration required to evolve the vectorised environment in a pure way.
+
+    Invariants:
+    - All arrays are broadcast across `num_envs` environments.
+    - `control_decimation` mirrors the imperative `VecEnv.step` loop, so the helper
+      behaviour matches the legacy path.
+    - `base_disturbance_states` / `base_perturbation_states` capture mutable effect
+      snapshots that must be refreshed whenever the environment is reset inside a scan.
+    """
+
+    mjx_model: mjx.Model
+    mjx_data_template: mjx.Data
+    mjx_batch_template: mjx.Data
+    init_qpos: jnp.ndarray
+    init_qvel: jnp.ndarray
+    num_envs: int
+    max_start_offset: float
+    control_decimation: int
+    sigma_pos: float
+    sigma_vel: float
+    sigma_att: float
+    sigma_angvel: float
+    w_pos: float
+    w_vel: float
+    w_att: float
+    w_angvel: float
+    lam_fuel: float
+    lam_speed_terminal: float
+    lam_ang_speed_terminal: float
+    lam_fuel_terminal: float
+    lam_wrench_residual: float
+    wrench_residual_tolerance: float
+    wrench_residual_clip: float
+    max_episode_len: int
+    res_dim: int
+    use_adaptive_approach: bool
+    collect_reward_components: bool
+    thruster_mixer_T: jnp.ndarray
+    base_disturbance_states: Tuple[Optional[DisturbanceState], ...]
+    base_perturbation_states: Tuple[Optional[PerturbationState], ...]
+
+
+@dataclass
+class VecEnvStepOutput:
+    """
+    Container for the results of a pure VecEnv step. Keeping this as a PyTree allows
+    the rollout to be scanned/`jax.jit`ed later on.
+    """
+
+    prev_states: jnp.ndarray
+    next_states: jnp.ndarray
+    rewards: jnp.ndarray
+    terminals: jnp.ndarray
+    commanded_ctrl: jnp.ndarray
+    applied_ctrl: jnp.ndarray
+    actual_wrench: jnp.ndarray
+    desired_wrench: jnp.ndarray
+    prev_obs: jnp.ndarray
+    next_obs: jnp.ndarray
+    reward_components: Dict[str, jnp.ndarray]
+
+
+def _vecenv_step_output_flatten(output: VecEnvStepOutput):
+    children = (
+        output.prev_states,
+        output.next_states,
+        output.rewards,
+        output.terminals,
+        output.commanded_ctrl,
+        output.applied_ctrl,
+        output.actual_wrench,
+        output.desired_wrench,
+        output.prev_obs,
+        output.next_obs,
+        output.reward_components,
+    )
+    return children, None
+
+
+def _vecenv_step_output_unflatten(aux_data, children):
+    (
+        prev_states,
+        next_states,
+        rewards,
+        terminals,
+        commanded_ctrl,
+        applied_ctrl,
+        actual_wrench,
+        desired_wrench,
+        prev_obs,
+        next_obs,
+        reward_components,
+    ) = children
+    return VecEnvStepOutput(
+        prev_states=prev_states,
+        next_states=next_states,
+        rewards=rewards,
+        terminals=terminals,
+        commanded_ctrl=commanded_ctrl,
+        applied_ctrl=applied_ctrl,
+        actual_wrench=actual_wrench,
+        desired_wrench=desired_wrench,
+        prev_obs=prev_obs,
+        next_obs=next_obs,
+        reward_components=reward_components,
+    )
+
+
+jax.tree_util.register_pytree_node(
+    VecEnvStepOutput,
+    _vecenv_step_output_flatten,
+    _vecenv_step_output_unflatten,
+)
+
+
+def _vecenv_state_flatten(state: "VecEnvState"):
+    children = (
+        state.rng,
+        state.mjx_batch,
+        state.disturbance_states,
+        state.perturbation_states,
+    )
+    return children, None
+
+
+def _vecenv_state_unflatten(aux_data, children):
+    rng, mjx_batch, disturbance_states, perturbation_states = children
+    return VecEnvState(
+        rng=rng,
+        mjx_batch=mjx_batch,
+        disturbance_states=tuple(disturbance_states),
+        perturbation_states=tuple(perturbation_states),
+    )
+
+
+jax.tree_util.register_pytree_node(
+    VecEnvState,
+    _vecenv_state_flatten,
+    _vecenv_state_unflatten,
+)
+
+
+def vecenv_state_to_serializable(state: "VecEnvState") -> dict:
+    """
+    Convert a VecEnvState into host-serializable numpy-backed payload.
+    """
+
+    def to_numpy(value):
+        if value is None:
+            return None
+        if isinstance(value, jnp.ndarray):
+            return np.asarray(value)
+        if isinstance(value, np.ndarray):
+            return value
+        return value
+
+    mjx_fields = getattr(state.mjx_batch, "__dataclass_fields__", {})
+    mjx_payload = {}
+    for name in mjx_fields:
+        mjx_payload[name] = to_numpy(getattr(state.mjx_batch, name))
+
+    return {
+        "rng": np.asarray(state.rng),
+        "mjx": mjx_payload,
+        "disturbance_states": [
+            disturbance_state_to_serializable(s) for s in state.disturbance_states
+        ],
+        "perturbation_states": [
+            perturbation_state_to_serializable(s) for s in state.perturbation_states
+        ],
+    }
+
+
+def vecenv_state_from_serializable(
+    payload: dict,
+    *,
+    mjx_batch_template: mjx.Data,
+) -> "VecEnvState":
+    """
+    Reconstruct a VecEnvState from the serialized payload using the provided mjx
+    template (typically the environment's freshly reset batch).
+    """
+
+    def to_jnp(value):
+        if value is None:
+            return None
+        if isinstance(value, np.ndarray):
+            return jnp.asarray(value)
+        if isinstance(value, jnp.ndarray):
+            return value
+        return value
+
+    mjx_updates = {name: to_jnp(value) for name, value in payload["mjx"].items()}
+    mjx_batch = mjx_batch_template.replace(**mjx_updates)
+
+    disturbance_states = tuple(
+        disturbance_state_from_serializable(s) if s is not None else None
+        for s in payload["disturbance_states"]
+    )
+    perturbation_states = tuple(
+        perturbation_state_from_serializable(s) if s is not None else None
+        for s in payload["perturbation_states"]
+    )
+
+    return VecEnvState(
+        rng=jnp.asarray(payload["rng"]),
+        mjx_batch=mjx_batch,
+        disturbance_states=disturbance_states,
+        perturbation_states=perturbation_states,
+    )
+
+
+def _sample_random_quat(rng: jnp.ndarray) -> jnp.ndarray:
+    """
+    Helper to sample a random unit quaternion (uniform over SO(3)).
+    """
+    key, subkey1, subkey2 = jax.random.split(rng, 3)
+    theta1 = jax.random.uniform(key, (1,)) * 2 * jnp.pi
+    theta2 = jax.random.uniform(subkey1, (1,)) * 2 * jnp.pi
+    theta3 = jax.random.uniform(subkey2, (1,)) * 2 * jnp.pi
+
+    w = jnp.sin(theta1) * jnp.cos(theta2) * jnp.cos(theta3) + jnp.cos(theta1) * jnp.sin(
+        theta2
+    ) * jnp.sin(theta3)
+    x = jnp.cos(theta1) * jnp.sin(theta2) * jnp.cos(theta3) - jnp.sin(theta1) * jnp.cos(
+        theta2
+    ) * jnp.sin(theta3)
+    y = jnp.sin(theta1) * jnp.cos(theta2) * jnp.cos(theta3) - jnp.cos(theta1) * jnp.sin(
+        theta2
+    ) * jnp.sin(theta3)
+    z = jnp.cos(theta1) * jnp.cos(theta2) * jnp.sin(theta3) + jnp.sin(theta1) * jnp.sin(
+        theta2
+    ) * jnp.cos(theta3)
+
+    quat = jnp.array([w, x, y, z]).reshape(-1)
+    return quat / jnp.linalg.norm(quat)
+
+
+def _quat_log_error(
+    q: jnp.ndarray, q_des: jnp.ndarray, eps: float = 1e-9
+) -> jnp.ndarray:
+    """
+    SO(3) log-map (rotation vector) that rotates q -> q_des.
+    """
+
+    def _unit(a):
+        return a / (jnp.linalg.norm(a) + eps)
+
+    q = _unit(q)
+    q_des = _unit(q_des)
+
+    w, x, y, z = q
+    qc = jnp.array([w, -x, -y, -z])
+    w2, x2, y2, z2 = q_des
+    we = w2 * qc[0] - x2 * qc[1] - y2 * qc[2] - z2 * qc[3]
+    ex = w2 * qc[1] + x2 * qc[0] + y2 * qc[3] - z2 * qc[2]
+    ey = w2 * qc[2] - x2 * qc[3] + y2 * qc[0] + z2 * qc[1]
+    ez = w2 * qc[3] + x2 * qc[2] - y2 * qc[1] + z2 * qc[0]
+    e = jnp.stack([ex, ey, ez])
+
+    sign = jnp.where(we < 0.0, -1.0, 1.0)
+    we = sign * we
+    e = sign * e
+
+    e_norm = jnp.linalg.norm(e)
+    we_abs = jnp.clip(jnp.abs(we), 0.0, 1.0)
+    theta = 2.0 * jnp.arctan2(e_norm, we_abs)
+    axis = e / (e_norm + eps)
+    logvec = axis * theta
+
+    return logvec
+
+
+def _compute_state_features(
+    mjx_batch: mjx.Data,
+    next_waypoint: jnp.ndarray,
+) -> jnp.ndarray:
+    """
+    Pure equivalent of VecEnv.get_states.
+    """
+    num_envs = mjx_batch.qpos.shape[0]
+    reference = jnp.asarray(next_waypoint)
+    if reference.ndim == 1:
+        reference = jnp.broadcast_to(reference, (num_envs, reference.shape[0]))
+
+    ref_pos = reference[:, :3]
+    ref_quat = reference[:, 3:7]
+
+    delta_pos = mjx_batch.qpos[:, 0:3] - ref_pos
+
+    R = mjx_batch.xmat[:, 1, :, :]
+    R = jnp.transpose(R, (0, 2, 1))
+    vel_body = jnp.einsum("bij,bj->bi", R, mjx_batch.qvel[:, :3])
+
+    attitude_error = jax.vmap(_quat_log_error)(mjx_batch.qpos[:, 3:7], ref_quat)
+
+    states = jnp.concatenate(
+        (
+            delta_pos,
+            attitude_error,
+            vel_body,
+            mjx_batch.qvel[:, 3:6],
+        ),
+        axis=1,
+    )
+    return states
+
+
+def _compute_observations_from_batch(mjx_batch: mjx.Data) -> jnp.ndarray:
+    """
+    Pure equivalent of VecEnv.get_obs for a provided MJX batch.
+    """
+    R = mjx_batch.xmat[:, 1, :, :]
+    R = jnp.transpose(R, (0, 2, 1))
+
+    vel_world = mjx_batch.qvel[:, :3]
+
+    def _body_velocity(rot, vel):
+        return rot @ vel
+
+    vel_body = jax.vmap(_body_velocity)(R, vel_world)
+    obs = jnp.concatenate(
+        (
+            mjx_batch.qpos,
+            vel_body,
+            mjx_batch.qvel[:, 3:],
+        ),
+        axis=1,
+    )
+    return obs
+
+
+def _reward_components(
+    states: jnp.ndarray,
+    config: VecEnvStepConfig,
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    dtype = states.dtype
+    sigma_pos = jnp.asarray(config.sigma_pos, dtype=dtype)
+    sigma_vel = jnp.asarray(config.sigma_vel, dtype=dtype)
+    sigma_att = jnp.asarray(config.sigma_att, dtype=dtype)
+    sigma_ang = jnp.asarray(config.sigma_angvel, dtype=dtype)
+    w_pos = jnp.asarray(config.w_pos, dtype=dtype)
+    w_vel = jnp.asarray(config.w_vel, dtype=dtype)
+    w_att = jnp.asarray(config.w_att, dtype=dtype)
+    w_ang = jnp.asarray(config.w_angvel, dtype=dtype)
+
+    pos_term = jnp.exp(-jnp.sum((states[:, 0:3] / sigma_pos) ** 2, axis=1))
+    vel_term = jnp.exp(-jnp.sum((states[:, 6:9] / sigma_vel) ** 2, axis=1))
+    att_norm = jnp.linalg.norm(states[:, 3:6], axis=1)
+    att_term = jnp.exp(-((att_norm / sigma_att) ** 2))
+    ang_term = jnp.exp(-jnp.sum((states[:, 9:12] / sigma_ang) ** 2, axis=1))
+
+    pos_reward = w_pos * pos_term
+    vel_reward = w_vel * vel_term
+    att_reward = w_att * att_term
+    ang_reward = w_ang * ang_term
+
+    return pos_reward, vel_reward, att_reward, ang_reward
+
+
+def _compute_terminals(states: jnp.ndarray, sigma_pos: float) -> jnp.ndarray:
+    radius = jnp.asarray(sigma_pos, dtype=states.dtype)
+    return jnp.linalg.norm(states[:, 0:3], axis=1) <= radius
+
+
+def _compute_penalties(
+    states: jnp.ndarray,
+    terminals: jnp.ndarray,
+    commanded_ctrl: jnp.ndarray,
+    config: VecEnvStepConfig,
+) -> Tuple[jnp.ndarray, Dict[str, jnp.ndarray]]:
+    dtype = states.dtype
+    lam_fuel = jnp.asarray(config.lam_fuel, dtype=dtype)
+    lam_speed = jnp.asarray(config.lam_speed_terminal, dtype=dtype)
+    lam_ang = jnp.asarray(config.lam_ang_speed_terminal, dtype=dtype)
+    lam_fuel_term = jnp.asarray(config.lam_fuel_terminal, dtype=dtype)
+
+    fuel_pen = jnp.sum(jnp.abs(commanded_ctrl), axis=1)
+    lin_speed_sq = jnp.sum(states[:, 6:9] ** 2, axis=1)
+    ang_speed_sq = jnp.sum(states[:, 9:12] ** 2, axis=1)
+
+    terminal_mask = terminals.astype(dtype)
+    vel_pen_terminal = lam_speed * lin_speed_sq * terminal_mask
+    angvel_pen_terminal = lam_ang * ang_speed_sq * terminal_mask
+    fuel_pen_terminal = lam_fuel_term * fuel_pen * terminal_mask
+    fuel_penalty = lam_fuel * fuel_pen
+
+    penalties = (
+        fuel_penalty + vel_pen_terminal + angvel_pen_terminal + fuel_pen_terminal
+    )
+
+    details = {
+        "penalty_fuel": fuel_penalty,
+        "penalty_terminal_speed": vel_pen_terminal,
+        "penalty_terminal_ang_speed": angvel_pen_terminal,
+        "penalty_terminal_fuel": fuel_pen_terminal,
+    }
+
+    if config.use_adaptive_approach:
+        lam_residual = jnp.asarray(config.lam_wrench_residual, dtype=dtype)
+        tolerance = jnp.asarray(config.wrench_residual_tolerance, dtype=dtype)
+        clip_value = jnp.asarray(config.wrench_residual_clip, dtype=dtype)
+        residual_norm = jnp.linalg.norm(states[:, 12:18], axis=1)
+        residual_excess = jnp.maximum(residual_norm - tolerance, 0.0)
+        residual_clipped = jnp.minimum(residual_excess, clip_value)
+        wrench_residual_pen = lam_residual * residual_clipped
+        penalties = penalties + wrench_residual_pen
+    else:
+        wrench_residual_pen = jnp.zeros_like(fuel_penalty)
+
+    details["penalty_wrench_residual"] = wrench_residual_pen
+    details["penalty_total"] = penalties
+    return penalties, details
+
+
+def vecenv_reset(
+    rng_key: jnp.ndarray,
+    *,
+    mjx_model: mjx.Model,
+    mjx_data_template: mjx.Data,
+    mjx_batch_template: mjx.Data,
+    init_qpos: jnp.ndarray,
+    init_qvel: jnp.ndarray,
+    num_envs: int,
+    max_start_offset: float,
+) -> VecEnvState:
+    """
+    Functional reset helper mirroring VecEnv.reset.
+    """
+    rng_key, split_key = jax.random.split(rng_key)
+    env_keys = jax.random.split(split_key, num_envs)
+
+    base_data = mjx_data_template.replace(qpos=init_qpos[0], qvel=init_qvel[0])
+
+    def _randomize_state(rng_key):
+        pos_key, quat_key = jax.random.split(rng_key)
+        random_pos = base_data.qpos[:3] + jax.random.uniform(
+            pos_key,
+            (3,),
+            minval=-max_start_offset,
+            maxval=max_start_offset,
+        )
+        random_quat = _sample_random_quat(quat_key)
+        return base_data.replace(qpos=jnp.concatenate([random_pos, random_quat]))
+
+    randomized_batch = jax.vmap(_randomize_state)(env_keys)
+
+    batch = mjx_batch_template.replace(qpos=randomized_batch.qpos, qvel=init_qvel)
+    batch = jax.vmap(mjx.forward, in_axes=(None, 0))(mjx_model, batch)
+
+    return VecEnvState(rng=rng_key, mjx_batch=batch)
+
+
+def prepare_step_functional(
+    state: VecEnvState,
+    base_ctrl: jnp.ndarray,
+) -> Tuple[VecEnvState, jnp.ndarray, jnp.ndarray]:
+    """
+    Pure helper that applies disturbances and perturbations to produce the control
+    and generalized forces for the next MuJoCo step.
+    """
+    ctrl = base_ctrl
+    force = jnp.zeros_like(state.mjx_batch.qfrc_applied)
+    updated_disturbances: list[Optional[DisturbanceState]] = []
+
+    for dist_state in state.disturbance_states:
+        if dist_state is None:
+            updated_disturbances.append(None)
+            continue
+        const_force = (
+            dist_state.params.get("const_force") if dist_state.params else None
+        )
+        if const_force is not None:
+            force_contrib, new_state = constant_force_apply_from_state(
+                dist_state,
+                state.mjx_batch.time,
+                const_force,
+            )
+            force = force + force_contrib
+            updated_disturbances.append(new_state)
+        else:
+            updated_disturbances.append(dist_state)
+
+    updated_perturbations: list[Optional[PerturbationState]] = []
+    for pert_state in state.perturbation_states:
+        if pert_state is None:
+            updated_perturbations.append(None)
+            continue
+
+        new_state = pert_state
+        failure_value = getattr(new_state, "failure_value", None)
+        sim_time = state.mjx_batch.time
+
+        if failure_value == PerturbationStatus.STUCK_OFF.value:
+            ctrl, tmp_state = stuck_off_apply_from_state(new_state, ctrl, sim_time)
+            if tmp_state is not None:
+                new_state = tmp_state
+        elif failure_value == PerturbationStatus.STUCK_ON.value:
+            ctrl, tmp_state = stuck_on_apply_from_state(new_state, ctrl, sim_time)
+            if tmp_state is not None:
+                new_state = tmp_state
+        elif failure_value in (
+            PerturbationStatus.FAULTY_VALVE.value,
+            PerturbationStatus.SATURATED_THRUST.value,
+            PerturbationStatus.THRUST_INSTABILITY.value,
+        ):
+            ctrl, tmp_state = gp_apply_from_state(
+                new_state,
+                ctrl,
+                sim_time,
+                failure_value,
+            )
+            if tmp_state is not None:
+                new_state = tmp_state
+        else:
+            # As a fallback, pass through the stuck_off/on helpers so that any
+            # mixed-status mask still receives the appropriate adjustments.
+            ctrl, tmp_state = stuck_off_apply_from_state(new_state, ctrl, sim_time)
+            if tmp_state is not None:
+                new_state = tmp_state
+            ctrl, tmp_state = stuck_on_apply_from_state(new_state, ctrl, sim_time)
+            if tmp_state is not None:
+                new_state = tmp_state
+
+        updated_perturbations.append(new_state)
+
+    updated_state = state.replace(
+        disturbance_states=tuple(updated_disturbances),
+        perturbation_states=tuple(updated_perturbations),
+    )
+
+    return updated_state, ctrl, force
+
+
+def vecenv_step(
+    state: VecEnvState,
+    commanded_ctrl: jnp.ndarray,
+    next_waypoint: jnp.ndarray,
+    config: VecEnvStepConfig,
+) -> Tuple[VecEnvState, VecEnvStepOutput]:
+    """
+    Functional rollout helper that mirrors VecEnv.transition without touching object
+    attributes. Returns the updated VecEnvState together with the per-step transition
+    data required for training.
+    """
+    commanded_ctrl = jnp.asarray(commanded_ctrl)
+
+    prev_states = _compute_state_features(state.mjx_batch, next_waypoint)
+    prev_obs = _compute_observations_from_batch(state.mjx_batch)
+    prepared_state, applied_ctrl, qfrc_applied = prepare_step_functional(
+        state, commanded_ctrl
+    )
+    mjx_batch = prepared_state.mjx_batch.replace(
+        ctrl=applied_ctrl,
+        qfrc_applied=qfrc_applied,
+    )
+
+    def _step_body(_, batch):
+        return VMAP_MJX_STEP(config.mjx_model, batch)
+
+    mjx_batch = jax.lax.fori_loop(
+        0,
+        config.control_decimation,
+        lambda i, b: _step_body(i, b),
+        mjx_batch,
+    )
+
+    next_state = prepared_state.replace(mjx_batch=mjx_batch)
+    next_states = _compute_state_features(mjx_batch, next_waypoint)
+    next_obs = _compute_observations_from_batch(mjx_batch)
+
+    (
+        pos_curr,
+        vel_curr,
+        att_curr,
+        ang_curr,
+    ) = _reward_components(prev_states, config)
+    phi_curr = pos_curr + vel_curr + att_curr + ang_curr
+
+    (
+        pos_next,
+        vel_next,
+        att_next,
+        ang_next,
+    ) = _reward_components(next_states, config)
+    phi_next = pos_next + vel_next + att_next + ang_next
+
+    terminals = _compute_terminals(next_states, config.sigma_pos)
+    penalties, penalty_components = _compute_penalties(
+        next_states, terminals, commanded_ctrl, config
+    )
+
+    rewards = phi_next - phi_curr - penalties
+
+    if config.collect_reward_components:
+        shaping_deltas = jnp.stack(
+            [
+                pos_next - pos_curr,
+                vel_next - vel_curr,
+                att_next - att_curr,
+                ang_next - ang_curr,
+            ],
+            axis=1,
+        )
+        total_shaping = shaping_deltas.sum(axis=1)
+        reward_components = {
+            "shaping_pos": shaping_deltas[:, 0],
+            "shaping_vel": shaping_deltas[:, 1],
+            "shaping_att": shaping_deltas[:, 2],
+            "shaping_angvel": shaping_deltas[:, 3],
+            "shaping_total": total_shaping,
+            **penalty_components,
+            "reward_total": rewards,
+        }
+    else:
+        reward_components = {"reward_total": rewards}
+
+    actual_wrench = jnp.atleast_2d(mjx_batch.actuator_force) @ config.thruster_mixer_T
+
+    step_output = VecEnvStepOutput(
+        prev_states=prev_states,
+        next_states=next_states,
+        rewards=rewards,
+        terminals=terminals,
+        commanded_ctrl=commanded_ctrl,
+        applied_ctrl=applied_ctrl,
+        actual_wrench=actual_wrench,
+        desired_wrench=commanded_ctrl @ config.thruster_mixer_T,
+        prev_obs=prev_obs,
+        next_obs=next_obs,
+        reward_components=reward_components,
+    )
+
+    return next_state, step_output
+
+
+def vecenv_reset_to_config(
+    state: VecEnvState,
+    config: VecEnvStepConfig,
+) -> VecEnvState:
+    """
+    Reset the VecEnvState using the configuration templates.
+    """
+    reset_state = vecenv_reset(
+        state.rng,
+        mjx_model=config.mjx_model,
+        mjx_data_template=config.mjx_data_template,
+        mjx_batch_template=config.mjx_batch_template,
+        init_qpos=config.init_qpos,
+        init_qvel=config.init_qvel,
+        num_envs=config.num_envs,
+        max_start_offset=config.max_start_offset,
+    )
+    return reset_state.replace(
+        disturbance_states=config.base_disturbance_states,
+        perturbation_states=config.base_perturbation_states,
+    )
 
 
 class VecEnv(BaseEnv):
@@ -77,7 +777,17 @@ class VecEnv(BaseEnv):
         self.collect_reward_components = getattr(args, "wandb", False) or getattr(
             args, "log", False
         )
+        self.disturbance_states: Tuple[DisturbanceState, ...] = ()
+        self.perturbation_states: Tuple[PerturbationState, ...] = ()
         self.reset()
+        self._refresh_effect_states()
+        self._state = VecEnvState(
+            rng=self._rng,
+            mjx_batch=self.mjx_batch,
+            disturbance_states=self.disturbance_states,
+            perturbation_states=self.perturbation_states,
+        )
+        self._refresh_effect_states()
 
     def next_rng_keys(self, count: int = 1) -> jnp.ndarray:
         """
@@ -93,28 +803,27 @@ class VecEnv(BaseEnv):
         """
         Reset the agent in all the environment instances, while randomizing the initial position.
         """
-        # Updating only qpos and qvel, not resetting all of mj_data
-        self.mjx_data = self.mjx_data.replace(qpos=self.init_qpos[0])
-        rng = self.next_rng_keys(self.num_envs)
-
-        def _randomize_state(rng_key):
-            pos_key, quat_key = jax.random.split(rng_key)
-            random_pos = self.mjx_data.qpos[:3] + jax.random.uniform(
-                pos_key,
-                (3,),
-                minval=-self.max_start_offset,
-                maxval=self.max_start_offset,
-            )
-            random_quat = self._get_random_quat(quat_key)
-            return self.mjx_data.replace(
-                qpos=jnp.concatenate([random_pos, random_quat])
-            )
-
-        tmp_batch = jax.vmap(_randomize_state)(rng)
-        self.mjx_batch = self.mjx_batch.replace(qpos=tmp_batch.qpos)
-        self.mjx_batch = self.mjx_batch.replace(qvel=self.init_qvel)
-        self.mjx_batch = self.jit_forward(self.mjx_model, self.mjx_batch)
-        self._state = VecEnvState(self._rng, self.mjx_batch)
+        new_state = vecenv_reset(
+            self._rng,
+            mjx_model=self.mjx_model,
+            mjx_data_template=self.mjx_data,
+            mjx_batch_template=self.mjx_batch,
+            init_qpos=self.init_qpos,
+            init_qvel=self.init_qvel,
+            num_envs=self.num_envs,
+            max_start_offset=self.max_start_offset,
+        )
+        self._rng = new_state.rng
+        self.mjx_batch = new_state.mjx_batch
+        self.mjx_data = self.mjx_data.replace(
+            qpos=self.mjx_batch.qpos[0], qvel=self.mjx_batch.qvel[0]
+        )
+        self._refresh_effect_states()
+        self._state = new_state.replace(
+            disturbance_states=self.disturbance_states,
+            perturbation_states=self.perturbation_states,
+        )
+        self._refresh_effect_states()
 
     def transition(
         self,
@@ -152,9 +861,7 @@ class VecEnv(BaseEnv):
             att_reward_curr,
             ang_reward_curr,
         ) = _reward_components(states)
-        phi_s = (
-            pos_reward_curr + vel_reward_curr + att_reward_curr + ang_reward_curr
-        )
+        phi_s = pos_reward_curr + vel_reward_curr + att_reward_curr + ang_reward_curr
 
         # Step the environment
         self.step(input=actions)
@@ -189,7 +896,9 @@ class VecEnv(BaseEnv):
         )
         fuel_pen_terminal = jnp.where(terminal, self.lam_fuel_terminal * fuel_pen, 0.0)
         fuel_penalty = self.lam_fuel * fuel_pen
-        penalties = fuel_penalty + vel_pen_terminal + angvel_pen_terminal + fuel_pen_terminal
+        penalties = (
+            fuel_penalty + vel_pen_terminal + angvel_pen_terminal + fuel_pen_terminal
+        )
 
         if self.use_adaptive_approach is True:
             # Wrench residual penalty
@@ -248,6 +957,26 @@ class VecEnv(BaseEnv):
         Return the shaped reward and penalty breakdown from the most recent transition.
         """
         return self._last_reward_components
+
+    def _refresh_effect_states(self) -> None:
+        """
+        Capture snapshots of the current disturbance and perturbation objects.
+        These will later feed the functional rollout helpers.
+        """
+        if hasattr(self, "disturbances") and self.disturbances is not None:
+            self.disturbance_states = tuple(
+                getattr(dist, "state", None) for dist in self.disturbances.disturbances
+            )
+        else:
+            self.disturbance_states = ()
+
+        if hasattr(self, "perturbations") and self.perturbations is not None:
+            self.perturbation_states = tuple(
+                getattr(pert, "state", None)
+                for pert in self.perturbations.perturbations
+            )
+        else:
+            self.perturbation_states = ()
 
     def step(self, input) -> None:
         """
@@ -344,6 +1073,165 @@ class VecEnv(BaseEnv):
 
         return states
 
+    @property
+    def state_struct(self) -> VecEnvState:
+        """
+        Expose the current environment state as a lightweight dataclass.
+        """
+        return self._state
+
+    def apply_state_struct(self, state: VecEnvState) -> None:
+        """
+        Overwrite the imperative environment state with the provided functional snapshot.
+        """
+        self._state = state
+        self._rng = state.rng
+        self.mjx_batch = state.mjx_batch
+        self.disturbance_states = state.disturbance_states
+        self.perturbation_states = state.perturbation_states
+
+        if hasattr(self, "disturbances") and self.disturbances is not None:
+            for obj, snapshot in zip(
+                self.disturbances.disturbances,
+                state.disturbance_states,
+                strict=True,
+            ):
+                obj.state = snapshot
+        if hasattr(self, "perturbations") and self.perturbations is not None:
+            for obj, snapshot in zip(
+                self.perturbations.perturbations,
+                state.perturbation_states,
+                strict=True,
+            ):
+                obj.state = snapshot
+        self._refresh_effect_states()
+
+    def verify_functional_step(
+        self,
+        state: VecEnvState,
+        commanded_ctrl: jnp.ndarray,
+        next_waypoint: jnp.ndarray,
+        *,
+        step_config: VecEnvStepConfig,
+        atol: float = 1e-6,
+        rtol: float = 1e-5,
+    ) -> None:
+        """
+        Compare the functional step helper against the imperative ``transition`` path
+        for a single step, raising ``AssertionError`` when a mismatch is detected.
+        """
+        if step_config is None:
+            raise ValueError("step_config must be provided for verification.")
+
+        commanded_ctrl = jnp.asarray(commanded_ctrl)
+        next_waypoint = jnp.asarray(next_waypoint)
+
+        func_state, func_output = vecenv_step(
+            state,
+            commanded_ctrl,
+            next_waypoint,
+            step_config,
+        )
+
+        original_state = self.state_struct
+
+        def _assert_close(name: str, lhs: jnp.ndarray, rhs: jnp.ndarray) -> None:
+            if not jnp.allclose(lhs, rhs, atol=atol, rtol=rtol):
+                diff = float(jnp.max(jnp.abs(lhs - rhs)))
+                raise AssertionError(
+                    f"Functional {name} mismatch (max abs diff={diff:.3e})"
+                )
+
+        try:
+            self.apply_state_struct(state)
+            prev_states = _compute_state_features(state.mjx_batch, next_waypoint)
+            rewards_legacy, terminals_legacy = self.transition(
+                commanded_ctrl, prev_states, next_waypoint
+            )
+            self._refresh_effect_states()
+            legacy_state = VecEnvState(
+                rng=self._rng,
+                mjx_batch=self.mjx_batch,
+                disturbance_states=self.disturbance_states,
+                perturbation_states=self.perturbation_states,
+            )
+            actual_wrench = self.get_actual_wrench()
+            desired_wrench = self.get_desired_wrench(commanded_ctrl)
+
+            _assert_close("prev_states", func_output.prev_states, prev_states)
+            _assert_close(
+                "next_states", func_output.next_states, self.get_states(next_waypoint)
+            )
+            _assert_close("rewards", func_output.rewards, rewards_legacy)
+            _assert_close(
+                "terminals",
+                func_output.terminals.astype(jnp.float32),
+                terminals_legacy.astype(jnp.float32),
+            )
+            _assert_close("applied_ctrl", func_output.applied_ctrl, self.mjx_batch.ctrl)
+            _assert_close("actual_wrench", func_output.actual_wrench, actual_wrench)
+            _assert_close("desired_wrench", func_output.desired_wrench, desired_wrench)
+            _assert_close(
+                "mjx_batch.qpos", func_state.mjx_batch.qpos, legacy_state.mjx_batch.qpos
+            )
+            _assert_close(
+                "mjx_batch.qvel", func_state.mjx_batch.qvel, legacy_state.mjx_batch.qvel
+            )
+            _assert_close(
+                "mjx_batch.qfrc_applied",
+                func_state.mjx_batch.qfrc_applied,
+                legacy_state.mjx_batch.qfrc_applied,
+            )
+            _assert_close("rng", func_state.rng, legacy_state.rng)
+
+            legacy_components = self.get_last_reward_components()
+            for key, value in func_output.reward_components.items():
+                if key in legacy_components:
+                    _assert_close(
+                        f"reward_component[{key}]",
+                        value,
+                        legacy_components[key],
+                    )
+        finally:
+            self.apply_state_struct(original_state)
+
+    def build_step_config(self, *, max_episode_len: int) -> VecEnvStepConfig:
+        """
+        Construct the functional step configuration reflecting the current environment.
+        """
+        return VecEnvStepConfig(
+            mjx_model=self.mjx_model,
+            mjx_data_template=self.mjx_data,
+            mjx_batch_template=self.mjx_batch,
+            init_qpos=self.init_qpos,
+            init_qvel=self.init_qvel,
+            num_envs=self.num_envs,
+            max_start_offset=self.max_start_offset,
+            control_decimation=int(self.env_cfg.control.control_decimation),
+            sigma_pos=float(self.sigma_pos),
+            sigma_vel=float(self.sigma_vel),
+            sigma_att=float(self.sigma_att),
+            sigma_angvel=float(self.sigma_angvel),
+            w_pos=float(self.w_pos),
+            w_vel=float(self.w_vel),
+            w_att=float(self.w_att),
+            w_angvel=float(self.w_angvel),
+            lam_fuel=float(self.lam_fuel),
+            lam_speed_terminal=float(self.lam_speed_terminal),
+            lam_ang_speed_terminal=float(self.lam_ang_speed_terminal),
+            lam_fuel_terminal=float(self.lam_fuel_terminal),
+            lam_wrench_residual=float(self.lam_wrench_residual),
+            wrench_residual_tolerance=float(self.wrench_residual_tolerance),
+            wrench_residual_clip=float(self.wrench_residual_clip),
+            max_episode_len=int(max_episode_len),
+            res_dim=int(self.res_dim),
+            use_adaptive_approach=bool(self.use_adaptive_approach),
+            collect_reward_components=bool(self.collect_reward_components),
+            thruster_mixer_T=self._thruster_mixer_T,
+            base_disturbance_states=self.disturbance_states,
+            base_perturbation_states=self.perturbation_states,
+        )
+
     def apply_random_perturbations(
         self,
         key,
@@ -419,6 +1307,9 @@ class VecEnv(BaseEnv):
             subkeys[4], thrust_instability_envs
         )
 
+        self._refresh_effect_states()
+        self._state = self._state.replace(perturbation_states=self.perturbation_states)
+
     def apply_random_disturbance(self, key, fraction_disturbed_envs: float) -> None:
         """
         Apply the constant force disturbance to a subset of environments.
@@ -448,6 +1339,8 @@ class VecEnv(BaseEnv):
             return
 
         constant_force_disturbance.const_force_disturbance(selected_indices)
+        self._refresh_effect_states()
+        self._state = self._state.replace(disturbance_states=self.disturbance_states)
 
     def get_desired_wrench(self, ctrl: jnp.ndarray) -> jnp.ndarray:
         """
@@ -599,22 +1492,16 @@ class VecEnv(BaseEnv):
     def _pre_physics_step(self, input: jnp.ndarray) -> None:
         """
         Prepares the environment for the simulation step in MuJoCo.
-        This includes:
-            - Adding external disturbances
-            - Adding perturbations to control input and model dynamics
-            - ...
         """
-        # External disturbances
+        # External disturbances (compatibility path; updates state internally)
         if self.disturbances:
-            self.mjx_batch = self.mjx_batch.replace(
-                qfrc_applied=self.disturbances.apply(self.mjx_batch.time[0])
-            )
+            force = self.disturbances.apply(float(self.mjx_batch.time[0]))
+            self.mjx_batch = self.mjx_batch.replace(qfrc_applied=force)
 
         # Perturbations
         if self.perturbations:
-            self.mjx_batch = self.mjx_batch.replace(
-                ctrl=self.perturbations.apply(input, self.mjx_batch.time[0])
-            )
+            ctrl = self.perturbations.apply(input, float(self.mjx_batch.time[0]))
+            self.mjx_batch = self.mjx_batch.replace(ctrl=ctrl)
         else:
             self.mjx_batch = self.mjx_batch.replace(ctrl=input)
 
@@ -666,31 +1553,7 @@ class VecEnv(BaseEnv):
         """
         Return a random quaternion.
         """
-        key, subkey1, subkey2 = jax.random.split(rng, 3)
-
-        # Generate random samples from a uniform distribution over [0, 2π)
-        theta1 = jax.random.uniform(key, (1,)) * 2 * jnp.pi
-        theta2 = jax.random.uniform(subkey1, (1,)) * 2 * jnp.pi
-        theta3 = jax.random.uniform(subkey2, (1,)) * 2 * jnp.pi
-
-        # Compute quaternion components
-        w = jnp.sin(theta1) * jnp.cos(theta2) * jnp.cos(theta3) + jnp.cos(
-            theta1
-        ) * jnp.sin(theta2) * jnp.sin(theta3)
-        x = jnp.cos(theta1) * jnp.sin(theta2) * jnp.cos(theta3) - jnp.sin(
-            theta1
-        ) * jnp.cos(theta2) * jnp.sin(theta3)
-        y = jnp.sin(theta1) * jnp.cos(theta2) * jnp.cos(theta3) - jnp.cos(
-            theta1
-        ) * jnp.sin(theta2) * jnp.sin(theta3)
-        z = jnp.cos(theta1) * jnp.cos(theta2) * jnp.sin(theta3) + jnp.sin(
-            theta1
-        ) * jnp.sin(theta2) * jnp.cos(theta3)
-
-        quaternion = jnp.array([w, x, y, z]).reshape(-1)
-        quaternion = quaternion / jnp.linalg.norm(quaternion)
-
-        return quaternion
+        return _sample_random_quat(rng)
 
     def _load_vec_env_hyperparams(self) -> None:
         """

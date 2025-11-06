@@ -123,7 +123,12 @@ class EnvConfig(BaseEnvConfig):
             n_evals = 10
 
             # Hyperparams for the controller
-            deployment_len = 700  # Set to None to disable
+            deployment_len = 7  # Set to None to disable
+
+            # Regression testing of functional rollout vs legacy rollout
+            verify_functional_rollout = False
+            verify_functional_rollout_atol = 1e-4
+            verify_functional_rollout_rtol = 1e-3
 
     class planner:
         resolution = 1  # Resolution of the grid

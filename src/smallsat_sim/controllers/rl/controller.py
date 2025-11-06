@@ -1,10 +1,10 @@
 import os
-import time
+
 import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from smallsat_sim.envs.vec_env import VecEnv
+from smallsat_sim.envs.vec_env import VecEnv, VecEnvStepOutput, vecenv_step
 from smallsat_sim.planners.base_planner import BasePlanner
 from smallsat_sim.controllers.pd.vectorized_controller import VectorizedPDController
 from smallsat_sim.controllers.rl.algorithms.vpg import VPG
@@ -14,7 +14,8 @@ from smallsat_sim.controllers.rl.modules.am_transformer import (
     TransformerAdaptationModule,
 )
 from smallsat_sim.controllers.rl.runners.runner_utils import load_trained_modules
-from smallsat_sim.utils.helpers_jax import normalize_obs
+
+_JITTED_VECENV_STEP = jax.jit(vecenv_step, static_argnames=("config",))
 
 
 class RLController(object):
@@ -76,34 +77,43 @@ class RLController(object):
             file_path = os.path.join(self.ckpt_dir, self.ckpt_filename)
             if os.path.isfile(file_path):
                 restored_state = load_trained_modules(self.ckpt_dir, self.ckpt_filename)
-                nnx.update(
-                    self.agent.actor.mu_net, restored_state["actor_model"].mu_net
-                )
-                nnx.update(
-                    self.agent.critic.v_net, restored_state["critic_model"].v_net
-                )
+                actor_state = restored_state["actor_model"]
+                critic_state = restored_state["critic_model"]
+                if isinstance(actor_state, dict):
+                    nnx.update(self.agent.actor, actor_state)
+                else:
+                    nnx.update(self.agent.actor.mu_net, actor_state.mu_net)
+                if isinstance(critic_state, dict):
+                    nnx.update(self.agent.critic, critic_state)
+                else:
+                    nnx.update(self.agent.critic.v_net, critic_state.v_net)
                 if self.env.use_adaptive_approach and phase == 2:
                     adapt_module_state = load_trained_modules(
                         self.ckpt_dir, self.adaptation_module_file_name
                     )
-                    nnx.update(self.am, adapt_module_state["am_model"])
+                    am_state = adapt_module_state["am_model"]
+                    if isinstance(am_state, dict):
+                        nnx.update(self.am, am_state)
+                    else:
+                        nnx.update(self.am, am_state)
             else:
                 raise Exception("Not all necessary modules have been trained yet.")
 
         # Vectorize adaptation module
         self.adaptation_module = jax.vmap(self.am)
 
-        # Helper variables to normalize the observations
-        num_saved_obs = 1000
-        last_obs = jnp.zeros((self.env.num_envs, num_saved_obs, self.env.obs_dim))
-        step = 0
-
         self.env.reset()
         self.env.reset_perturbations()
-        start_time = time.time()
+        self.env._refresh_effect_states()
+
+        vec_state = self.env.state_struct
+        max_steps = (
+            int(self.deployment_len)
+            if self.deployment_len is not None
+            else int(self.agent.max_ep_len)
+        )
         next_waypoint = self.planner.get_reference(self.env.get_obs())
         states = self.env.get_states(next_waypoint)
-        states_normalized = states
 
         # No history in the beginning
         state_action_history = jnp.zeros(
@@ -112,7 +122,7 @@ class RLController(object):
         history_len = state_action_history.shape[1]
         history_counts = jnp.zeros(self.env.num_envs, dtype=jnp.int32)
 
-        # Initialize residuals
+        # Initialize residuals and extrinsics
         if self.env.use_adaptive_approach is True:
             res = jnp.zeros((self.env.num_envs, self.env.res_dim))
             ext = jnp.zeros((self.env.num_envs, self.env.ext_dim))
@@ -120,18 +130,17 @@ class RLController(object):
             res = jnp.empty((self.env.num_envs, 0))
             ext = jnp.empty((self.env.num_envs, 0))
 
-        terminal = jnp.zeros(self.env.num_envs, dtype=bool)
-
-        while (
-            True and step < self.deployment_len
-            if self.deployment_len is not None
-            else True
-        ):
-            real_time = time.time() - start_time
-            sim_time = self.env.mjx_batch.time[0]
+        step = 0
+        while True:
+            if self.deployment_len is not None and step >= max_steps:
+                break
 
             # Start perturbations after 100 steps
-            if self.deployment_len >= 100 and step == 100:
+            if (
+                self.deployment_len is not None
+                and self.deployment_len >= 100
+                and step == 100
+            ):
                 if perturbation_distribution is not None:
                     self.env.apply_random_perturbations(
                         key=self._take_keys(),
@@ -143,56 +152,94 @@ class RLController(object):
                         key=self._take_keys(),
                         fraction_disturbed_envs=1.0,
                     )
+                self.env._refresh_effect_states()
 
             if hasattr(self.env, "renderer") and self.env.renderer is not None:
                 self.env._visualize_renderer(self.planner.reference_point_list)
 
-            if not test_pd:
+            use_functional = not test_pd and stage not in {
+                "deployment",
+                "stuck_off_deployment",
+                "stuck_on_deployment",
+                "faulty_valve_deployment",
+                "saturated_thrust_deployment",
+                "thrust_instability_deployment",
+                "constant_force_disturbances_deployment",
+            }
+
+            if use_functional:
+                policy_input = (
+                    jnp.concatenate([states, res], axis=1) if res.shape[-1] else states
+                )
                 actions = self.agent.get_control_input(
                     stage,
-                    jnp.concatenate([states, res], axis=1),  # Use un-normalized states
-                )  # No sampling/exploration noise needed
-            else:
-                actions = jnp.asarray(
-                    self.pd_ctrl.get_control_input(self.env, next_waypoint)
+                    policy_input,
                 )
+                step_config = self.env.build_step_config(max_episode_len=max_steps)
+                vec_state, step_output = _JITTED_VECENV_STEP(
+                    vec_state, actions, next_waypoint, config=step_config
+                )
+                self.env.apply_state_struct(vec_state)
+            else:
+                if res.shape[-1]:
+                    policy_input = jnp.concatenate([states, res], axis=1)
+                else:
+                    policy_input = states
+                if test_pd:
+                    prev_obs = self.env.get_obs()
+                    actions = jnp.asarray(
+                        self.pd_ctrl.get_control_input(self.env, next_waypoint)
+                    )
+                else:
+                    actions = self.agent.get_control_input(stage, policy_input)
+                rewards, terminals = self.env.transition(
+                    actions,
+                    states,
+                    next_waypoint,
+                )
+                next_obs_batch = self.env.get_obs()
+                next_states = self.env.get_states(next_waypoint)
+                step_output = VecEnvStepOutput(
+                    prev_states=states,
+                    next_states=next_states,
+                    rewards=rewards,
+                    terminals=terminals,
+                    commanded_ctrl=actions,
+                    applied_ctrl=actions,
+                    actual_wrench=self.env.get_actual_wrench(),
+                    desired_wrench=self.env.get_desired_wrench(actions),
+                    prev_obs=prev_obs if test_pd else next_obs_batch,
+                    next_obs=next_obs_batch,
+                    reward_components=self.env.get_last_reward_components(),
+                )
+                vec_state = self.env.state_struct
 
-            # Update state-action history
-            state_action = jnp.expand_dims(
-                jnp.concatenate([states, actions], axis=1), axis=1
-            )
-            state_action_history = jnp.concatenate(
-                [state_action_history[:, 1:, :], state_action], axis=1
+            # Update state-action history using pre-step states.
+            state_action_history = jnp.roll(state_action_history, shift=-1, axis=1)
+            state_action_history = state_action_history.at[:, -1, :].set(
+                jnp.concatenate([states, actions], axis=1)
             )
             history_counts = jnp.minimum(history_counts + 1, history_len)
 
-            # Update next waypoint and states
-            next_waypoint = self.planner.get_reference(self.env.get_obs())
-            states = self.env.get_states(next_waypoint)
-            if step == (num_saved_obs):
-                last_obs = jnp.roll(last_obs, num_saved_obs - 1, axis=1)
-            last_obs = last_obs.at[:, step, :].set(states)
-            states_normalized = normalize_obs(states, last_obs, step)
+            # Prepare next-step state and waypoint from functional outputs.
+            next_waypoint = self.planner.get_reference(step_output.next_obs)
+            states = step_output.next_states
 
-            # Step the environment
-            _, _ = self.env.transition(actions, states, next_waypoint)
             step += 1
 
-            # Compute extrinsics and residuals
-            actual_wrench = self.env.get_actual_wrench()
-            if self.env.use_adaptive_approach is True:
+            actual_wrench = step_output.actual_wrench
+            desired_wrench = step_output.desired_wrench
+            if self.env.use_adaptive_approach:
                 history_full = bool(jnp.all(history_counts >= history_len))
                 if phase == 1:
                     ext = actual_wrench
+                    res = ext - desired_wrench
                 elif phase == 2:
-                    # Mirror training: only query the adapter when the history buffer is full.
                     if history_full:
                         ext = self.adaptation_module(state_action_history)
+                        res = ext - desired_wrench
                 else:
                     raise Exception("There only exist two training phases.")
-                desired_wrench = self.env.get_desired_wrench(actions)
-                if phase == 1 or (phase == 2 and history_full):
-                    res = ext - desired_wrench
             else:
                 res = jnp.empty((self.env.num_envs, 0))
 
@@ -206,7 +253,7 @@ class RLController(object):
                 ext,
             )
 
-            if self.planner.completed_path.all():
+            if step_output.terminals.all() or self.planner.completed_path.all():
                 break
 
     def _build_adaptation_module(self):

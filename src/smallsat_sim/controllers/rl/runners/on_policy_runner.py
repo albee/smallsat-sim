@@ -1,12 +1,23 @@
 import os
 import time
+from dataclasses import dataclass
+from typing import Any, Callable, Optional
+
 import jax
 import jax.numpy as jnp
 from flax import nnx
 import optax
 import wandb
 
-from smallsat_sim.envs.vec_env import VecEnv
+from smallsat_sim.envs.vec_env import (
+    VecEnv,
+    VecEnvState,
+    VecEnvStepConfig,
+    VecEnvStepOutput,
+    vecenv_step,
+    vecenv_reset_to_config,
+    _compute_state_features,
+)
 from smallsat_sim.planners.oracle.oracle_rl import OraclePlannerRL
 from smallsat_sim.controllers.pd.vectorized_controller import VectorizedPDController
 from smallsat_sim.controllers.rl.algorithms.vpg import VPG
@@ -26,12 +37,338 @@ from smallsat_sim.controllers.rl.runners.runner_utils import (
 from smallsat_sim.utils.helpers_jax import (
     train_val_split,
     mae_loss_fn,
-    normalize_obs,
     calc_lateral_tracking_error,
     calc_attitude_error,
     calc_extrinsic_error,
 )
 from smallsat_sim.utils.wandb_config import setup_wandb
+
+
+@dataclass
+class FunctionalRolloutCallbacks:
+    """
+    Collection of callables used by `run_functional_rollout` to interact with
+    policy logic outside the environment stepping loop.
+
+    Each callable receives the current step index together with the evolving
+    carry so callers can maintain additional per-rollout state (e.g. history
+    buffers for the adaptation module).
+    """
+
+    prepare_policy_input: Callable[
+        [int, jnp.ndarray, jnp.ndarray, Any], tuple[jnp.ndarray, Any]
+    ]
+    sample_policy: Callable[
+        [int, jnp.ndarray, jnp.ndarray, Any],
+        tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, Any],
+    ]
+    post_step: Callable[
+        [int, VecEnvStepOutput, jnp.ndarray, jnp.ndarray, bool, Any],
+        tuple[jnp.ndarray, Any, Any],
+    ]
+    bootstrap_value: Callable[
+        [int, VecEnvState, jnp.ndarray, jnp.ndarray, Any],
+        tuple[jnp.ndarray, jnp.ndarray, Any],
+    ]
+
+
+@dataclass
+class FunctionalRolloutResult:
+    """
+    Batched outputs produced by `run_functional_rollout`.
+    """
+
+    step_outputs: VecEnvStepOutput
+    actions: jnp.ndarray
+    values: jnp.ndarray
+    logp: jnp.ndarray
+    residuals: jnp.ndarray
+    episode_returns: jnp.ndarray
+    done_flags: jnp.ndarray
+    bootstrap_values: jnp.ndarray
+    aux: Any
+    final_state: VecEnvState
+    final_residuals: jnp.ndarray
+    final_rng: jnp.ndarray
+    final_extra: Any
+
+
+@dataclass
+class AdaptationRolloutExtra:
+    history: jnp.ndarray
+    counts: jnp.ndarray
+
+
+def _adaptation_rollout_extra_flatten(extra: "AdaptationRolloutExtra"):
+    children = (extra.history, extra.counts)
+    return children, None
+
+
+def _adaptation_rollout_extra_unflatten(aux_data, children):
+    history, counts = children
+    return AdaptationRolloutExtra(history=history, counts=counts)
+
+
+jax.tree_util.register_pytree_node(
+    AdaptationRolloutExtra,
+    _adaptation_rollout_extra_flatten,
+    _adaptation_rollout_extra_unflatten,
+)
+
+
+@dataclass
+class _FunctionalRolloutStep:
+    step_output: VecEnvStepOutput
+    actions: jnp.ndarray
+    values: jnp.ndarray
+    logp: jnp.ndarray
+    residuals: jnp.ndarray
+    episode_return: jnp.ndarray
+    done_flag: jnp.ndarray
+    bootstrap_value: jnp.ndarray
+    aux: Any
+
+
+def _functional_rollout_step_flatten(step: "_FunctionalRolloutStep"):
+    children = (
+        step.step_output,
+        step.actions,
+        step.values,
+        step.logp,
+        step.residuals,
+        step.episode_return,
+        step.done_flag,
+        step.bootstrap_value,
+        step.aux,
+    )
+    return children, None
+
+
+def _functional_rollout_step_unflatten(aux_data, children):
+    (
+        step_output,
+        actions,
+        values,
+        logp,
+        residuals,
+        episode_return,
+        done_flag,
+        bootstrap_value,
+        aux,
+    ) = children
+    return _FunctionalRolloutStep(
+        step_output=step_output,
+        actions=actions,
+        values=values,
+        logp=logp,
+        residuals=residuals,
+        episode_return=episode_return,
+        done_flag=done_flag,
+        bootstrap_value=bootstrap_value,
+        aux=aux,
+    )
+
+
+jax.tree_util.register_pytree_node(
+    _FunctionalRolloutStep,
+    _functional_rollout_step_flatten,
+    _functional_rollout_step_unflatten,
+)
+
+
+def run_functional_rollout(
+    *,
+    step_config: VecEnvStepConfig,
+    initial_state: VecEnvState,
+    initial_residuals: jnp.ndarray,
+    rng: jnp.ndarray,
+    num_steps: int,
+    reference_waypoint: jnp.ndarray,
+    callbacks: FunctionalRolloutCallbacks,
+    extra: Any = None,
+) -> FunctionalRolloutResult:
+    """
+    Advance the vectorised environment purely functionally for ``num_steps``.
+
+    Invariants:
+    - The helper mirrors the imperative `VecEnv.transition` semantics, including
+      the `control_decimation` inner loop and per-epoch resets when all
+      environments terminate or the configured horizon is reached.
+    - `initial_residuals` must have shape `(num_envs, res_dim)` (or `(num_envs, 0)`
+      when residuals are disabled).
+    - Callback implementations must be side-effect free; any mutable state should
+      be threaded via the `extra` carry.
+    - The returned `step_outputs` contain the per-step state snapshots needed to
+      reconstruct rewards, metrics, and logging payloads without reaching back
+      into the imperative environment.
+    """
+
+    num_envs = initial_state.mjx_batch.qpos.shape[0]
+
+    def _initial_episode_state():
+        return (
+            initial_state,
+            initial_residuals,
+            rng,
+            extra,
+            jnp.zeros((num_envs,), dtype=jnp.float32),
+            jnp.array(0, dtype=jnp.int32),
+        )
+
+    def _prepare_policy_input(
+        step_idx: int, states: jnp.ndarray, residuals: jnp.ndarray, carry_extra: Any
+    ):
+        return callbacks.prepare_policy_input(step_idx, states, residuals, carry_extra)
+
+    def _sample_policy(
+        step_idx: int,
+        policy_input: jnp.ndarray,
+        rng_key: jnp.ndarray,
+        carry_extra: Any,
+    ):
+        return callbacks.sample_policy(step_idx, policy_input, rng_key, carry_extra)
+
+    def _post_step(
+        step_idx: int,
+        step_output: VecEnvStepOutput,
+        actions: jnp.ndarray,
+        residuals: jnp.ndarray,
+        reset_pending: bool,
+        carry_extra: Any,
+    ):
+        return callbacks.post_step(
+            step_idx, step_output, actions, residuals, reset_pending, carry_extra
+        )
+
+    def _bootstrap_value(
+        step_idx: int,
+        env_state: VecEnvState,
+        residuals: jnp.ndarray,
+        rng_key: jnp.ndarray,
+        carry_extra: Any,
+    ):
+        return callbacks.bootstrap_value(
+            step_idx, env_state, residuals, rng_key, carry_extra
+        )
+
+    def _scan_body(
+        carry: tuple[
+            VecEnvState, jnp.ndarray, jnp.ndarray, Any, jnp.ndarray, jnp.ndarray
+        ],
+        step_idx: int,
+    ):
+        env_state, residuals, rng_key, carry_extra, ep_ret, ep_len = carry
+
+        states_curr = _compute_state_features(env_state.mjx_batch, reference_waypoint)
+        policy_input, carry_extra = _prepare_policy_input(
+            step_idx, states_curr, residuals, carry_extra
+        )
+        actions, values, logp, rng_key, carry_extra = _sample_policy(
+            step_idx, policy_input, rng_key, carry_extra
+        )
+
+        next_env_state, step_output = vecenv_step(
+            env_state,
+            actions,
+            reference_waypoint,
+            step_config,
+        )
+
+        ep_ret_next = ep_ret + step_output.rewards
+        ep_len_next = ep_len + 1
+
+        all_terminal = jnp.all(step_output.terminals)
+        timeout = ep_len_next >= step_config.max_episode_len
+        epoch_last = jnp.equal(step_idx, num_steps - 1)
+        done_without_epoch = jnp.logical_or(all_terminal, timeout)
+        done_flag = jnp.logical_or(done_without_epoch, epoch_last)
+
+        next_residuals, step_aux, carry_extra = _post_step(
+            step_idx, step_output, actions, residuals, done_without_epoch, carry_extra
+        )
+
+        bootstrap_values, rng_key, carry_extra = jax.lax.cond(
+            epoch_last,
+            lambda args: _bootstrap_value(step_idx, *args),
+            lambda args: (jnp.zeros_like(step_output.rewards), args[2], args[3]),
+            operand=(next_env_state, next_residuals, rng_key, carry_extra),
+        )
+
+        episode_return = jax.lax.cond(
+            done_flag,
+            lambda _: ep_ret_next,
+            lambda _: jnp.zeros_like(ep_ret_next),
+            operand=None,
+        )
+
+        def _reset_after_done(_):
+            reset_state = vecenv_reset_to_config(next_env_state, step_config)
+            zero_residuals = jnp.zeros_like(initial_residuals)
+            zero_return = jnp.zeros((num_envs,), dtype=ep_ret_next.dtype)
+            zero_length = jnp.array(0, dtype=ep_len_next.dtype)
+            return reset_state, zero_residuals, zero_return, zero_length
+
+        next_env_state, next_residuals, ep_ret_final, ep_len_final = jax.lax.cond(
+            jnp.logical_and(done_without_epoch, jnp.logical_not(epoch_last)),
+            _reset_after_done,
+            lambda _: (next_env_state, next_residuals, ep_ret_next, ep_len_next),
+            operand=None,
+        )
+
+        step_record = _FunctionalRolloutStep(
+            step_output=step_output,
+            actions=actions,
+            values=values,
+            logp=logp,
+            residuals=next_residuals,
+            episode_return=episode_return,
+            done_flag=done_flag,
+            bootstrap_value=bootstrap_values,
+            aux=step_aux,
+        )
+
+        new_carry = (
+            next_env_state,
+            next_residuals,
+            rng_key,
+            carry_extra,
+            ep_ret_final,
+            ep_len_final,
+        )
+        return new_carry, step_record
+
+    initial_carry = _initial_episode_state()
+    (final_state, final_residuals, final_rng, final_extra, _, _), steps = jax.lax.scan(
+        _scan_body,
+        initial_carry,
+        jnp.arange(num_steps, dtype=jnp.int32),
+    )
+
+    step_outputs = steps.step_output
+    actions = steps.actions
+    values = steps.values
+    logp = steps.logp
+    residuals = steps.residuals
+    episode_returns = steps.episode_return
+    done_flags = steps.done_flag
+    bootstrap_values = steps.bootstrap_value
+    aux = steps.aux
+
+    return FunctionalRolloutResult(
+        step_outputs=step_outputs,
+        actions=actions,
+        values=values,
+        logp=logp,
+        residuals=residuals,
+        episode_returns=episode_returns,
+        done_flags=done_flags,
+        bootstrap_values=bootstrap_values,
+        aux=aux,
+        final_state=final_state,
+        final_residuals=final_residuals,
+        final_rng=final_rng,
+        final_extra=final_extra,
+    )
 
 
 class OnPolicyRunner(object):
@@ -62,6 +399,18 @@ class OnPolicyRunner(object):
         # JIT-compile the adaptation module updates
         self.jitted_batched_am_loss_and_grad = nnx.jit(
             nnx.value_and_grad(self.am_loss_fn), static_argnums=()
+        )
+
+        rl_cfg = self.env.env_cfg.control.RL
+        self._functional_check_enabled = bool(
+            getattr(rl_cfg, "verify_functional_rollout", False)
+        )
+        self._functional_check_ran = False
+        self._functional_check_atol = float(
+            getattr(rl_cfg, "verify_functional_rollout_atol", 1e-4)
+        )
+        self._functional_check_rtol = float(
+            getattr(rl_cfg, "verify_functional_rollout_rtol", 1e-3)
         )
 
         # Path to save the checkpoints
@@ -258,12 +607,16 @@ class OnPolicyRunner(object):
                 restored_state = load_trained_modules(
                     self.ckpt_dir, self.pretraining_state_file_name
                 )
-                nnx.update(
-                    self.agent.actor.mu_net, restored_state["actor_model"].mu_net
-                )
-                nnx.update(
-                    self.agent.critic.v_net, restored_state["critic_model"].v_net
-                )
+                actor_state = restored_state["actor_model"]
+                critic_state = restored_state["critic_model"]
+                if isinstance(actor_state, dict):
+                    nnx.update(self.agent.actor, actor_state)
+                else:
+                    nnx.update(self.agent.actor.mu_net, actor_state.mu_net)
+                if isinstance(critic_state, dict):
+                    nnx.update(self.agent.critic, critic_state)
+                else:
+                    nnx.update(self.agent.critic.v_net, critic_state.v_net)
             else:
                 print("No pretrained modules available.\n")
 
@@ -286,17 +639,7 @@ class OnPolicyRunner(object):
         # Initialize the environment
         self.env.reset()
         self.env.reset_perturbations()
-        states, ep_ret, ep_len = (
-            self.env.get_states(self.reference_point),
-            jnp.zeros(self.env.num_envs),
-            0,
-        )
         episode_counter = 0
-
-        if self.env.use_adaptive_approach is True:
-            res = jnp.zeros((self.env.num_envs, self.env.res_dim))
-        else:
-            res = jnp.empty((self.env.num_envs, 0))
 
         # Main training loop
         for epoch in range(self.epochs):
@@ -321,99 +664,159 @@ class OnPolicyRunner(object):
                 )
 
             # Accumulate rollout stats to emit once per epoch
-            epoch_reward_traces: dict[str, list[jnp.ndarray]] = {}
-            act_time = 0.0
-            env_step_time = 0.0
-            buffer_time = 0.0
-            terminal_count = 0.0
+            rollout_timer_start = time.perf_counter()
+            scan_start = rollout_timer_start
+            step_config = self.env.build_step_config(max_episode_len=self.max_ep_len)
+            initial_state = self.env.state_struct
+            actor_state, critic_state = self.agent.actor_critic_state()
+
+            if self.env.use_adaptive_approach:
+                residual_init = jnp.zeros(
+                    (self.env.num_envs, self.env.res_dim), dtype=jnp.float32
+                )
+            else:
+                residual_init = jnp.zeros((self.env.num_envs, 0), dtype=jnp.float32)
+
+            def _prepare_policy_input(_step, states, residuals, carry_extra):
+                del _step  # unused
+                if residuals.shape[-1]:
+                    return jnp.concatenate([states, residuals], axis=1), carry_extra
+                return states, carry_extra
+
+            def _sample_policy(_step, policy_input, rng_key, carry_extra):
+                del _step  # unused
+                rng_key, sample_key = jax.random.split(rng_key)
+                actions, values, logp = self.agent.functional_act(
+                    actor_state,
+                    critic_state,
+                    policy_input,
+                    sample_key,
+                )
+                return actions, values, logp, rng_key, carry_extra
+
+            def _post_step(
+                _step, step_output, actions, residuals, reset_flag, carry_extra
+            ):
+                del _step, actions, reset_flag  # unused
+                if self.env.use_adaptive_approach:
+                    residuals_next = (
+                        step_output.actual_wrench - step_output.desired_wrench
+                    )
+                else:
+                    residuals_next = residuals
+                return residuals_next, None, carry_extra
+
+            def _bootstrap_value(step_idx, env_state, residuals, rng_key, carry_extra):
+                rng_key, value_key = jax.random.split(rng_key)
+                next_states = _compute_state_features(
+                    env_state.mjx_batch, self.reference_point
+                )
+                policy_input, carry_extra = _prepare_policy_input(
+                    step_idx, next_states, residuals, carry_extra
+                )
+                _, values, _ = self.agent.functional_act(
+                    actor_state,
+                    critic_state,
+                    policy_input,
+                    value_key,
+                )
+                return values, rng_key, carry_extra
+
+            rollout_result = run_functional_rollout(
+                step_config=step_config,
+                initial_state=initial_state,
+                initial_residuals=residual_init,
+                rng=self.agent.key,
+                num_steps=self.steps_per_epoch,
+                reference_waypoint=self.reference_point,
+                callbacks=FunctionalRolloutCallbacks(
+                    prepare_policy_input=_prepare_policy_input,
+                    sample_policy=_sample_policy,
+                    post_step=_post_step,
+                    bootstrap_value=_bootstrap_value,
+                ),
+            )
+
+            jax.block_until_ready(rollout_result.actions)
+            scan_time = time.perf_counter() - scan_start
+            self.agent.key = rollout_result.final_rng
+
+            if (
+                self._functional_check_enabled
+                and not self._functional_check_ran
+                and rollout_result.actions.shape[0] > 0
+            ):
+                self.env.verify_functional_step(
+                    initial_state,
+                    rollout_result.actions[0],
+                    self.reference_point,
+                    step_config=step_config,
+                    atol=self._functional_check_atol,
+                    rtol=self._functional_check_rtol,
+                )
+                self._functional_check_ran = True
+
+            self.env.apply_state_struct(rollout_result.final_state)
+
+            step_outputs = rollout_result.step_outputs
+            actions_traj = rollout_result.actions
+            values_traj = rollout_result.values
+            logp_traj = rollout_result.logp
+            residuals_traj = rollout_result.residuals
+            done_flags = rollout_result.done_flags
+            bootstrap_vals = rollout_result.bootstrap_values
+            episode_returns_traj = rollout_result.episode_returns
+
+            terminal_count = float(jnp.sum(step_outputs.terminals.astype(jnp.float32)))
+
+            buffer_start = time.perf_counter()
+            start_ptr = buffer.path_start_idx
+            buffer.store_batch(
+                step_outputs.prev_states,
+                actions_traj,
+                step_outputs.rewards,
+                values_traj,
+                logp_traj,
+                residuals_traj,
+            )
+
+            done_indices = jnp.nonzero(
+                done_flags, size=self.steps_per_epoch, fill_value=-1
+            )[0]
+            valid_done = done_indices[done_indices >= 0]
             episode_return_sum = 0.0
             episode_counter_epoch = 0
 
-            for t in range(self.steps_per_epoch):
-                # Get actions from the agent
-                act_start = time.perf_counter()
-                a, v, logp = self.agent.act(
-                    jnp.concatenate([states, res], axis=1), log=True
-                )  # Use un-normalized states
-                act_time += time.perf_counter() - act_start
+            if valid_done.size > 0:
+                end_ptrs = start_ptr + valid_done + 1
+                buffer.end_traj_batch(end_ptrs.tolist(), bootstrap_vals[valid_done])
 
-                # Perform environment transition
-                env_start = time.perf_counter()
-                r, terminal = self.env.transition(
-                    a, states, self.reference_point, epoch
-                )
-                env_step_time += time.perf_counter() - env_start
+                mean_returns = episode_returns_traj[valid_done].mean(axis=1)
+                episode_return_sum = float(jnp.sum(mean_returns))
+                episode_counter_epoch = int(mean_returns.shape[0])
 
-                if self.env.collect_reward_components:
-                    reward_components = self.env.get_last_reward_components()
-                    for name, values in reward_components.items():
-                        if name not in epoch_reward_traces:
-                            epoch_reward_traces[name] = []
-                        epoch_reward_traces[name].append(values)
-                ep_ret += r
-                ep_len += 1
-
-                # Update residuals
-                if self.env.use_adaptive_approach is True:
-                    actual_wrench = self.env.get_actual_wrench()
-                    desired_wrench = self.env.get_desired_wrench(a)
-                    res = actual_wrench - desired_wrench
-                else:
-                    res = jnp.empty((self.env.num_envs, 0))
-
-                # Log transition
-                buffer_start = time.perf_counter()
-                buffer.store(states, a, r, v, logp, res)  # Use un-normalized states
-                buffer_time += time.perf_counter() - buffer_start
-                terminal_count += float(terminal.sum())
-
-                # Update state
-                states = self.env.get_states(self.reference_point)
-
-                # Check if a timeout is appropriate
-                timeout = ep_len == self.max_ep_len
-                epoch_ended = t == self.steps_per_epoch - 1
-
-                # N. B.: could also have a different ep_len for each env and consider timeout and terminal conditions
-                # for each env individually
-                if terminal.all() or timeout or epoch_ended:
-                    # If the trajectory didn't reach terminal state, bootstrap value target
-                    if epoch_ended:
-                        _, v, _ = self.agent.act(
-                            jnp.concatenate([states, res], axis=1)
-                        )  # Use un-normalized states
-                    else:
-                        v = jnp.zeros(self.env.num_envs)
-
-                    buffer.end_traj(v)
-                    mean_ep_return = float(ep_ret.mean())
-                    episode_return_sum += mean_ep_return
-                    episode_counter_epoch += 1
-
-                    if self.agent.has_logger:
+                if self.agent.has_logger:
+                    for mean_value in mean_returns.tolist():
                         self.env.logger.log(
                             self.env.run_id,
                             float(self.env.mjx_batch.time[0]),
                             step=episode_counter,
                             run_name=self.env.run_name,
                             stage="policy_training",
-                            mean_episodic_returns=float(ep_ret.mean()),
+                            mean_episodic_returns=mean_value,
                         )
+                        episode_counter += 1
 
-                    self.env.reset()
-                    self.env.reset_perturbations()
-                    states, ep_ret, ep_len = (
-                        self.env.get_states(self.reference_point),
-                        jnp.zeros(self.env.num_envs),
-                        0,
-                    )
+            buffer_time = time.perf_counter() - buffer_start
 
-                    if self.env.use_adaptive_approach is True:
-                        res = jnp.zeros((self.env.num_envs, self.env.res_dim))
-                    else:
-                        res = jnp.empty((self.env.num_envs, 0))
+            epoch_reward_components = (
+                step_outputs.reward_components
+                if self.env.collect_reward_components
+                else {}
+            )
 
-                    episode_counter += 1
+            self.env.reset()
+            self.env.reset_perturbations()
 
             rollout_duration = time.perf_counter() - epoch_start_time
 
@@ -449,17 +852,10 @@ class OnPolicyRunner(object):
                 else jnp.array(0.0)
             )
 
-            reward_component_means = (
-                {
-                    name: jnp.stack(values).mean()
-                    for name, values in epoch_reward_traces.items()
-                }
-                if epoch_reward_traces
-                else {}
-            )
-            other_rollout_time = max(
-                0.0, rollout_duration - (act_time + env_step_time + buffer_time)
-            )
+            reward_component_means = {
+                name: values.mean() for name, values in epoch_reward_components.items()
+            }
+            other_rollout_time = max(0.0, rollout_duration - (scan_time + buffer_time))
 
             update_start_time = time.perf_counter()
             # # Policy gradient update
@@ -497,7 +893,7 @@ class OnPolicyRunner(object):
             print(
                 f"[Timing] Epoch {epoch + 1}/{self.epochs}: "
                 f"rollout {rollout_duration:.2f}s "
-                f"(act {act_time:.2f}s, env {env_step_time:.2f}s, buffer {buffer_time:.2f}s, other {other_rollout_time:.2f}s) | "
+                f"(scan {scan_time:.2f}s, buffer {buffer_time:.2f}s, other {other_rollout_time:.2f}s) | "
                 f"update {update_duration:.2f}s | total {epoch_total_duration:.2f}s"
             )
 
@@ -565,19 +961,25 @@ class OnPolicyRunner(object):
         if self.env.use_adaptive_approach is False:
             return
 
-        # Check if adaptation module has already been trained
         file_path = os.path.join(self.ckpt_dir, self.adaptation_module_file_name)
         if os.path.isfile(file_path):
             return
 
-        # Check if trained actor and critic modules are available and load them
         file_path = os.path.join(self.ckpt_dir, self.training_state_file_name)
         if os.path.isfile(file_path):
             restored_state = load_trained_modules(
                 self.ckpt_dir, self.training_state_file_name
             )
-            nnx.update(self.agent.actor.mu_net, restored_state["actor_model"].mu_net)
-            nnx.update(self.agent.critic.v_net, restored_state["critic_model"].v_net)
+            actor_state = restored_state["actor_model"]
+            critic_state = restored_state["critic_model"]
+            if isinstance(actor_state, dict):
+                nnx.update(self.agent.actor, actor_state)
+            else:
+                nnx.update(self.agent.actor.mu_net, actor_state.mu_net)
+            if isinstance(critic_state, dict):
+                nnx.update(self.agent.critic, critic_state)
+            else:
+                nnx.update(self.agent.critic.v_net, critic_state.v_net)
         else:
             raise Exception(
                 "The base policy must be trained before the adaptation module."
@@ -585,34 +987,14 @@ class OnPolicyRunner(object):
 
         print("Training adaptation module...\n")
 
-        # Initialize the environment
         self.env.reset()
         self.env.reset_perturbations()
-        states, ep_ret, ep_len = (
-            self.env.get_states(self.reference_point),
-            jnp.zeros(self.env.num_envs),
-            0,
-        )
-        states_normalized = states
 
-        # No history in the beginning
-        state_action_history = jnp.zeros(
-            (self.env.num_envs, self.env.history_len, self.state_action_dim)
-        )
-        history_len = state_action_history.shape[1]
-
-        # Initialize residuals
-        res = jnp.zeros((self.env.num_envs, self.env.res_dim))
-
-        # Create PRNG keys
         subkeys_train = self._take_keys(self.epochs)
 
-        # Set up adaptation module optimizer
         am_lr = self.env.env_cfg.control.RL.am_lr
         am_weight_decay = self.env.env_cfg.control.RL.am_weight_decay
-        grad_clip_norm = self.env.env_cfg.control.RL.am_grad_clip_norm
-
-        grad_clip_norm = max(float(grad_clip_norm), 1e-6)
+        grad_clip_norm = max(float(self.env.env_cfg.control.RL.am_grad_clip_norm), 1e-6)
         am_optax = optax.chain(
             optax.clip_by_global_norm(grad_clip_norm),
             optax.adamw(
@@ -621,24 +1003,16 @@ class OnPolicyRunner(object):
                 weight_decay=am_weight_decay,
             ),
         )
-        self.am_optimizer = nnx.Optimizer(
-            self.am,
-            am_optax,
-        )
+        self.am_optimizer = nnx.Optimizer(self.am, am_optax)
 
-        # Main training loop
-        state_action_history = jnp.zeros(
-            (self.env.num_envs, history_len, self.state_action_dim)
-        )
-        history_counts = jnp.zeros(self.env.num_envs, dtype=jnp.int32)
+        num_envs = self.env.num_envs
+        history_len = self.env.history_len
+        state_action_dim = self.state_action_dim
+
         for epoch in range(self.epochs):
-            obs_buffer = []
-            act_buffer = []
-            extrinsics_buffer = []
-            history_full_records: list[jnp.ndarray] = []
             ramp_duration = max(self.epochs // 2, 1)
             ramp_progress = min((epoch - ramp_duration) / ramp_duration, 1.0)
-            self.env.reset_perturbations()  # avoid accumulating failures across epochs
+            self.env.reset_perturbations()
             self.env.apply_random_perturbations(
                 key=subkeys_train[epoch],
                 fraction_perturbed_envs=0.05 + (0.5 - 0.05) * max(ramp_progress, 0.0),
@@ -648,110 +1022,109 @@ class OnPolicyRunner(object):
                 fraction_disturbed_envs=0.05 + (0.15 - 0.05) * max(ramp_progress, 0.0),
             )
 
-            ep_obs = jnp.zeros(
-                (self.env.num_envs, self.steps_per_epoch, self.env.obs_dim)
-            )
-            ep_mean_tracking_error = jnp.zeros(
-                (self.env.num_envs, self.steps_per_epoch)
-            )
-            ep_mean_angle_error = jnp.zeros((self.env.num_envs, self.steps_per_epoch))
-            ep_mean_extrinsic_error = jnp.zeros(
-                (self.env.num_envs, self.steps_per_epoch)
-            )
-            for t in range(self.steps_per_epoch):
-                # Get actions from the agent
-                a = self.agent.get_control_input(
-                    "am_training", jnp.concatenate([states, res], axis=1)
-                )  # Use un-normalized states
+            step_config = self.env.build_step_config(max_episode_len=self.max_ep_len)
+            vec_state = self.env.state_struct
+            actor_state, critic_state = self.agent.actor_critic_state()
 
-                # Update state-action history
-                state_action_history = jnp.roll(state_action_history, shift=-1, axis=1)
-                state_action_history = state_action_history.at[:, -1, :].set(
-                    jnp.concatenate([states, a], axis=1)
-                )
-                # Track how many frames of history are populated for each environment.
-                history_counts = jnp.minimum(history_counts + 1, history_len)
-                history_full = history_counts >= history_len
-                history_full_records.append(history_full)
+            def _prepare_policy_input(_step, states, residuals, carry_extra):
+                del _step  # unused
+                if residuals.shape[-1]:
+                    return jnp.concatenate([states, residuals], axis=1), carry_extra
+                return states, carry_extra
 
-                # Perform environment transition
-                _, terminal = self.env.transition(
-                    a, states, self.reference_point, epoch
-                )
-                ep_len += 1
+            def _sample_policy(_step, policy_input, rng_key, carry_extra):
+                del _step  # unused
+                actions = self.agent.get_control_input("am_training", policy_input)
+                values = jnp.zeros((num_envs,), dtype=jnp.float32)
+                logp = jnp.zeros((num_envs,), dtype=jnp.float32)
+                return actions, values, logp, rng_key, carry_extra
 
-                # Update residuals and ground truth extrinsics
-                actual_wrench = self.env.get_actual_wrench()
-                desired_wrench = self.env.get_desired_wrench(a)
-                res = actual_wrench - desired_wrench
-                ext_gt = actual_wrench  # Ground truth extrinsics
+            def _post_step(
+                _step, step_output, actions, residuals, reset_flag, carry_extra
+            ):
+                del _step, residuals  # unused
+                history = carry_extra.history
+                counts = carry_extra.counts
 
-                obs_buffer.append(states)
-                act_buffer.append(a)
-                extrinsics_buffer.append(ext_gt)
+                combined = jnp.concatenate([step_output.prev_states, actions], axis=1)
+                history = jnp.roll(history, shift=-1, axis=1)
+                history = history.at[:, -1, :].set(combined)
+                counts = jnp.minimum(counts + 1, history_len)
 
-                # Compute and log mean errors
-                obs = self.env.get_obs()
-                ext_estimated = None
-                if bool(jnp.all(history_full)):
-                    # Only evaluate the adaptation module once the history buffer is fully populated
-                    ext_estimated = self.adaptation_module(
-                        state_action_history
-                    )  # Estimate extrinsics from history
-                tracking_mean, angle_mean, extrinsic_mean = self._compute_mean_errors(
-                    obs, actual_wrench, ext_estimated
-                )
-                ep_mean_tracking_error = ep_mean_tracking_error.at[:, t].set(
-                    tracking_mean
-                )
-                ep_mean_angle_error = ep_mean_angle_error.at[:, t].set(angle_mean)
-                if extrinsic_mean is not None:
-                    ep_mean_extrinsic_error = ep_mean_extrinsic_error.at[:, t].set(
-                        extrinsic_mean
+                def _reset_hist(_):
+                    return (
+                        jnp.zeros_like(history),
+                        jnp.zeros_like(counts),
                     )
 
-                # Update state
-                states = self.env.get_states(self.reference_point)
-                ep_obs = ep_obs.at[:, t, :].set(states)
-                states_normalized = normalize_obs(states, ep_obs, t)
+                history, counts = jax.lax.cond(
+                    reset_flag,
+                    _reset_hist,
+                    lambda _: (history, counts),
+                    operand=None,
+                )
 
-                # Check if a timeout is appropriate
-                timeout = ep_len == self.max_ep_len
-                epoch_ended = t == self.steps_per_epoch - 1
+                history_full = counts >= history_len
+                residuals_next = step_output.actual_wrench - step_output.desired_wrench
+                new_extra = AdaptationRolloutExtra(history=history, counts=counts)
+                return residuals_next, history_full, new_extra
 
-                # N. B.: could also have a different ep_len for each env and consider timeout and terminal conditions
-                # for each env individually
-                if terminal.all() or timeout or epoch_ended:
-                    self.env.reset()
-                    self.env.reset_perturbations()
-                    states, ep_ret, ep_len = (
-                        self.env.get_states(self.reference_point),
-                        jnp.zeros(self.env.num_envs),
-                        0,
-                    )
-                    states_normalized = states
+            def _bootstrap_value(step_idx, env_state, residuals, rng_key, carry_extra):
+                rng_key, value_key = jax.random.split(rng_key)
+                next_states = _compute_state_features(
+                    env_state.mjx_batch, self.reference_point
+                )
+                policy_input, carry_extra = _prepare_policy_input(
+                    step_idx, next_states, residuals, carry_extra
+                )
+                _, values, _ = self.agent.functional_act(
+                    actor_state,
+                    critic_state,
+                    policy_input,
+                    value_key,
+                )
+                return values, rng_key, carry_extra
 
-                    res = jnp.zeros((self.env.num_envs, self.env.res_dim))
-                    state_action_history = jnp.zeros(
-                        (
-                            self.env.num_envs,
-                            history_len,
-                            self.state_action_dim,
-                        )
-                    )
-                    history_counts = jnp.zeros(self.env.num_envs, dtype=jnp.int32)
+            extra = AdaptationRolloutExtra(
+                history=jnp.zeros((num_envs, history_len, state_action_dim)),
+                counts=jnp.zeros((num_envs,), dtype=jnp.int32),
+            )
 
-            obs = jnp.stack(obs_buffer, axis=0)
-            act = jnp.stack(act_buffer, axis=0)
-            extrinsics = jnp.stack(extrinsics_buffer, axis=0)
+            rollout_result = run_functional_rollout(
+                step_config=step_config,
+                initial_state=vec_state,
+                initial_residuals=jnp.zeros((num_envs, self.env.res_dim)),
+                rng=self.agent.key,
+                num_steps=self.steps_per_epoch,
+                reference_waypoint=self.reference_point,
+                callbacks=FunctionalRolloutCallbacks(
+                    prepare_policy_input=_prepare_policy_input,
+                    sample_policy=_sample_policy,
+                    post_step=_post_step,
+                    bootstrap_value=_bootstrap_value,
+                ),
+                extra=extra,
+            )
 
-            state_action_data = jnp.concatenate([obs, act], axis=2)
-            # Reconstruct stride-1 windows and drop entries captured during the warm-up phase.
-            history_full_mask = jnp.stack(history_full_records, axis=0)
+            jax.block_until_ready(rollout_result.actions)
+            self.agent.key = rollout_result.final_rng
+
+            step_outputs = rollout_result.step_outputs
+            actions_traj = rollout_result.actions
+            actual_wrench = step_outputs.actual_wrench
+            next_obs = step_outputs.next_obs
+            history_mask = rollout_result.aux.astype(bool)
+            done_flags = rollout_result.done_flags
+
+            state_action_data = jnp.concatenate(
+                [step_outputs.prev_states, actions_traj], axis=2
+            )
+            extrinsics = actual_wrench
+
             state_action_data, extrinsics = self._build_sliding_windows(
                 state_action_data,
                 extrinsics,
-                history_full_mask,
+                history_mask,
                 history_len,
             )
             if state_action_data.shape[0] == 0:
@@ -760,9 +1133,46 @@ class OnPolicyRunner(object):
                 )
                 continue
 
-            num_nn_epochs = 100
+            history = jnp.zeros((num_envs, history_len, state_action_dim))
+            counts = jnp.zeros((num_envs,), dtype=jnp.int32)
+            tracking_vals = []
+            angle_vals = []
+            extrinsic_vals = []
 
-            # Split into training and validation sets
+            for step_idx in range(self.steps_per_epoch):
+                combined = jnp.concatenate(
+                    [step_outputs.prev_states[step_idx], actions_traj[step_idx]], axis=1
+                )
+                history = jnp.roll(history, shift=-1, axis=1)
+                history = history.at[:, -1, :].set(combined)
+                counts = jnp.minimum(counts + 1, history_len)
+                history_full = history_mask[step_idx]
+
+                obs_step = next_obs[step_idx]
+                actual_step = actual_wrench[step_idx]
+                extrinsic_est = None
+                if bool(jnp.all(history_full)):
+                    extrinsic_est = self.adaptation_module(history)
+                tracking_mean, angle_mean, extrinsic_mean = self._compute_mean_errors(
+                    obs_step,
+                    actual_step,
+                    extrinsic_est,
+                )
+                tracking_vals.append(tracking_mean)
+                angle_vals.append(angle_mean)
+                extrinsic_vals.append(
+                    0.0 if extrinsic_mean is None else float(extrinsic_mean)
+                )
+
+                if bool(done_flags[step_idx]) and step_idx != self.steps_per_epoch - 1:
+                    history = jnp.zeros((num_envs, history_len, state_action_dim))
+                    counts = jnp.zeros((num_envs,), dtype=jnp.int32)
+
+            tracking_vals = jnp.asarray(tracking_vals)
+            angle_vals = jnp.asarray(angle_vals)
+            extrinsic_vals = jnp.asarray(extrinsic_vals)
+
+            num_nn_epochs = 100
             split_key = self._take_keys()
             (
                 X_train,
@@ -784,9 +1194,7 @@ class OnPolicyRunner(object):
             last_val_loss = None
             am_train_loss_value = 0.0
 
-            # Training loop
             for nn_epoch in range(num_nn_epochs):
-                # Compute the loss
                 am_train_loss, grads = self.jitted_batched_am_loss_and_grad(
                     self.am,
                     X_train,
@@ -795,10 +1203,8 @@ class OnPolicyRunner(object):
                 am_train_loss_value = float(am_train_loss)
                 train_loss_sum += am_train_loss_value
                 train_loss_count += 1
-                print(f"{am_train_loss_value = }\n")
                 self.am_optimizer.update(grads)
 
-                # Periodically evaluate on the validation set (e.g., every 10 nn_epoch)
                 if nn_epoch % 10 == 0:
                     am_val_loss, _ = self.jitted_batched_am_loss_and_grad(
                         self.am, X_val, y_val
@@ -807,9 +1213,6 @@ class OnPolicyRunner(object):
                     val_loss_sum += am_val_loss_value
                     val_loss_count += 1
                     last_val_loss = am_val_loss_value
-                    print(
-                        f"Epoch {nn_epoch}: Train Loss = {am_train_loss_value:.4f}, Val Loss = {am_val_loss_value:.4f}\n"
-                    )
 
             mean_am_train_loss = (
                 train_loss_sum / train_loss_count if train_loss_count > 0 else 0.0
@@ -818,22 +1221,20 @@ class OnPolicyRunner(object):
                 val_loss_sum / val_loss_count if val_loss_count > 0 else 0.0
             )
 
-            # Monitor key RL metrics during training using Weights & Biases
             if self.env.use_wandb:
                 wandb.log(
                     {
                         "am_train_loss_last": am_train_loss_value,
                         "am_train_loss_mean": mean_am_train_loss,
-                        "am_val_loss_last": last_val_loss
-                        if last_val_loss is not None
-                        else float("nan"),
-                        "am_val_loss_mean": mean_am_val_loss
-                        if val_loss_count > 0
-                        else float("nan"),
+                        "am_val_loss_last": (
+                            last_val_loss if last_val_loss is not None else float("nan")
+                        ),
+                        "am_val_loss_mean": (
+                            mean_am_val_loss if val_loss_count > 0 else float("nan")
+                        ),
                     }
                 )
 
-            # Log key RL metrics
             if self.agent.has_logger:
                 self.env.logger.log(
                     self.env.run_id,
@@ -843,14 +1244,15 @@ class OnPolicyRunner(object):
                     stage="am_training",
                     am_train_loss_last=am_train_loss_value,
                     am_train_loss_mean=mean_am_train_loss,
-                    am_val_loss_last=last_val_loss if last_val_loss is not None else 0.0,
+                    am_val_loss_last=(
+                        last_val_loss if last_val_loss is not None else 0.0
+                    ),
                     am_val_loss_mean=mean_am_val_loss,
-                    mean_tracking_error=ep_mean_tracking_error.mean(),
-                    mean_angle_error=ep_mean_angle_error.mean(),
-                    mean_extrinsic_error=ep_mean_extrinsic_error.mean(),
+                    mean_tracking_error=float(tracking_vals.mean()),
+                    mean_angle_error=float(angle_vals.mean()),
+                    mean_extrinsic_error=float(extrinsic_vals.mean()),
                 )
 
-            # Save the adaptation module weights
             save_adaptation_module(
                 self.am, self.ckpt_dir, self.adaptation_module_file_name
             )
@@ -868,150 +1270,252 @@ class OnPolicyRunner(object):
         If phase == 1, evaluate base policy before training the adaptation module.
         If phase == 2, evaluate base policy after training the adaptation module.
         """
-        print("Evaluating agent...\n")
-
         # Check if trained actor, critic and adaptation modules are available and load them
         file_path = os.path.join(self.ckpt_dir, self.training_state_file_name)
         if os.path.isfile(file_path):
             restored_state = load_trained_modules(
                 self.ckpt_dir, self.training_state_file_name
             )
-            nnx.update(self.agent.actor.mu_net, restored_state["actor_model"].mu_net)
-            nnx.update(self.agent.critic.v_net, restored_state["critic_model"].v_net)
+            actor_state = restored_state["actor_model"]
+            critic_state = restored_state["critic_model"]
+            if isinstance(actor_state, dict):
+                nnx.update(self.agent.actor, actor_state)
+            else:
+                nnx.update(self.agent.actor.mu_net, actor_state.mu_net)
+            if isinstance(critic_state, dict):
+                nnx.update(self.agent.critic, critic_state)
+            else:
+                nnx.update(self.agent.critic.v_net, critic_state.v_net)
             if self.env.use_adaptive_approach and phase == 2:
                 adapt_module_state = load_trained_modules(
                     self.ckpt_dir, self.adaptation_module_file_name
                 )
-                nnx.update(self.am, adapt_module_state["am_model"])
+                am_state = adapt_module_state["am_model"]
+                if isinstance(am_state, dict):
+                    nnx.update(self.am, am_state)
+                else:
+                    nnx.update(self.am, am_state)
         else:
             raise Exception("Not all necessary modules have been trained yet.\n")
 
-        # PRNG keys for each eval
+        if phase not in (1, 2):
+            raise ValueError("Phase must be either 1 or 2.")
+
         subkeys_eval = self._take_keys(self.n_evals)
         subkeys_eval = jnp.atleast_2d(subkeys_eval)
 
-        returns = jnp.zeros((self.env.num_envs, self.n_evals))
+        num_envs = self.env.num_envs
+        history_len = self.env.history_len
+        state_action_dim = self.state_action_dim
+        returns = jnp.zeros((num_envs, self.n_evals), dtype=jnp.float32)
 
-        for eval in range(self.n_evals):
-            print(f"Testing policy: episode {eval+1}/{self.n_evals}\n")
+        for eval_idx in range(self.n_evals):
+            print(f"Testing policy: episode {eval_idx + 1}/{self.n_evals}\n")
             self.env.reset()
             self.env.reset_perturbations()
-            states = self.env.get_states(self.reference_point)
-            states_normalized = states
 
-            # No history in the beginning
-            state_action_history = jnp.zeros(
-                (self.env.num_envs, self.env.history_len, self.state_action_dim)
-            )
-
-            # Initialize residuals
-            if self.env.use_adaptive_approach is True:
-                res = jnp.zeros(
-                    (self.env.num_envs, self.env.res_dim)
-                )  # No control input yet
-            else:
-                res = jnp.empty((self.env.num_envs, 0))
-
-            # Initialize episode variables
-            ep_ret = jnp.zeros(self.env.num_envs)
-            ep_returns = jnp.zeros((self.env.num_envs, self.episode_len))
-            ep_obs = jnp.zeros((self.env.num_envs, self.episode_len, self.env.obs_dim))
-            terminal = jnp.zeros(self.env.num_envs, dtype=bool)
-            ep_mean_tracking_error = jnp.zeros((self.env.num_envs, self.episode_len))
-            ep_mean_angle_error = jnp.zeros((self.env.num_envs, self.episode_len))
-            ep_mean_extrinsic_error = jnp.zeros((self.env.num_envs, self.episode_len))
-
-            # Start perturbations halfway through the evaluation
-            if self.env.train_with_failures and eval >= self.n_evals // 2:
+            if self.env.train_with_failures and eval_idx >= self.n_evals // 2:
+                eval_key = subkeys_eval[eval_idx]
                 self.env.apply_random_perturbations(
-                    key=subkeys_eval[eval],
+                    key=eval_key,
                     fraction_perturbed_envs=0.5,
                 )
                 self.env.apply_random_disturbance(
-                    key=subkeys_eval[eval],
+                    key=eval_key,
                     fraction_disturbed_envs=0.15,
                 )
 
-            for ep in range(self.episode_len):
-                # Get actions from the agent
-                actions = self.agent.get_control_input(
-                    "evaluation", jnp.concatenate([states, res], axis=1)
-                )  # Use un-normalized states
+            step_config = self.env.build_step_config(
+                max_episode_len=self.episode_len,
+            )
+            vec_state = self.env.state_struct
 
-                # Update state-action history
-                state_action_history = jnp.roll(state_action_history, shift=-1, axis=1)
-                state_action_history = state_action_history.at[:, -1, :].set(
-                    jnp.concatenate([states, actions], axis=1)
+            if self.env.use_adaptive_approach:
+                residual_init = jnp.zeros(
+                    (num_envs, self.env.res_dim), dtype=jnp.float32
                 )
+            else:
+                residual_init = jnp.zeros((num_envs, 0), dtype=jnp.float32)
 
-                # Perform environment transition
-                rewards, terminal = self.env.transition(
-                    actions, states, self.reference_point
-                )
-                ep_returns = ep_returns.at[:, ep].set(
-                    self.gamma * ep_returns[:, ep - 1] + rewards
-                )
-                ep_ret += rewards
+            extra = AdaptationRolloutExtra(
+                history=jnp.zeros((num_envs, history_len, state_action_dim)),
+                counts=jnp.zeros((num_envs,), dtype=jnp.int32),
+            )
 
-                # Update extrinsics and residuals
-                actual_wrench = self.env.get_actual_wrench()
-                if self.env.use_adaptive_approach is True:
-                    if phase == 1:
-                        ext = actual_wrench
-                    elif phase == 2:
-                        ext = self.adaptation_module(state_action_history)
-                    else:
-                        raise Exception("There only exist two training phases.")
-                    desired_wrench = self.env.get_desired_wrench(actions)
-                    res = ext - desired_wrench
-                else:
-                    ext = None
-                    res = jnp.empty((self.env.num_envs, 0))
+            def _prepare_policy_input(_step, states, residuals, carry_extra):
+                del _step  # unused
+                if residuals.shape[-1]:
+                    return jnp.concatenate([states, residuals], axis=1), carry_extra
+                return states, carry_extra
 
-                # Compute and log mean errors
-                obs = self.env.get_obs()
-                tracking_mean, angle_mean, extrinsic_mean = self._compute_mean_errors(
-                    obs, actual_wrench, ext
-                )
-                ep_mean_tracking_error = ep_mean_tracking_error.at[:, ep].set(
-                    tracking_mean
-                )
-                ep_mean_angle_error = ep_mean_angle_error.at[:, ep].set(angle_mean)
-                if (
-                    self.env.use_adaptive_approach is True
-                    and extrinsic_mean is not None
-                ):
-                    ep_mean_extrinsic_error = ep_mean_extrinsic_error.at[:, ep].set(
-                        extrinsic_mean
+            def _sample_policy(_step, policy_input, rng_key, carry_extra):
+                del _step  # unused
+                actions = self.agent.get_control_input("evaluation", policy_input)
+                zeros = jnp.zeros((num_envs,), dtype=jnp.float32)
+                return actions, zeros, zeros, rng_key, carry_extra
+
+            def _post_step(
+                _step, step_output, actions, residuals, reset_flag, carry_extra
+            ):
+                del _step, residuals  # unused
+                history = carry_extra.history
+                counts = carry_extra.counts
+
+                combined = jnp.concatenate([step_output.prev_states, actions], axis=1)
+                history = jnp.roll(history, shift=-1, axis=1)
+                history = history.at[:, -1, :].set(combined)
+                counts = jnp.minimum(counts + 1, history_len)
+
+                def _reset_hist(_):
+                    return (
+                        jnp.zeros_like(history),
+                        jnp.zeros_like(counts),
                     )
 
-                # Update state
-                states = self.env.get_states(self.reference_point)
-                ep_obs = ep_obs.at[:, ep, :].set(states)
-                states_normalized = normalize_obs(states, ep_obs, ep)
+                history, counts = jax.lax.cond(
+                    reset_flag,
+                    _reset_hist,
+                    lambda _: (history, counts),
+                    operand=None,
+                )
 
-                if terminal.all():  # Abort if all environments terminated
-                    break
+                if self.env.use_adaptive_approach:
+                    desired = step_output.desired_wrench
+                    if phase == 1:
+                        extrinsic = step_output.actual_wrench
+                    else:  # phase == 2 guaranteed by earlier check
+                        extrinsic = self.adaptation_module(history)
+                    residuals_next = extrinsic - desired
+                else:
+                    residuals_next = jnp.zeros(
+                        (num_envs, 0), dtype=step_output.actual_wrench.dtype
+                    )
 
-            returns = returns.at[:, eval].set(ep_ret)
+                history_full = counts >= history_len
+                new_extra = AdaptationRolloutExtra(history=history, counts=counts)
+                return residuals_next, history_full, new_extra
 
-            # Log key RL metrics
+            def _bootstrap_value(_step, env_state, residuals, rng_key, carry_extra):
+                del _step, env_state, residuals  # unused
+                zeros = jnp.zeros((num_envs,), dtype=jnp.float32)
+                return zeros, rng_key, carry_extra
+
+            rollout_result = run_functional_rollout(
+                step_config=step_config,
+                initial_state=vec_state,
+                initial_residuals=residual_init,
+                rng=self.agent.key,
+                num_steps=self.episode_len,
+                reference_waypoint=self.reference_point,
+                callbacks=FunctionalRolloutCallbacks(
+                    prepare_policy_input=_prepare_policy_input,
+                    sample_policy=_sample_policy,
+                    post_step=_post_step,
+                    bootstrap_value=_bootstrap_value,
+                ),
+                extra=extra,
+            )
+
+            jax.block_until_ready(rollout_result.actions)
+            self.agent.key = rollout_result.final_rng
+
+            self.env._state = rollout_result.final_state
+            self.env._rng = rollout_result.final_state.rng
+            self.env.mjx_batch = rollout_result.final_state.mjx_batch
+            self.env.disturbance_states = rollout_result.final_state.disturbance_states
+            self.env.perturbation_states = (
+                rollout_result.final_state.perturbation_states
+            )
+            if hasattr(self.env, "disturbances") and self.env.disturbances is not None:
+                for obj, snapshot in zip(
+                    self.env.disturbances.disturbances,
+                    rollout_result.final_state.disturbance_states,
+                    strict=True,
+                ):
+                    obj.state = snapshot
+            if (
+                hasattr(self.env, "perturbations")
+                and self.env.perturbations is not None
+            ):
+                for obj, snapshot in zip(
+                    self.env.perturbations.perturbations,
+                    rollout_result.final_state.perturbation_states,
+                    strict=True,
+                ):
+                    obj.state = snapshot
+            self.env._refresh_effect_states()
+
+            step_outputs = rollout_result.step_outputs
+            rewards = step_outputs.rewards
+            done_flags = rollout_result.done_flags
+            residuals_traj = rollout_result.residuals
+
+            done_indices = jnp.nonzero(
+                done_flags, size=self.episode_len, fill_value=-1
+            )[0]
+            done_indices = jax.device_get(done_indices)
+            done_idx = (
+                int(done_indices[0])
+                if done_indices.size and done_indices[0] >= 0
+                else self.episode_len - 1
+            )
+            valid_slice = slice(0, done_idx + 1)
+
+            rewards_slice = rewards[valid_slice]
+            returns_eval = jnp.sum(rewards_slice, axis=0)
+            returns = returns.at[:, eval_idx].set(returns_eval)
+
+            tracking_vals = []
+            angle_vals = []
+            extrinsic_vals = []
+
+            for step_id in range(done_idx + 1):
+                obs_step = step_outputs.next_obs[step_id]
+                actual_step = step_outputs.actual_wrench[step_id]
+                if self.env.use_adaptive_approach:
+                    if phase == 1:
+                        extr_step = actual_step
+                    else:
+                        extr_step = (
+                            residuals_traj[step_id]
+                            + step_outputs.desired_wrench[step_id]
+                        )
+                else:
+                    extr_step = None
+
+                tracking_step, angle_step, extr_step_error = self._compute_mean_errors(
+                    obs_step, actual_step, extr_step
+                )
+                tracking_vals.append(tracking_step)
+                angle_vals.append(angle_step)
+                if extr_step_error is not None:
+                    extrinsic_vals.append(extr_step_error)
+
+            tracking_mean = (
+                float(jnp.stack(tracking_vals).mean()) if tracking_vals else 0.0
+            )
+            angle_mean = float(jnp.stack(angle_vals).mean()) if angle_vals else 0.0
+            mean_extrinsic_error = (
+                float(jnp.stack(extrinsic_vals).mean()) if extrinsic_vals else 0.0
+            )
+            terminal_count = float(step_outputs.terminals[valid_slice].sum())
+
             if self.agent.has_logger:
                 self.env.logger.log(
                     self.env.run_id,
                     float(self.env.mjx_batch.time[0]),
-                    step=int(eval),
+                    step=int(eval_idx),
                     run_name=self.env.run_name,
                     stage="evaluation",
-                    mean_episodic_returns=ep_ret.mean(),
-                    num_terminal=jnp.sum(terminal),
-                    mean_tracking_error=ep_mean_tracking_error.mean(),
-                    mean_angle_error=ep_mean_angle_error.mean(),
-                    mean_extrinsic_error=ep_mean_extrinsic_error.mean(),
+                    mean_episodic_returns=float(returns_eval.mean()),
+                    num_terminal=terminal_count,
+                    mean_tracking_error=tracking_mean,
+                    mean_angle_error=angle_mean,
+                    mean_extrinsic_error=mean_extrinsic_error,
                 )
 
         print(
-            f"Average episodic return over all evals and all envs: {jnp.mean(returns)}\n"
+            f"Average episodic return over all evals and all envs: {float(returns.mean())}\n"
         )
 
     def _generate_experience(self) -> None:
@@ -1043,7 +1547,6 @@ class OnPolicyRunner(object):
             jnp.zeros(self.env.num_envs),
             0,
         )
-        states_normalized = states
 
         if self.env.use_adaptive_approach is True:
             res = jnp.zeros((self.env.num_envs, self.env.res_dim))
@@ -1052,7 +1555,6 @@ class OnPolicyRunner(object):
 
         # Epoch variables
         ep_returns = jnp.zeros((self.env.num_envs, self.steps_per_epoch))
-        ep_obs = jnp.zeros((self.env.num_envs, self.steps_per_epoch, self.env.obs_dim))
 
         # Main training loop
         for t in range(self.steps_per_epoch):
@@ -1076,8 +1578,6 @@ class OnPolicyRunner(object):
 
             # Update state
             states = self.env.get_states(self.reference_point)
-            ep_obs = ep_obs.at[:, t, :].set(states)
-            states_normalized = normalize_obs(states, ep_obs, t)
 
             # Update extrinsics
             if self.env.use_adaptive_approach is True:
@@ -1110,7 +1610,6 @@ class OnPolicyRunner(object):
                     jnp.zeros(self.env.num_envs),
                     0,
                 )
-                states_normalized = states
 
                 if self.env.use_adaptive_approach is True:
                     res = jnp.zeros((self.env.num_envs, self.env.res_dim))
