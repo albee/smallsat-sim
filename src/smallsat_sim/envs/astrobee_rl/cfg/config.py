@@ -98,13 +98,13 @@ class EnvConfig(BaseEnvConfig):
             sigma_angvel = 1.0  # 5 * sigma_att / (N_settle * dt)
 
             # Reward weights
-            w_pos, w_vel, w_att, w_angvel = 1.5, 0.5, 1.0, 0.3
+            w_pos, w_vel, w_att, w_angvel = 150, 25, 50, 15
 
             # Penalty weights
             lam_fuel = 0.1
-            lam_speed_terminal = 0.1
-            lam_ang_speed_terminal = 0.1
-            lam_fuel_terminal = 0.05
+            lam_speed_terminal = 0.5
+            lam_ang_speed_terminal = 0.5
+            lam_fuel_terminal = 0.2
             lam_wrench_residual = 0.05
             wrench_residual_tolerance = 0.05
             wrench_residual_clip = 2.0
@@ -123,7 +123,7 @@ class EnvConfig(BaseEnvConfig):
             n_evals = 10
 
             # Hyperparams for the controller
-            deployment_len = 7  # Set to None to disable
+            deployment_len = 700  # Set to None to disable
 
             # Regression testing of functional rollout vs legacy rollout
             verify_functional_rollout = False
