@@ -194,7 +194,7 @@ class RLController(object):
                     actions = self.agent.get_control_input(stage, policy_input)
                 rewards, terminals = self.env.transition(
                     actions,
-                    states,
+                    jnp.concatenate([states, res], axis=1),
                     next_waypoint,
                 )
                 next_obs_batch = self.env.get_obs()

@@ -272,6 +272,17 @@ def run_functional_rollout(
             actions,
             reference_waypoint,
             step_config,
+            residuals,
+        )
+        def _log_nan(_):
+            jax.debug.print("NaN in next_obs at step {s}", s=step_idx)
+            return jnp.array(0, dtype=jnp.int32)
+
+        _ = jax.lax.cond(
+            jnp.isnan(step_output.next_obs).any(),
+            _log_nan,
+            lambda _: jnp.array(0, dtype=jnp.int32),
+            operand=None,
         )
 
         ep_ret_next = ep_ret + step_output.rewards
@@ -1310,7 +1321,7 @@ class OnPolicyRunner(object):
         returns = jnp.zeros((num_envs, self.n_evals), dtype=jnp.float32)
 
         for eval_idx in range(self.n_evals):
-            print(f"Testing policy: episode {eval_idx + 1}/{self.n_evals}\n")
+            print(f"Testing policy: episode {eval_idx + 1}/{self.n_evals}")
             self.env.reset()
             self.env.reset_perturbations()
 
@@ -1568,7 +1579,9 @@ class OnPolicyRunner(object):
             a = self.pd_ctrl.get_control_input(self.env)
 
             # Perform environment transition
-            r, terminal = self.env.transition(a, states, self.reference_point)
+            r, terminal = self.env.transition(
+                a, jnp.concatenate([states, res], axis=1), self.reference_point
+            )
             ep_returns = ep_returns.at[:, t].set(self.gamma * ep_returns[:, t - 1] + r)
             ep_ret += r
             ep_len += 1

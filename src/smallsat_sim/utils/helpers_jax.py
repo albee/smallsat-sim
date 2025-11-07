@@ -186,11 +186,12 @@ def calc_lateral_tracking_error(obs: jnp.ndarray, planner: BasePlanner) -> jnp.n
     """
     Computes the lateral tracking error at a given point
     """
+    obs = jnp.atleast_2d(obs)
     # Compute the closest point
     closest_points = planner.closest_point_on_trajectory(obs)
 
     # Compute L2 distance (is orthogonal already)
-    return jnp.linalg.norm(closest_points - obs[:, :3])
+    return jnp.linalg.norm(closest_points - obs[:, :3], axis=1)
 
 
 def calc_attitude_error(

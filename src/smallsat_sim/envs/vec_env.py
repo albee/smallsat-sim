@@ -412,26 +412,35 @@ def _reward_components(
     return pos_reward, vel_reward, att_reward, ang_reward
 
 
-def _compute_terminals(states: jnp.ndarray, sigma_pos: float) -> jnp.ndarray:
-    radius = jnp.asarray(sigma_pos, dtype=states.dtype)
+def _compute_terminals(states: jnp.ndarray) -> jnp.ndarray:
+    radius = jnp.asarray(0.3, dtype=states.dtype)
     return jnp.linalg.norm(states[:, 0:3], axis=1) <= radius
 
 
 def _compute_penalties(
-    states: jnp.ndarray,
+    prev_states: jnp.ndarray,
+    next_states: jnp.ndarray,
     terminals: jnp.ndarray,
     commanded_ctrl: jnp.ndarray,
+    prev_residuals: Optional[jnp.ndarray],
     config: VecEnvStepConfig,
 ) -> Tuple[jnp.ndarray, Dict[str, jnp.ndarray]]:
-    dtype = states.dtype
+    """
+    Mirror the legacy transition logic:
+    - Fuel penalty uses the applied control (same as legacy).
+    - Terminal speed penalties depend on the next state's velocity/angular velocity.
+    - Wrench residual penalties evaluate the residual slice carried alongside the
+      *previous* state (legacy grabbed residuals before the step).
+    """
+    dtype = prev_states.dtype
     lam_fuel = jnp.asarray(config.lam_fuel, dtype=dtype)
     lam_speed = jnp.asarray(config.lam_speed_terminal, dtype=dtype)
     lam_ang = jnp.asarray(config.lam_ang_speed_terminal, dtype=dtype)
     lam_fuel_term = jnp.asarray(config.lam_fuel_terminal, dtype=dtype)
 
     fuel_pen = jnp.sum(jnp.abs(commanded_ctrl), axis=1)
-    lin_speed_sq = jnp.sum(states[:, 6:9] ** 2, axis=1)
-    ang_speed_sq = jnp.sum(states[:, 9:12] ** 2, axis=1)
+    lin_speed_sq = jnp.sum(next_states[:, 6:9] ** 2, axis=1)
+    ang_speed_sq = jnp.sum(next_states[:, 9:12] ** 2, axis=1)
 
     terminal_mask = terminals.astype(dtype)
     vel_pen_terminal = lam_speed * lin_speed_sq * terminal_mask
@@ -450,11 +459,15 @@ def _compute_penalties(
         "penalty_terminal_fuel": fuel_pen_terminal,
     }
 
-    if config.use_adaptive_approach:
+    if config.use_adaptive_approach and config.res_dim > 0:
         lam_residual = jnp.asarray(config.lam_wrench_residual, dtype=dtype)
         tolerance = jnp.asarray(config.wrench_residual_tolerance, dtype=dtype)
         clip_value = jnp.asarray(config.wrench_residual_clip, dtype=dtype)
-        residual_norm = jnp.linalg.norm(states[:, 12:18], axis=1)
+        if prev_residuals is None or prev_residuals.shape[-1] == 0:
+            residuals = jnp.zeros((prev_states.shape[0], config.res_dim), dtype=dtype)
+        else:
+            residuals = prev_residuals
+        residual_norm = jnp.linalg.norm(residuals, axis=1)
         residual_excess = jnp.maximum(residual_norm - tolerance, 0.0)
         residual_clipped = jnp.minimum(residual_excess, clip_value)
         wrench_residual_pen = lam_residual * residual_clipped
@@ -591,6 +604,7 @@ def vecenv_step(
     commanded_ctrl: jnp.ndarray,
     next_waypoint: jnp.ndarray,
     config: VecEnvStepConfig,
+    prev_residuals: Optional[jnp.ndarray] = None,
 ) -> Tuple[VecEnvState, VecEnvStepOutput]:
     """
     Functional rollout helper that mirrors VecEnv.transition without touching object
@@ -604,6 +618,22 @@ def vecenv_step(
     prepared_state, applied_ctrl, qfrc_applied = prepare_step_functional(
         state, commanded_ctrl
     )
+
+    def _debug_nan(tag: str, tensor: jnp.ndarray):
+        def _print(_):
+            jax.debug.print("NaN detected in {tag}", tag=tag)
+            return jnp.array(0, dtype=jnp.int32)
+
+        _ = jax.lax.cond(
+            jnp.isnan(tensor).any(),
+            _print,
+            lambda _: jnp.array(0, dtype=jnp.int32),
+            operand=None,
+        )
+
+    _debug_nan("applied_ctrl", applied_ctrl)
+    _debug_nan("qfrc_applied", qfrc_applied)
+
     mjx_batch = prepared_state.mjx_batch.replace(
         ctrl=applied_ctrl,
         qfrc_applied=qfrc_applied,
@@ -622,6 +652,8 @@ def vecenv_step(
     next_state = prepared_state.replace(mjx_batch=mjx_batch)
     next_states = _compute_state_features(mjx_batch, next_waypoint)
     next_obs = _compute_observations_from_batch(mjx_batch)
+    _debug_nan("mjx_batch.qpos", mjx_batch.qpos)
+    _debug_nan("next_obs", next_obs)
 
     (
         pos_curr,
@@ -639,9 +671,31 @@ def vecenv_step(
     ) = _reward_components(next_states, config)
     phi_next = pos_next + vel_next + att_next + ang_next
 
-    terminals = _compute_terminals(next_states, config.sigma_pos)
+    terminals = _compute_terminals(next_states)
+    if config.use_adaptive_approach and config.res_dim > 0:
+        if prev_residuals is None or prev_residuals.shape[-1] == 0:
+            mixer_T = jnp.asarray(config.thruster_mixer_T, dtype=prev_states.dtype)
+            actuator_force = jnp.asarray(
+                state.mjx_batch.actuator_force, dtype=prev_states.dtype
+            )
+            desired_ctrl_prev = jnp.asarray(
+                state.mjx_batch.ctrl, dtype=prev_states.dtype
+            )
+            actual_prev = jnp.atleast_2d(actuator_force) @ mixer_T
+            desired_prev = jnp.atleast_2d(desired_ctrl_prev) @ mixer_T
+            prev_residuals = actual_prev - desired_prev
+        else:
+            prev_residuals = jnp.asarray(prev_residuals, dtype=prev_states.dtype)
+    else:
+        prev_residuals = None
+
     penalties, penalty_components = _compute_penalties(
-        next_states, terminals, commanded_ctrl, config
+        prev_states,
+        next_states,
+        terminals,
+        commanded_ctrl,
+        prev_residuals,
+        config,
     )
 
     rewards = phi_next - phi_curr - penalties
@@ -723,9 +777,6 @@ class VecEnv(BaseEnv):
         # Run ID for logging
         self.run_id = self.env_cfg.control.RL.rl_run_id
 
-        # Number of environments running in parallel
-        self.num_envs = self.env_cfg.control.RL.num_envs
-
         # Flag to decide whether to enable random failures during training (and evaluation)
         self.train_with_failures = self.env_cfg.control.RL.train_with_failures
 
@@ -740,6 +791,9 @@ class VecEnv(BaseEnv):
         self.history_len = self.env_cfg.control.RL.context_window_len
 
         super().__init__(args)
+
+        # Number of environments running in parallel
+        self.num_envs = self.env_cfg.control.RL.num_envs
 
         # Mixer maps thruster commands to body-frame wrench
         mixer = jnp.asarray(self.symbolic_model.mixer, dtype=jnp.float32)
@@ -828,7 +882,7 @@ class VecEnv(BaseEnv):
     def transition(
         self,
         actions: jnp.ndarray,
-        states: jnp.ndarray,
+        states_res: jnp.ndarray,
         next_waypoint: jnp.ndarray,
         iter: int | None = None,
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
@@ -854,13 +908,13 @@ class VecEnv(BaseEnv):
 
             return pos_reward, vel_reward, att_reward, ang_reward
 
-        # Pre-step potential
+        state_features = states_res[:, :12]
         (
             pos_reward_curr,
             vel_reward_curr,
             att_reward_curr,
             ang_reward_curr,
-        ) = _reward_components(states)
+        ) = _reward_components(state_features)
         phi_s = pos_reward_curr + vel_reward_curr + att_reward_curr + ang_reward_curr
 
         # Step the environment
@@ -900,9 +954,16 @@ class VecEnv(BaseEnv):
             fuel_penalty + vel_pen_terminal + angvel_pen_terminal + fuel_pen_terminal
         )
 
-        if self.use_adaptive_approach is True:
+        if self.use_adaptive_approach and self.res_dim > 0:
             # Wrench residual penalty
-            residual_norm = jnp.linalg.norm(states[:, 12:18], axis=1)
+            if states_res.shape[1] >= 12 + self.res_dim:
+                residual_slice = states_res[:, 12 : 12 + self.res_dim]
+            else:
+                residual_slice = jnp.zeros(
+                    (self.num_envs, self.res_dim),
+                    dtype=state_features.dtype,
+                )
+            residual_norm = jnp.linalg.norm(residual_slice, axis=1)
             lam_residual = jnp.asarray(
                 self.lam_wrench_residual, dtype=residual_norm.dtype
             )
@@ -1131,6 +1192,7 @@ class VecEnv(BaseEnv):
             commanded_ctrl,
             next_waypoint,
             step_config,
+            prev_residuals=None,
         )
 
         original_state = self.state_struct
@@ -1145,8 +1207,16 @@ class VecEnv(BaseEnv):
         try:
             self.apply_state_struct(state)
             prev_states = _compute_state_features(state.mjx_batch, next_waypoint)
+
+            actual_wrench = self.get_actual_wrench()
+            desired_wrench = self.get_desired_wrench(commanded_ctrl)
+
+            res = actual_wrench - desired_wrench
+
             rewards_legacy, terminals_legacy = self.transition(
-                commanded_ctrl, prev_states, next_waypoint
+                commanded_ctrl,
+                jnp.concatenate([prev_states, res], axis=1),
+                next_waypoint,
             )
             self._refresh_effect_states()
             legacy_state = VecEnvState(
@@ -1155,8 +1225,6 @@ class VecEnv(BaseEnv):
                 disturbance_states=self.disturbance_states,
                 perturbation_states=self.perturbation_states,
             )
-            actual_wrench = self.get_actual_wrench()
-            desired_wrench = self.get_desired_wrench(commanded_ctrl)
 
             _assert_close("prev_states", func_output.prev_states, prev_states)
             _assert_close(
@@ -1403,6 +1471,11 @@ class VecEnv(BaseEnv):
         Prepares simulation according to args.
         Creates a viewer depending on headless flag.
         """
+        # Some subclasses may call into BaseEnv before VecEnv.__init__ has assigned num_envs.
+        # Fall back to the configured value so batching still works.
+        num_envs = getattr(self, "num_envs", self.env_cfg.control.RL.num_envs)
+        self.num_envs = num_envs
+
         # Generate xml using env and model config files
         xml = xml_parser_lightweight.generate_mujoco_xml(self.env_cfg, self.model_cfg)
 
@@ -1420,7 +1493,7 @@ class VecEnv(BaseEnv):
         print("Device used by JAX: ", self.mjx_data.qpos.devices(), "\n")
 
         # Batch the data and randomize the starting position
-        rng = self.next_rng_keys(self.num_envs)
+        rng = self.next_rng_keys(num_envs)
         self.mjx_batch = jax.vmap(  # The initial position is randomized when the env is reset (at init and after each epoch)
             lambda rng: self.mjx_data.replace(qpos=self.mjx_data.qpos)
         )(
