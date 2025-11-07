@@ -903,7 +903,7 @@ class OnPolicyRunner(object):
             critic_loss_mean_f = float(mean_critic_loss)
 
             # Monitor key RL metrics during training using Weights & Biases
-            if self.env.use_wandb and (epoch % 5 == 0):
+            if self.env.use_wandb:
                 wandb_reward_payload = {
                     f"reward_components/{metric_name}": float(metric_value)
                     for metric_name, metric_value in reward_component_means.items()
