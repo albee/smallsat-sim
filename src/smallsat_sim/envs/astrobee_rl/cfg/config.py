@@ -52,7 +52,7 @@ class EnvConfig(BaseEnvConfig):
             control_decimation = 25
 
             # Run ID
-            rl_run_id = 0
+            rl_run_id = 10
 
             # Number of environments
             num_envs = 2048
@@ -82,31 +82,31 @@ class EnvConfig(BaseEnvConfig):
                 critic_lr = 1e-3
 
             class PPO:
-                steps_per_epoch = 4096
+                steps_per_epoch = 2048
                 epochs = 80
-                max_ep_len = 1024
+                max_ep_len = 512
                 gamma = 0.99
                 lam = 0.95
                 actor_lr = 3e-4
-                critic_lr = 1e-3
-                entropy_coef = 3e-3
+                critic_lr = 3e-4
+                entropy_coef = 5e-4
 
             # Mission tolerances
-            sigma_pos = 0.2
-            sigma_vel = 1.0  # 5 * sigma_pos / (N_settle * dt)
-            sigma_att = 0.2  # radians
-            sigma_angvel = 1.0  # 5 * sigma_att / (N_settle * dt)
+            sigma_pos = 3.0
+            sigma_vel = 3.0  # sigma_pos / (N_settle * dt)
+            sigma_att = 6.0  # radians
+            sigma_angvel = 6.0  # sigma_att / (N_settle * dt)
 
             # Reward weights
-            w_pos, w_vel, w_att, w_angvel = 150, 25, 50, 15
+            w_pos, w_vel, w_att, w_angvel = 5e2, 1e3, 1e2, 1e2
 
             # Penalty weights
-            lam_fuel = 0.1
-            lam_speed_terminal = 0.5
-            lam_ang_speed_terminal = 0.5
-            lam_fuel_terminal = 0.2
-            lam_wrench_residual = 0.05
-            wrench_residual_tolerance = 0.05
+            lam_fuel = 1e-3
+            lam_speed_terminal = 1e0
+            lam_ang_speed_terminal = 1e-2
+            lam_fuel_terminal = 5e-3
+            lam_wrench_residual = 2e-1
+            wrench_residual_tolerance = 5e-2
             wrench_residual_clip = 2.0
 
             # Context window length for the adaptation module
@@ -119,11 +119,11 @@ class EnvConfig(BaseEnvConfig):
             am_kl_weight = 0.01
 
             # Hyperparams for the evaluation loop
-            episode_len = 700
+            episode_len = 512
             n_evals = 10
 
             # Hyperparams for the controller
-            deployment_len = 700  # Set to None to disable
+            deployment_len = 512  # Set to None to disable
 
             # Regression testing of functional rollout vs legacy rollout
             verify_functional_rollout = False
