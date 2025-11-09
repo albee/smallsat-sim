@@ -52,7 +52,7 @@ class EnvConfig(BaseEnvConfig):
             control_decimation = 25
 
             # Run ID
-            rl_run_id = 10
+            rl_run_id = 0
 
             # Number of environments
             num_envs = 2048
@@ -83,13 +83,13 @@ class EnvConfig(BaseEnvConfig):
 
             class PPO:
                 steps_per_epoch = 2048
-                epochs = 80
+                epochs = 120
                 max_ep_len = 512
                 gamma = 0.99
                 lam = 0.95
-                actor_lr = 3e-4
-                critic_lr = 3e-4
-                entropy_coef = 5e-4
+                actor_lr = 3e-4 #2 4
+                critic_lr = 3e-4 #2
+                entropy_coef = 3e-5 #1e-4 9e-5 6e-5
 
             # Mission tolerances
             sigma_pos = 3.0
