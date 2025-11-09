@@ -63,7 +63,7 @@ class BaseAgent(BaseController):
 
         self.num_layers = 2
         self.layer_width = 64
-        hidden_sizes = ([self.layer_width] * self.num_layers)[0]
+        hidden_sizes = [self.layer_width] * self.num_layers
         thruster_ranges = [
             thruster.forcerange for thruster in env.model_cfg.Thrusters.thruster_list
         ]
