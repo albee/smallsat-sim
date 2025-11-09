@@ -658,9 +658,10 @@ class OnPolicyRunner(object):
             epoch_key = self._take_keys()
             actor_key = epoch_key
             # Apply perturbations ramp-up
-            if self.env.train_with_failures and epoch >= self.epochs // 2:
-                ramp_duration = max(self.epochs // 2, 1)
-                ramp_progress = min((epoch - ramp_duration) / ramp_duration, 1.0)
+            ramp_start = max(int(self.epochs * 0.1), 1)
+            if self.env.train_with_failures and epoch >= ramp_start:
+                ramp_duration = max(self.epochs - ramp_start, 1)
+                ramp_progress = min((epoch - ramp_start) / ramp_duration, 1.0)
                 self.env.reset_perturbations()  # avoid accumulating failures across epochs
                 perturb_key, disturb_key, actor_key = jax.random.split(epoch_key, 3)
                 self.env.apply_random_perturbations(
@@ -1021,8 +1022,9 @@ class OnPolicyRunner(object):
         state_action_dim = self.state_action_dim
 
         for epoch in range(self.epochs):
-            ramp_duration = max(self.epochs // 2, 1)
-            ramp_progress = min((epoch - ramp_duration) / ramp_duration, 1.0)
+            ramp_start = max(int(self.epochs * 0.1), 1)
+            ramp_duration = max(self.epochs - ramp_start, 1)
+            ramp_progress = min((epoch - ramp_start) / ramp_duration, 1.0)
             self.env.reset_perturbations()
             self.env.apply_random_perturbations(
                 key=subkeys_train[epoch],
