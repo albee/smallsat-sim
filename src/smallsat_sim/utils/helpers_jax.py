@@ -249,7 +249,8 @@ def calc_extrinsic_error(
     """
     Computes the error between the actual and estimated wrenches in all environments.
     """
-    return estimated_ext - actual_ext
+    diff = estimated_ext - actual_ext
+    return jnp.linalg.norm(diff, axis=-1)
 
 
 def train_val_split(X, y, key: jnp.ndarray, val_split=0.2, shuffle: bool = True):
@@ -335,7 +336,7 @@ def batch_mse_loss_fn(model, X: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
 @nnx.jit
 def mae_loss_fn(model, X: jnp.ndarray, y: jnp.ndarray, key) -> jnp.ndarray:
     """
-    Mean squared error loss function.
+    Mean absolute error loss function.
     """
     y_pred_dist, _ = model.forward(X)
     y_pred = y_pred_dist.sample(seed=key)
