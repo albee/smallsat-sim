@@ -52,7 +52,7 @@ class EnvConfig(BaseEnvConfig):
             control_decimation = 25
 
             # Run ID
-            rl_run_id = 0
+            rl_run_id = 0  # @Josh perhaps use run IDs >= 10 to tell the runs apart?
 
             # Number of environments
             num_envs = 2048
@@ -83,36 +83,36 @@ class EnvConfig(BaseEnvConfig):
 
             class PPO:
                 steps_per_epoch = 2048
-                epochs = 120
-                max_ep_len = 512
+                epochs = 100  # Make sure rewards plateau (w/o pretraining or w/ failures might need more epochs)
+                max_ep_len = 512  # TODO: sanity check that this duration is appropriate (and change deployment_len accordingly)
                 gamma = 0.99
                 lam = 0.95
-                actor_lr = 3e-4 #2 4
-                critic_lr = 3e-4 #2
-                entropy_coef = 3e-5 #1e-4 9e-5 6e-5
+                actor_lr = 3e-4  # Between 2 and 4e-4
+                critic_lr = 1e-3 # >= actor_lr
+                entropy_coef = 3e-5  # Make sure std/log_std steadily decreases long enough (see W&B)
 
-            # Mission tolerances
+            # Mission tolerances (tuned to current training scenario - do not change)
             sigma_pos = 3.0
             sigma_vel = 3.0  # sigma_pos / (N_settle * dt)
             sigma_att = 6.0  # radians
             sigma_angvel = 6.0  # sigma_att / (N_settle * dt)
 
-            # Reward weights
-            w_pos, w_vel, w_att, w_angvel = 5e2, 1e3, 1e2, 1e2
+            # Reward weights (can play with overall magnitude s.t. critic loss is well-behaved)
+            w_pos, w_vel, w_att, w_angvel = 5e1, 0.0, 1e1, 0.0  # Disregard vel and angvel terms for now
 
             # Penalty weights
-            lam_fuel = 1e-3
-            lam_speed_terminal = 1e0
-            lam_ang_speed_terminal = 1e-2
-            lam_fuel_terminal = 5e-3
-            lam_wrench_residual = 2e-1
-            wrench_residual_tolerance = 5e-2
-            wrench_residual_clip = 2.0
+            lam_fuel = 1e-4
+            lam_speed_terminal = 1e-1
+            lam_ang_speed_terminal = 1e-3
+            lam_fuel_terminal = 5e-4
+            lam_wrench_residual = 0.0  # Disregard wrench residual for now, minimizing it is implicitly encoded in the reward
+            wrench_residual_tolerance = 1e-1
+            wrench_residual_clip = 0.5
 
             # Context window length for the adaptation module
             context_window_len = 50
 
-            # Hyperparams for the adaptation module training
+            # Hyperparams for the adaptation module training (NOTE: have not been tuned yet + CNN/transformer may require different sets)
             am_lr = 3e-4
             am_weight_decay = 0.05
             am_grad_clip_norm = 1.0
