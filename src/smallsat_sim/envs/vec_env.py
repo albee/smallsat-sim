@@ -774,9 +774,6 @@ class VecEnv(BaseEnv):
         # Flag to know whether Weights & Biases should be used
         self.use_wandb = args.wandb
 
-        # Run ID for logging
-        self.run_id = self.env_cfg.control.RL.rl_run_id
-
         # Flag to decide whether to enable random failures during training (and evaluation)
         self.train_with_failures = self.env_cfg.control.RL.train_with_failures
 
@@ -791,6 +788,9 @@ class VecEnv(BaseEnv):
         self.history_len = self.env_cfg.control.RL.context_window_len
 
         super().__init__(args)
+
+        # Run ID for logging
+        self.run_id = self.env_cfg.control.RL.rl_run_id
 
         # Number of environments running in parallel
         self.num_envs = self.env_cfg.control.RL.num_envs
