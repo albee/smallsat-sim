@@ -203,6 +203,7 @@ class ReplayBuffer(object):
             tdres=tdres,
             logp=logp,
             residuals=residuals,
+            vals=self.val_buf,
         )
 
         self._reset_storage()

@@ -664,15 +664,15 @@ class OnPolicyRunner(object):
                 ramp_progress = min((epoch - ramp_start) / ramp_duration, 1.0)
                 self.env.reset_perturbations()  # avoid accumulating failures across epochs
                 perturb_key, disturb_key, actor_key = jax.random.split(epoch_key, 3)
-                self.env.apply_random_perturbations(
+                self.env.apply_random_perturbations( # @Josh
                     key=perturb_key,
                     fraction_perturbed_envs=0.05
-                    + (0.5 - 0.05) * max(ramp_progress, 0.0),
+                    + (0.3 - 0.01) * max(ramp_progress, 0.0),
                 )
-                self.env.apply_random_disturbance(
+                self.env.apply_random_disturbance( # @Josh
                     key=disturb_key,
                     fraction_disturbed_envs=0.05
-                    + (0.15 - 0.05) * max(ramp_progress, 0.0),
+                    + (0.05 - 0.01) * max(ramp_progress, 0.0),
                 )
 
             # Accumulate rollout stats to emit once per epoch
@@ -843,6 +843,7 @@ class OnPolicyRunner(object):
             tdres = data["tdres"].reshape(-1)
             returns = data["ret"].reshape(-1)
             logp = data["logp"].reshape(-1)
+            vals = data["vals"].reshape(-1)
             if self.env.use_adaptive_approach is True:
                 residuals = data["residuals"].reshape(-1, self.env.res_dim)
             else:
@@ -899,6 +900,7 @@ class OnPolicyRunner(object):
                 tdres,
                 logp,
                 returns,
+                vals,
             )
             update_duration = time.perf_counter() - update_start_time
             epoch_total_duration = time.perf_counter() - epoch_start_time
@@ -1026,11 +1028,11 @@ class OnPolicyRunner(object):
             ramp_duration = max(self.epochs - ramp_start, 1)
             ramp_progress = min((epoch - ramp_start) / ramp_duration, 1.0)
             self.env.reset_perturbations()
-            self.env.apply_random_perturbations(
+            self.env.apply_random_perturbations( # @Josh
                 key=subkeys_train[epoch],
                 fraction_perturbed_envs=0.05 + (0.5 - 0.05) * max(ramp_progress, 0.0),
             )
-            self.env.apply_random_disturbance(
+            self.env.apply_random_disturbance( # @Josh
                 key=subkeys_train[epoch],
                 fraction_disturbed_envs=0.05 + (0.15 - 0.05) * max(ramp_progress, 0.0),
             )

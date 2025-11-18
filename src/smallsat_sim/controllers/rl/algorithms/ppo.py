@@ -61,10 +61,10 @@ class PPO(BaseAgent):
         # Load hyperparams
         self._load_ppo_hyperparams()
 
-        # Set the number of training epochs
-        self.actor_training_epochs = 100
-        self.critic_training_epochs = 100
-        self.actor_critic_training_epochs = 100
+        # Set the number of training epochs # @Josh: tune
+        self.actor_training_epochs = 10
+        self.critic_training_epochs = 10
+        self.actor_critic_training_epochs = 10
 
         # Total batch size
         self.batch_size = self.env.num_envs * self.steps_per_epoch
@@ -193,12 +193,21 @@ class PPO(BaseAgent):
             critic_graphdef, critic_state = nnx.split(
                 (self.critic, self.critic_optimizer)
             )
+            # Use the live critic instance to compute current predictions as
+            # the "old" values for clipping fallback. We avoid merging graphdef
+            # + state here which may return different structures depending on
+            # how nnx.split was called.
+            values_old_arg = self.critic.forward(obs_residuals)
+
             critic_loss, critic_state = _critic_epochs_jit(
                 critic_graphdef,
                 critic_state,
                 epoch_keys,
                 obs_residuals,
                 returns,
+                values_old_arg,
+                self.use_value_clip,
+                self.value_clip_coef,
                 self.num_minibatches,
                 self.minibatch_size,
             )
@@ -224,6 +233,7 @@ class PPO(BaseAgent):
         tdres: jnp.ndarray,
         logp: jnp.ndarray,
         returns: jnp.ndarray,
+        values_old: jnp.ndarray | None = None,
     ) -> tuple:
         """
         Update the policy gradient and the value function (both at each minibatch, as opposed to doing it sequentially).
@@ -237,6 +247,22 @@ class PPO(BaseAgent):
                 self.critic_optimizer,
             )
         )
+
+        # Debug: report whether clipping is enabled and whether rollout-time
+        # values were provided (preferred). This print runs outside JIT so it
+        # helps quickly verify calling code/path.
+        print(
+            f"[PPO DEBUG] use_value_clip={self.use_value_clip} value_clip_coef={self.value_clip_coef} values_old_provided={values_old is not None}"
+        )
+
+        # Use provided stored (old) values if available, otherwise compute
+        # predictions from the current critic. Using the stored rollout-time
+        # values is preferred for PPO value clipping.
+        if values_old is None:
+            values_old_arg = self.critic.forward(obs_residuals)
+        else:
+            values_old_arg = values_old
+
         (
             last_actor_loss,
             last_critic_loss,
@@ -252,9 +278,12 @@ class PPO(BaseAgent):
             tdres,
             logp,
             returns,
+            values_old_arg,
             self.clip_ratio,
             self.entropy_coef,
             self.target_kl,
+            self.use_value_clip,
+            self.value_clip_coef,
             self.num_minibatches,
             self.minibatch_size,
         )
@@ -297,6 +326,7 @@ class PPO(BaseAgent):
         warmup_keys = jax.random.split(
             jax.random.PRNGKey(0), self.actor_critic_training_epochs
         )
+        dummy_old_values = jnp.zeros((batch,), dtype=jnp.float32)
         warmup_result = _actor_critic_epochs_jit(
             joint_graphdef,
             joint_state,
@@ -306,9 +336,12 @@ class PPO(BaseAgent):
             dummy_tdres,
             dummy_logp,
             dummy_returns,
+            dummy_old_values,
             self.clip_ratio,
             self.entropy_coef,
             self.target_kl,
+            self.use_value_clip,
+            self.value_clip_coef,
             self.num_minibatches,
             self.minibatch_size,
         )
@@ -327,6 +360,21 @@ class PPO(BaseAgent):
         self.actor_lr = self.env.env_cfg.control.RL.PPO.actor_lr
         self.critic_lr = self.env.env_cfg.control.RL.PPO.critic_lr
         self.entropy_coef = self.env.env_cfg.control.RL.PPO.entropy_coef
+        # Optional value clipping hyperparameters
+        try:
+            self.use_value_clip = bool(
+                getattr(self.env.env_cfg.control.RL.PPO, "use_value_clip")
+            )
+        except Exception:
+            # Turn value clipping on by default.
+            self.use_value_clip = True
+
+        try:
+            self.value_clip_coef = float(
+                getattr(self.env.env_cfg.control.RL.PPO, "value_clip_coef")
+            )
+        except Exception:
+            self.value_clip_coef = 0.2
 
     def _log(
         self,
@@ -485,13 +533,16 @@ def _actor_epochs_jit(
     return last_loss, state
 
 
-@partial(jax.jit, static_argnums=(5, 6))
+@partial(jax.jit, static_argnums=(6, 7, 8, 9))
 def _critic_epochs_jit(
     graphdef,
     state,
     epoch_keys: jnp.ndarray,
     obs: jnp.ndarray,
     returns: jnp.ndarray,
+    old_values: jnp.ndarray,
+    use_value_clip: bool,
+    value_clip_coef: float,
     num_minibatches: int,
     minibatch_size: int,
 ):
@@ -508,13 +559,39 @@ def _critic_epochs_jit(
         returns_batches = _shuffle_and_batch(
             returns, permutation, num_minibatches, minibatch_size
         )
+        old_values_batches = _shuffle_and_batch(
+            old_values, permutation, num_minibatches, minibatch_size
+        )
 
         def minibatch_body(mb, carry):
             state_mb, _ = carry
             critic, optimizer = nnx.merge(graphdef, state_mb)
 
             def loss_fn(model):
-                return critic_loss_fn(model, returns_batches[mb], obs_batches[mb])
+                vals = model.forward(obs_batches[mb])
+                if use_value_clip:
+                    v_old = old_values_batches[mb]
+                    v_clipped = v_old + jnp.clip(
+                        vals - v_old, -value_clip_coef, value_clip_coef
+                    )
+                    loss_unclipped = (vals - returns_batches[mb]) ** 2
+                    loss_clipped = (v_clipped - returns_batches[mb]) ** 2
+                    # Debug prints: report minibatch-level summaries so we can
+                    # verify that clipping is happening and inspect magnitudes.
+                    jax.debug.print(
+                        "[PPO DEBUG] critic clip coef={} mean_delta={:.6f} mean_loss_unclipped={:.6f} mean_loss_clipped={:.6f} mean_return={:.6f} std_return={:.6f} mean_value={:.6f} std_value={:.6f}",
+                        value_clip_coef,
+                        jnp.mean(vals - v_old),
+                        jnp.mean(loss_unclipped),
+                        jnp.mean(loss_clipped),
+                        jnp.mean(returns_batches[mb]),
+                        jnp.std(returns_batches[mb]),
+                        jnp.mean(v_old),
+                        jnp.std(v_old),
+                    )
+                    return jnp.mean(jnp.maximum(loss_unclipped, loss_clipped))
+                else:
+                    return jnp.mean((vals - returns_batches[mb]) ** 2)
 
             loss, grads = nnx.value_and_grad(loss_fn)(critic)
             optimizer.update(grads)
@@ -530,7 +607,7 @@ def _critic_epochs_jit(
     return last_loss, state
 
 
-@partial(jax.jit, static_argnums=(11, 12))
+@partial(jax.jit, static_argnums=(12, 13, 14, 15))
 def _actor_critic_epochs_jit(
     graphdef,
     state,
@@ -540,9 +617,12 @@ def _actor_critic_epochs_jit(
     advantages: jnp.ndarray,
     logp: jnp.ndarray,
     returns: jnp.ndarray,
+    old_values: jnp.ndarray,
     clip_ratio: float,
     entropy_coef: float,
     target_kl: float,
+    use_value_clip: bool,
+    value_clip_coef: float,
     num_minibatches: int,
     minibatch_size: int,
 ):
@@ -595,6 +675,9 @@ def _actor_critic_epochs_jit(
             returns_batches = _shuffle_and_batch(
                 returns, permutation, num_minibatches, minibatch_size
             )
+            old_values_batches = _shuffle_and_batch(
+                old_values, permutation, num_minibatches, minibatch_size
+            )
 
             def minibatch_body(mb, carry):
                 (
@@ -621,6 +704,7 @@ def _actor_critic_epochs_jit(
                     adv_batches[mb],
                     logp_batches[mb],
                     returns_batches[mb],
+                    old_values_batches[mb],
                 )
 
                 def skip_fn(op):
@@ -642,6 +726,7 @@ def _actor_critic_epochs_jit(
                         adv_mb,
                         logp_mb,
                         returns_mb,
+                        old_values_mb,
                     ) = op
                     actor, actor_opt, critic, critic_opt = nnx.merge(
                         graphdef, state_upd
@@ -664,7 +749,29 @@ def _actor_critic_epochs_jit(
                     actor_opt.update(actor_grads)
 
                     def critic_loss_local(model):
-                        return critic_loss_fn(model, returns_mb, obs_mb)
+                        vals = model.forward(obs_mb)
+                        if use_value_clip:
+                            v_old = old_values_mb
+                            v_clipped = v_old + jnp.clip(
+                                vals - v_old, -value_clip_coef, value_clip_coef
+                            )
+                            loss_unclipped = (vals - returns_mb) ** 2
+                            loss_clipped = (v_clipped - returns_mb) ** 2
+                            # Debug prints for actor-critic joint update minibatch
+                            jax.debug.print(
+                                "[PPO DEBUG] joint critic clip coef={} mean_delta={:.6f} mean_loss_unclipped={:.6f} mean_loss_clipped={:.6f} mean_return={:.6f} std_return={:.6f} mean_value={:.6f} std_value={:.6f}",
+                                value_clip_coef,
+                                jnp.mean(vals - v_old),
+                                jnp.mean(loss_unclipped),
+                                jnp.mean(loss_clipped),
+                                jnp.mean(returns_mb),
+                                jnp.std(returns_mb),
+                                jnp.mean(v_old),
+                                jnp.std(v_old),
+                            )
+                            return jnp.mean(jnp.maximum(loss_unclipped, loss_clipped))
+                        else:
+                            return jnp.mean((vals - returns_mb) ** 2)
 
                     critic_loss, critic_grads = nnx.value_and_grad(
                         critic_loss_local
