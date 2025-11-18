@@ -194,6 +194,7 @@ The `experiments` folder contains various examples, see [above](### Example expe
 
 The RL controller uses the MJX backend, and follows the same structure as the other controllers in SmallSatSim, with a few exceptions. Notably: 
 - a training script is provided in `experiments/rl_training/train_astrobee.py`, 
+- multiple benchmarking scripts and plotting utilities are provided in `experiments/rl_benchmarking/`,
 - the RL training must happen in a vectorized environment defined in `envs/vec_env.py`,
 - the environment and config files are in a seperate directory, `astrobee_rl`,
 - the RL implementation uses different JAX-based helper functions that can also be found in `utils`,
