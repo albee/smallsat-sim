@@ -12,6 +12,10 @@ from smallsat_sim.controllers.rl.runners.rollout_utils import (
     FunctionalRolloutCallbacks,
     run_functional_rollout,
 )
+from smallsat_sim.controllers.rl.runners.curriculum import (
+    build_failure_curriculum,
+    uniform_failure_distribution,
+)
 from smallsat_sim.envs.vec_env import VecEnv, _compute_state_features
 from smallsat_sim.planners.oracle.oracle_rl import OraclePlannerRL
 from smallsat_sim.controllers.pd.vectorized_controller import VectorizedPDController
@@ -312,313 +316,538 @@ class OnPolicyRunner(object):
         self.env.reset_perturbations()
         episode_counter = 0
 
-        # Main training loop
-        for epoch in range(self.epochs):
-            epoch_start_time = time.perf_counter()
-            epoch_key = self._take_keys()
-            actor_key = epoch_key
-            # Apply perturbations
-            if self.env.train_with_failures:
-                self.env.reset_perturbations()  # avoid accumulating failures across epochs
-                perturb_key, disturb_key, actor_key = jax.random.split(epoch_key, 3)
-                self.env.apply_random_perturbations(
-                    key=perturb_key,
-                    fraction_perturbed_envs=0.4,
+        # Curriculum knobs live in config so they can be tuned without code edits
+        cfg = self.env.env_cfg.control.RL
+        nominal_epochs = int(cfg.curriculum_nominal_epochs)
+        phase_epochs = int(cfg.curriculum_phase_epochs)
+        failure_fraction = float(cfg.curriculum_failure_fraction)
+        disturbance_fraction = float(cfg.curriculum_disturbance_fraction)
+        critic_warmup_epochs = int(cfg.curriculum_critic_warmup_epochs)
+        critic_warmup_scale = float(cfg.curriculum_critic_warmup_scale)
+        eval_interval = int(cfg.curriculum_eval_interval)
+        # Keep evaluation lightweight relative to training rollouts.
+        eval_episodes = max(1, min(self.n_evals, 3))
+
+        # Build phases: nominal -> sequential failures -> disturbances
+        phases, total_epochs = build_failure_curriculum(
+            train_with_failures=bool(self.env.train_with_failures),
+            fallback_epochs=int(self.epochs),
+            nominal_epochs=nominal_epochs,
+            phase_epochs=phase_epochs,
+            failure_fraction=failure_fraction,
+            disturbance_fraction=disturbance_fraction,
+        )
+        # Align runner/agent epoch counts with the curriculum length
+        self.epochs = total_epochs
+        if hasattr(self.agent, "epochs"):
+            self.agent.epochs = total_epochs
+
+        # Track the best checkpoint by nominal score to guard against drift
+        best_nominal_score = float("-inf")
+        best_actor_state = None
+        best_critic_state = None
+
+        def _eval_policy(
+            *,
+            key: jnp.ndarray,
+            fraction_perturbed_envs: float,
+            perturbation_distribution: jnp.ndarray,
+            disturbance_fraction: float,
+        ) -> float:
+            """
+            Lightweight evaluation used to safeguard nominal performance.
+            We keep the training RNG state fixed across evals.
+            """
+            num_envs = self.env.num_envs
+            episode_keys = jax.random.split(key, eval_episodes)
+            rewards = []
+            # Snapshot the training RNG so evaluation does not consume it.
+            agent_key_before = self.agent.key
+
+            for ep_key in episode_keys:
+                self.env.reset()
+                self.env.reset_perturbations()
+
+                if fraction_perturbed_envs > 0.0:
+                    self.env.apply_random_perturbations(
+                        key=ep_key,
+                        fraction_perturbed_envs=float(fraction_perturbed_envs),
+                        perturbation_distribution=perturbation_distribution,
+                    )
+                if disturbance_fraction > 0.0:
+                    self.env.apply_random_disturbance(
+                        key=ep_key,
+                        fraction_disturbed_envs=float(disturbance_fraction),
+                    )
+
+                step_config = self.env.build_step_config(
+                    max_episode_len=self.episode_len
                 )
-                self.env.apply_random_disturbance(
-                    key=disturb_key,
-                    fraction_disturbed_envs=0.1,
-                )
+                initial_state = self.env.state_struct
 
-            # Accumulate rollout stats to emit once per epoch
-            rollout_timer_start = time.perf_counter()
-            scan_start = rollout_timer_start
-            step_config = self.env.build_step_config(max_episode_len=self.max_ep_len)
-            initial_state = self.env.state_struct
-            actor_state, critic_state = self.agent.actor_critic_state()
-
-            if self.env.use_adaptive_approach:
-                residual_init = jnp.zeros(
-                    (self.env.num_envs, self.env.res_dim), dtype=jnp.float32
-                )
-            else:
-                residual_init = jnp.zeros((self.env.num_envs, 0), dtype=jnp.float32)
-
-            def _prepare_policy_input(_step, states, residuals, carry_extra):
-                del _step  # unused
-                if residuals.shape[-1]:
-                    return jnp.concatenate([states, residuals], axis=1), carry_extra
-                return states, carry_extra
-
-            def _sample_policy(_step, policy_input, rng_key, carry_extra):
-                del _step  # unused
-                rng_key, sample_key = jax.random.split(rng_key)
-                actions, values, logp = self.agent.functional_act(
-                    actor_state,
-                    critic_state,
-                    policy_input,
-                    sample_key,
-                )
-                return actions, values, logp, rng_key, carry_extra
-
-            def _post_step(
-                _step, step_output, actions, residuals, reset_flag, carry_extra
-            ):
-                del _step, actions, reset_flag  # unused
                 if self.env.use_adaptive_approach:
-                    residuals_next = (
-                        step_output.actual_wrench - step_output.desired_wrench
+                    residual_init = jnp.zeros(
+                        (num_envs, self.env.res_dim), dtype=jnp.float32
                     )
                 else:
-                    residuals_next = residuals
-                return residuals_next, None, carry_extra
+                    residual_init = jnp.zeros((num_envs, 0), dtype=jnp.float32)
 
-            def _bootstrap_value(step_idx, env_state, residuals, rng_key, carry_extra):
-                rng_key, value_key = jax.random.split(rng_key)
-                next_states = _compute_state_features(
-                    env_state.mjx_batch, self.reference_point
-                )
-                policy_input, carry_extra = _prepare_policy_input(
-                    step_idx, next_states, residuals, carry_extra
-                )
-                _, values, _ = self.agent.functional_act(
-                    actor_state,
-                    critic_state,
-                    policy_input,
-                    value_key,
-                )
-                return values, rng_key, carry_extra
+                def _prepare_eval_input(_step, states, residuals, carry_extra):
+                    del _step, carry_extra  # unused
+                    if residuals.shape[-1]:
+                        return jnp.concatenate([states, residuals], axis=1), None
+                    return states, None
 
-            rollout_result = run_functional_rollout(
-                step_config=step_config,
-                initial_state=initial_state,
-                initial_residuals=residual_init,
-                rng=self.agent.key,
-                num_steps=self.steps_per_epoch,
-                reference_waypoint=self.reference_point,
-                callbacks=FunctionalRolloutCallbacks(
-                    prepare_policy_input=_prepare_policy_input,
-                    sample_policy=_sample_policy,
-                    post_step=_post_step,
-                    bootstrap_value=_bootstrap_value,
-                ),
-            )
+                def _sample_eval_policy(_step, policy_input, rng_key, carry_extra):
+                    del _step, carry_extra  # unused
+                    actions = self.agent.get_control_input("evaluation", policy_input)
+                    zeros = jnp.zeros((num_envs,), dtype=jnp.float32)
+                    return actions, zeros, zeros, rng_key, None
 
-            jax.block_until_ready(rollout_result.actions)
-            scan_time = time.perf_counter() - scan_start
-            self.agent.key = rollout_result.final_rng
-
-            if (
-                self._functional_check_enabled
-                and not self._functional_check_ran
-                and rollout_result.actions.shape[0] > 0
-            ):
-                # Run the legacy-vs-functional verification once per runner
-                # invocation to avoid adding noticeable overhead to training
-                self.env.verify_functional_step(
-                    initial_state,
-                    rollout_result.actions[0],
-                    self.reference_point,
-                    step_config=step_config,
-                    atol=self._functional_check_atol,
-                    rtol=self._functional_check_rtol,
-                )
-                self._functional_check_ran = True
-
-            self.env.apply_state_struct(rollout_result.final_state)
-
-            step_outputs = rollout_result.step_outputs
-            actions_traj = rollout_result.actions
-            values_traj = rollout_result.values
-            logp_traj = rollout_result.logp
-            residuals_traj = rollout_result.residuals
-            done_flags = rollout_result.done_flags
-            bootstrap_vals = rollout_result.bootstrap_values
-            episode_returns_traj = rollout_result.episode_returns
-
-            terminal_count = float(jnp.sum(step_outputs.terminals.astype(jnp.float32)))
-
-            buffer_start = time.perf_counter()
-            start_ptr = buffer.path_start_idx
-            buffer.store_batch(
-                step_outputs.prev_states,
-                actions_traj,
-                step_outputs.rewards,
-                values_traj,
-                logp_traj,
-                residuals_traj,
-            )
-
-            done_indices = jnp.nonzero(
-                done_flags, size=self.steps_per_epoch, fill_value=-1
-            )[0]
-            valid_done = done_indices[done_indices >= 0]
-            episode_return_sum = 0.0
-            episode_counter_epoch = 0
-
-            if valid_done.size > 0:
-                end_ptrs = start_ptr + valid_done + 1
-                buffer.end_traj_batch(end_ptrs.tolist(), bootstrap_vals[valid_done])
-
-                mean_returns = episode_returns_traj[valid_done].mean(axis=1)
-                episode_return_sum = float(jnp.sum(mean_returns))
-                episode_counter_epoch = int(mean_returns.shape[0])
-
-                if self.agent.has_logger:
-                    for mean_value in mean_returns.tolist():
-                        self.env.logger.log(
-                            self.env.run_id,
-                            float(self.env.mjx_batch.time[0]),
-                            step=episode_counter,
-                            run_name=self.env.run_name,
-                            stage="policy_training",
-                            mean_episodic_returns=mean_value,
+                def _post_eval_step(
+                    _step, step_output, actions, residuals, reset_flag, carry_extra
+                ):
+                    del _step, actions, reset_flag, carry_extra  # unused
+                    if self.env.use_adaptive_approach:
+                        residuals_next = (
+                            step_output.actual_wrench - step_output.desired_wrench
                         )
-                        episode_counter += 1
+                    else:
+                        residuals_next = residuals
+                    return residuals_next, None, None
 
-            buffer_time = time.perf_counter() - buffer_start
+                def _bootstrap_eval(_step, env_state, residuals, rng_key, carry_extra):
+                    del _step, env_state, residuals, carry_extra  # unused
+                    zeros = jnp.zeros((num_envs,), dtype=jnp.float32)
+                    return zeros, rng_key, None
 
-            epoch_reward_components = (
-                step_outputs.reward_components
-                if self.env.collect_reward_components
-                else {}
-            )
+                rollout_result = run_functional_rollout(
+                    step_config=step_config,
+                    initial_state=initial_state,
+                    initial_residuals=residual_init,
+                    rng=agent_key_before,
+                    num_steps=self.episode_len,
+                    reference_waypoint=self.reference_point,
+                    callbacks=FunctionalRolloutCallbacks(
+                        prepare_policy_input=_prepare_eval_input,
+                        sample_policy=_sample_eval_policy,
+                        post_step=_post_eval_step,
+                        bootstrap_value=_bootstrap_eval,
+                    ),
+                )
+                jax.block_until_ready(rollout_result.actions)
+                rewards.append(float(rollout_result.step_outputs.rewards.mean()))
 
-            self.env.reset()
-            self.env.reset_perturbations()
+            # Restore the training RNG after evaluation.
+            self.agent.key = agent_key_before
+            return float(jnp.mean(jnp.asarray(rewards))) if rewards else 0.0
 
-            rollout_duration = time.perf_counter() - epoch_start_time
+        global_epoch = 0
+        # Convenience distribution for nominal-only evaluation.
+        zeros_dist = jnp.zeros((5,), dtype=jnp.float32)
 
-            # Get the data from the training loop and save it
-            data = buffer.get()
-            if epoch == self.epochs - 1:
-                save_training_data(self.ckpt_dir, self.training_data_file_name, data)
+        for phase_idx, phase in enumerate(phases):
+            phase_name = phase["name"]
+            phase_epochs = int(phase["epochs"])
+            active_failures = list(phase["active_failures"])
+            phase_failure_fraction = float(phase["failure_fraction"])
+            phase_disturbance_fraction = float(phase["disturbance_fraction"])
+            phase_distribution = uniform_failure_distribution(active_failures)
+            new_failure_idx = phase["new_failure"]
 
-            obs = data["obs"].reshape(-1, self.env.obs_dim)
-            actions = data["act"].reshape(-1, self.env.act_dim)
-            rews = data["rews"].reshape(-1)
-            tdres = data["tdres"].reshape(-1)
-            returns = data["ret"].reshape(-1)
-            logp = data["logp"].reshape(-1)
-            vals = data["vals"].reshape(-1)
-            if self.env.use_adaptive_approach is True:
-                residuals = data["residuals"].reshape(-1, self.env.res_dim)
-            else:
-                residuals = jnp.empty((self.steps_per_epoch * self.env.num_envs, 0))
-
-            if obs.size:
-                tracking_error_epoch = calc_lateral_tracking_error(
-                    obs, self.planner
-                ).mean()
-                angle_error_epoch = jnp.degrees(calc_attitude_error(obs)).mean()
-            else:
-                tracking_error_epoch = jnp.array(0.0)
-                angle_error_epoch = jnp.array(0.0)
-
-            terminal_count_epoch = jnp.asarray(terminal_count)
-            mean_ep_return_epoch = (
-                jnp.asarray(episode_return_sum / episode_counter_epoch)
-                if episode_counter_epoch > 0
-                else jnp.array(0.0)
-            )
-
-            reward_component_means = {
-                name: values.mean() for name, values in epoch_reward_components.items()
-            }
-            other_rollout_time = max(0.0, rollout_duration - (scan_time + buffer_time))
-
-            update_start_time = time.perf_counter()
-            # # Policy gradient update
-            # actor_loss = self.agent.update_policy_gradient(
-            #     subkeys_train[epoch],
-            #     jnp.concatenate([obs, residuals], axis=1),
-            #     actions,
-            #     tdres,
-            #     logp,
-            # )
-
-            # # Value function updates
-            # critic_loss = self.agent.update_value_function(
-            #     subkeys_train[epoch],
-            #     jnp.concatenate([obs, residuals], axis=1),
-            #     returns,
-            # )
-
-            # Update the policy gradient and the value function
-            (
-                last_actor_loss,
-                last_critic_loss,
-                mean_actor_loss,
-                mean_critic_loss,
-            ) = self.agent.update_actor_critic_minibatch(
-                actor_key,
-                jnp.concatenate([obs, residuals], axis=1),
-                actions,
-                tdres,
-                logp,
-                returns,
-                vals,
-            )
-            update_duration = time.perf_counter() - update_start_time
-            epoch_total_duration = time.perf_counter() - epoch_start_time
             print(
-                f"[Timing] Epoch {epoch + 1}/{self.epochs}: "
-                f"rollout {rollout_duration:.2f}s "
-                f"(scan {scan_time:.2f}s, buffer {buffer_time:.2f}s, other {other_rollout_time:.2f}s) | "
-                f"update {update_duration:.2f}s | total {epoch_total_duration:.2f}s"
+                f"[Curriculum] Phase {phase_idx + 1}/{len(phases)}: {phase_name} "
+                f"for {phase_epochs} epochs (failure_fraction={phase_failure_fraction:.2f}, "
+                f"disturbance_fraction={phase_disturbance_fraction:.2f})"
             )
 
-            actor_loss_last_f = float(last_actor_loss)
-            critic_loss_last_f = float(last_critic_loss)
-            actor_loss_mean_f = float(mean_actor_loss)
-            critic_loss_mean_f = float(mean_critic_loss)
+            for phase_epoch in range(phase_epochs):
+                global_epoch += 1
+                epoch_start_time = time.perf_counter()
+                epoch_key = self._take_keys()
+                perturb_key, disturb_key, actor_key, eval_key = jax.random.split(
+                    epoch_key, 4
+                )
 
-            # Monitor key RL metrics during training using Weights & Biases
-            if self.env.use_wandb:
-                wandb_reward_payload = {
-                    f"reward_components/{metric_name}": float(metric_value)
-                    for metric_name, metric_value in reward_component_means.items()
+                # Apply failures/disturbances for this phase with fixed proportions
+                if self.env.train_with_failures:
+                    self.env.reset_perturbations()  # avoid accumulating failures across epochs
+                    if phase_failure_fraction > 0.0:
+                        self.env.apply_random_perturbations(
+                            key=perturb_key,
+                            fraction_perturbed_envs=phase_failure_fraction,
+                            perturbation_distribution=phase_distribution,
+                        )
+                    if phase_disturbance_fraction > 0.0:
+                        self.env.apply_random_disturbance(
+                            key=disturb_key,
+                            fraction_disturbed_envs=phase_disturbance_fraction,
+                        )
+
+                # Accumulate rollout stats to emit once per epoch
+                scan_start = time.perf_counter()
+                step_config = self.env.build_step_config(
+                    max_episode_len=self.max_ep_len
+                )
+                initial_state = self.env.state_struct
+                actor_state, critic_state = self.agent.actor_critic_state()
+
+                # Residuals are the adaptation signal; keep shape consistent even when disabled
+                if self.env.use_adaptive_approach:
+                    residual_init = jnp.zeros(
+                        (self.env.num_envs, self.env.res_dim), dtype=jnp.float32
+                    )
+                else:
+                    residual_init = jnp.zeros((self.env.num_envs, 0), dtype=jnp.float32)
+
+                # The rollout helper is fully functional. These callbacks thread
+                # policy logic and residual updates into the environment scan
+                def _prepare_policy_input(_step, states, residuals, carry_extra):
+                    del _step  # unused
+                    if residuals.shape[-1]:
+                        return jnp.concatenate([states, residuals], axis=1), carry_extra
+                    return states, carry_extra
+
+                def _sample_policy(_step, policy_input, rng_key, carry_extra):
+                    del _step  # unused
+                    rng_key, sample_key = jax.random.split(rng_key)
+                    actions, values, logp = self.agent.functional_act(
+                        actor_state,
+                        critic_state,
+                        policy_input,
+                        sample_key,
+                    )
+                    return actions, values, logp, rng_key, carry_extra
+
+                def _post_step(
+                    _step, step_output, actions, residuals, reset_flag, carry_extra
+                ):
+                    del _step, actions, reset_flag  # unused
+                    if self.env.use_adaptive_approach:
+                        residuals_next = (
+                            step_output.actual_wrench - step_output.desired_wrench
+                        )
+                    else:
+                        residuals_next = residuals
+                    return residuals_next, None, carry_extra
+
+                def _bootstrap_value(
+                    step_idx, env_state, residuals, rng_key, carry_extra
+                ):
+                    rng_key, value_key = jax.random.split(rng_key)
+                    # Bootstrap with the critic on the next observation
+                    next_states = _compute_state_features(
+                        env_state.mjx_batch, self.reference_point
+                    )
+                    policy_input, carry_extra = _prepare_policy_input(
+                        step_idx, next_states, residuals, carry_extra
+                    )
+                    _, values, _ = self.agent.functional_act(
+                        actor_state,
+                        critic_state,
+                        policy_input,
+                        value_key,
+                    )
+                    return values, rng_key, carry_extra
+
+                # Run a full epoch rollout in one compiled scan
+                rollout_result = run_functional_rollout(
+                    step_config=step_config,
+                    initial_state=initial_state,
+                    initial_residuals=residual_init,
+                    rng=self.agent.key,
+                    num_steps=self.steps_per_epoch,
+                    reference_waypoint=self.reference_point,
+                    callbacks=FunctionalRolloutCallbacks(
+                        prepare_policy_input=_prepare_policy_input,
+                        sample_policy=_sample_policy,
+                        post_step=_post_step,
+                        bootstrap_value=_bootstrap_value,
+                    ),
+                )
+
+                # Materialize device work before timing/logging
+                jax.block_until_ready(rollout_result.actions)
+                scan_time = time.perf_counter() - scan_start
+                self.agent.key = rollout_result.final_rng
+
+                if (
+                    self._functional_check_enabled
+                    and not self._functional_check_ran
+                    and rollout_result.actions.shape[0] > 0
+                ):
+                    self.env.verify_functional_step(
+                        initial_state,
+                        rollout_result.actions[0],
+                        self.reference_point,
+                        step_config=step_config,
+                        atol=self._functional_check_atol,
+                        rtol=self._functional_check_rtol,
+                    )
+                    self._functional_check_ran = True
+
+                # Sync the imperative env state with the functional rollout result
+                self.env.apply_state_struct(rollout_result.final_state)
+
+                # Unpack rollout tensors for buffer storage and logging
+                step_outputs = rollout_result.step_outputs
+                actions_traj = rollout_result.actions
+                values_traj = rollout_result.values
+                logp_traj = rollout_result.logp
+                residuals_traj = rollout_result.residuals
+                done_flags = rollout_result.done_flags
+                bootstrap_vals = rollout_result.bootstrap_values
+                episode_returns_traj = rollout_result.episode_returns
+
+                terminal_count = float(
+                    jnp.sum(step_outputs.terminals.astype(jnp.float32))
+                )
+
+                buffer_start = time.perf_counter()
+                start_ptr = buffer.path_start_idx
+                # Store the full trajectory in the device-friendly replay buffer
+                buffer.store_batch(
+                    step_outputs.prev_states,
+                    actions_traj,
+                    step_outputs.rewards,
+                    values_traj,
+                    logp_traj,
+                    residuals_traj,
+                )
+
+                done_indices = jnp.nonzero(
+                    done_flags, size=self.steps_per_epoch, fill_value=-1
+                )[0]
+                valid_done = done_indices[done_indices >= 0]
+                episode_return_sum = 0.0
+                episode_counter_epoch = 0
+
+                if valid_done.size > 0:
+                    # Finalize completed trajectories so returns/advantages are available
+                    end_ptrs = start_ptr + valid_done + 1
+                    buffer.end_traj_batch(end_ptrs.tolist(), bootstrap_vals[valid_done])
+
+                    mean_returns = episode_returns_traj[valid_done].mean(axis=1)
+                    episode_return_sum = float(jnp.sum(mean_returns))
+                    episode_counter_epoch = int(mean_returns.shape[0])
+
+                    if self.agent.has_logger:
+                        for mean_value in mean_returns.tolist():
+                            self.env.logger.log(
+                                self.env.run_id,
+                                float(self.env.mjx_batch.time[0]),
+                                step=episode_counter,
+                                run_name=self.env.run_name,
+                                stage="policy_training",
+                                mean_episodic_returns=mean_value,
+                            )
+                            episode_counter += 1
+
+                buffer_time = time.perf_counter() - buffer_start
+
+                epoch_reward_components = (
+                    step_outputs.reward_components
+                    if self.env.collect_reward_components
+                    else {}
+                )
+
+                # Reset the imperative environment for the next epoch
+                self.env.reset()
+                self.env.reset_perturbations()
+
+                rollout_duration = time.perf_counter() - epoch_start_time
+
+                # Get the data from the training loop and save it
+                data = buffer.get()
+                if global_epoch == self.epochs:
+                    save_training_data(
+                        self.ckpt_dir, self.training_data_file_name, data
+                    )
+
+                obs = data["obs"].reshape(-1, self.env.obs_dim)
+                actions = data["act"].reshape(-1, self.env.act_dim)
+                rews = data["rews"].reshape(-1)
+                tdres = data["tdres"].reshape(-1)
+                returns = data["ret"].reshape(-1)
+                logp = data["logp"].reshape(-1)
+                vals = data["vals"].reshape(-1)
+                if self.env.use_adaptive_approach is True:
+                    residuals = data["residuals"].reshape(-1, self.env.res_dim)
+                else:
+                    residuals = jnp.empty((self.steps_per_epoch * self.env.num_envs, 0))
+
+                if obs.size:
+                    tracking_error_epoch = calc_lateral_tracking_error(
+                        obs, self.planner
+                    ).mean()
+                    angle_error_epoch = jnp.degrees(calc_attitude_error(obs)).mean()
+                else:
+                    tracking_error_epoch = jnp.array(0.0)
+                    angle_error_epoch = jnp.array(0.0)
+
+                terminal_count_epoch = jnp.asarray(terminal_count)
+                mean_ep_return_epoch = (
+                    jnp.asarray(episode_return_sum / episode_counter_epoch)
+                    if episode_counter_epoch > 0
+                    else jnp.array(0.0)
+                )
+
+                reward_component_means = {
+                    name: values.mean()
+                    for name, values in epoch_reward_components.items()
                 }
-                wandb.log(
-                    {
-                        "mean_rewards": float(rews.mean()),
-                        "actor_loss_last": actor_loss_last_f,
-                        "critic_loss_last": critic_loss_last_f,
-                        "actor_loss_mean": actor_loss_mean_f,
-                        "critic_loss_mean": critic_loss_mean_f,
-                        "mean_episodic_returns": float(mean_ep_return_epoch),
-                        "num_terminal": float(terminal_count_epoch),
-                        "mean_log_std": float(self.agent.actor.log_std.value.mean()),
-                        "mean_std": float(
-                            jnp.exp(self.agent.actor.log_std.value).mean()
-                        ),
-                        "mean_tracking_error": float(tracking_error_epoch),
-                        "mean_angle_error": float(angle_error_epoch),
-                        **wandb_reward_payload,
-                    },
+                other_rollout_time = max(
+                    0.0, rollout_duration - (scan_time + buffer_time)
                 )
 
-            # Log key RL metrics
-            if self.agent.has_logger:
-                self.env.logger.log(
-                    self.env.run_id,
-                    float(self.env.mjx_batch.time[0]),
-                    step=int(epoch),
-                    run_name=self.env.run_name,
-                    stage="policy_training",
-                    mean_rewards=float(rews.mean()),
-                    actor_loss_last=actor_loss_last_f,
-                    critic_loss_last=critic_loss_last_f,
-                    actor_loss_mean=actor_loss_mean_f,
-                    critic_loss_mean=critic_loss_mean_f,
-                    num_terminal=float(terminal_count_epoch),
-                    mean_log_std=float(self.agent.actor.log_std.value.mean()),
-                    mean_std=float(jnp.exp(self.agent.actor.log_std.value).mean()),
-                    mean_tracking_error=float(tracking_error_epoch),
-                    mean_angle_error=float(angle_error_epoch),
+                # Warm up critic updates early in each failure phase
+                # We scale gradients (not the optimizer) to keep the change minimal
+                critic_grad_scale = 1.0
+                if (
+                    self.env.train_with_failures
+                    and active_failures
+                    and phase_epoch < critic_warmup_epochs
+                ):
+                    critic_grad_scale = critic_warmup_scale
+
+                update_start_time = time.perf_counter()
+                (
+                    last_actor_loss,
+                    last_critic_loss,
+                    mean_actor_loss,
+                    mean_critic_loss,
+                ) = self.agent.update_actor_critic_minibatch(
+                    actor_key,
+                    jnp.concatenate([obs, residuals], axis=1),
+                    actions,
+                    tdres,
+                    logp,
+                    returns,
+                    vals,
+                    critic_grad_scale=critic_grad_scale,
+                )
+                update_duration = time.perf_counter() - update_start_time
+                epoch_total_duration = time.perf_counter() - epoch_start_time
+                print(
+                    f"[Timing] Epoch {global_epoch}/{self.epochs} "
+                    f"(phase={phase_name} {phase_epoch + 1}/{phase_epochs}): "
+                    f"rollout {rollout_duration:.2f}s "
+                    f"(scan {scan_time:.2f}s, buffer {buffer_time:.2f}s, other {other_rollout_time:.2f}s) | "
+                    f"update {update_duration:.2f}s | total {epoch_total_duration:.2f}s"
                 )
 
-            # Save the trained actor and critic network weights
+                actor_loss_last_f = float(last_actor_loss)
+                critic_loss_last_f = float(last_critic_loss)
+                actor_loss_mean_f = float(mean_actor_loss)
+                critic_loss_mean_f = float(mean_critic_loss)
+
+                # Monitor key RL metrics during training using Weights & Biases
+                if self.env.use_wandb:
+                    wandb_reward_payload = {
+                        f"reward_components/{metric_name}": float(metric_value)
+                        for metric_name, metric_value in reward_component_means.items()
+                    }
+                    wandb.log(
+                        {
+                            "curriculum/phase": phase_name,
+                            "curriculum/phase_epoch": phase_epoch + 1,
+                            "curriculum/global_epoch": global_epoch,
+                            "curriculum/critic_grad_scale": critic_grad_scale,
+                            "mean_rewards": float(rews.mean()),
+                            "actor_loss_last": actor_loss_last_f,
+                            "critic_loss_last": critic_loss_last_f,
+                            "actor_loss_mean": actor_loss_mean_f,
+                            "critic_loss_mean": critic_loss_mean_f,
+                            "mean_episodic_returns": float(mean_ep_return_epoch),
+                            "num_terminal": float(terminal_count_epoch),
+                            "mean_log_std": float(
+                                self.agent.actor.log_std.value.mean()
+                            ),
+                            "mean_std": float(
+                                jnp.exp(self.agent.actor.log_std.value).mean()
+                            ),
+                            "mean_tracking_error": float(tracking_error_epoch),
+                            "mean_angle_error": float(angle_error_epoch),
+                            **wandb_reward_payload,
+                        },
+                        step=global_epoch,
+                    )
+
+                # Log key RL metrics
+                if self.agent.has_logger:
+                    self.env.logger.log(
+                        self.env.run_id,
+                        float(self.env.mjx_batch.time[0]),
+                        step=int(global_epoch),
+                        run_name=self.env.run_name,
+                        stage="policy_training",
+                        phase=phase_name,
+                        phase_epoch=int(phase_epoch + 1),
+                        critic_grad_scale=float(critic_grad_scale),
+                        mean_rewards=float(rews.mean()),
+                        actor_loss_last=actor_loss_last_f,
+                        critic_loss_last=critic_loss_last_f,
+                        actor_loss_mean=actor_loss_mean_f,
+                        critic_loss_mean=critic_loss_mean_f,
+                        num_terminal=float(terminal_count_epoch),
+                        mean_log_std=float(self.agent.actor.log_std.value.mean()),
+                        mean_std=float(jnp.exp(self.agent.actor.log_std.value).mean()),
+                        mean_tracking_error=float(tracking_error_epoch),
+                        mean_angle_error=float(angle_error_epoch),
+                    )
+
+                # Safeguard: periodically evaluate and keep the best nominal checkpoint
+                eval_due = bool(active_failures) and (
+                    (phase_epoch + 1) % eval_interval == 0
+                    or phase_epoch == phase_epochs - 1
+                )
+                if eval_due:
+                    eval_keys = jax.random.split(eval_key, 3)
+                    nominal_score = _eval_policy(
+                        key=eval_keys[0],
+                        fraction_perturbed_envs=0.0,
+                        perturbation_distribution=zeros_dist,
+                        disturbance_fraction=0.0,
+                    )
+
+                    # Evaluate the newest failure in isolation
+                    failure_dist = zeros_dist
+                    if new_failure_idx is not None:
+                        failure_dist = failure_dist.at[int(new_failure_idx)].set(1.0)
+                    failure_score = _eval_policy(
+                        key=eval_keys[1],
+                        fraction_perturbed_envs=1.0,
+                        perturbation_distribution=failure_dist,
+                        disturbance_fraction=0.0,
+                    )
+
+                    mixture_score = _eval_policy(
+                        key=eval_keys[2],
+                        fraction_perturbed_envs=phase_failure_fraction,
+                        perturbation_distribution=phase_distribution,
+                        disturbance_fraction=phase_disturbance_fraction,
+                    )
+
+                    if nominal_score > best_nominal_score:
+                        best_nominal_score = nominal_score
+                        best_actor_state = nnx.state(self.agent.actor)
+                        best_critic_state = nnx.state(self.agent.critic)
+
+                    print(
+                        f"[Curriculum Eval] phase={phase_name} epoch={phase_epoch + 1}/{phase_epochs} "
+                        f"nominal={nominal_score:.4f} failure_k={failure_score:.4f} mixture={mixture_score:.4f} "
+                        f"best_nominal={best_nominal_score:.4f}"
+                    )
+
+                # Save the trained actor and critic network weights
+                save_trained_modules(
+                    self.agent, self.ckpt_dir, self.training_state_file_name
+                )
+
+        # Restore the best nominal checkpoint at the end of the curriculum
+        if best_actor_state is not None and best_critic_state is not None:
+            nnx.update(self.agent.actor, best_actor_state)
+            nnx.update(self.agent.critic, best_critic_state)
             save_trained_modules(
                 self.agent, self.ckpt_dir, self.training_state_file_name
             )
@@ -685,7 +914,7 @@ class OnPolicyRunner(object):
             self.env.apply_random_perturbations(
                 key=subkeys_train[epoch],
                 fraction_perturbed_envs=0.4,
-                perturbation_distribution=jnp.array([0.2, 0.2, 0.2, 0.2, 0.2, 0.2]),
+                perturbation_distribution=jnp.array([0.2, 0.2, 0.2, 0.2, 0.2]),
             )
             self.env.apply_random_disturbance(
                 key=subkeys_train[epoch],

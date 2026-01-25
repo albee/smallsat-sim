@@ -85,7 +85,7 @@ class EnvConfig(BaseEnvConfig):
 
             class PPO:
                 steps_per_epoch = 512
-                epochs = 100  # Make sure rewards plateau (w/o pretraining or w/ failures might need more epochs)
+                epochs = 400  # Covers the nominal+curriculum phases when failures are enabled
                 max_ep_len = 512  # TODO: sanity check that this duration is appropriate (and change deployment_len accordingly)
                 gamma = 0.99
                 lam = 0.95
@@ -100,6 +100,15 @@ class EnvConfig(BaseEnvConfig):
                 target_kl = 0.01
                 use_value_clip = True
                 value_clip_coef = 0.2
+
+            # Sequential failure curriculum knobs
+            curriculum_nominal_epochs = 100
+            curriculum_phase_epochs = 50
+            curriculum_failure_fraction = 0.4  # 60% nominal, 40% failures
+            curriculum_disturbance_fraction = 0.1
+            curriculum_critic_warmup_epochs = 15
+            curriculum_critic_warmup_scale = 1.0 / 3.0
+            curriculum_eval_interval = 5
 
             # Mission tolerances (tuned to current training scenario - do not change)
             sigma_pos = 3.0

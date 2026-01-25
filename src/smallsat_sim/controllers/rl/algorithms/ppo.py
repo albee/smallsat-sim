@@ -225,6 +225,7 @@ class PPO(BaseAgent):
         logp: jnp.ndarray,
         returns: jnp.ndarray,
         values_old: jnp.ndarray | None = None,
+        critic_grad_scale: float = 1.0,
     ) -> tuple:
         """
         Update the policy gradient and the value function (both at each minibatch, as opposed to doing it sequentially).
@@ -270,6 +271,7 @@ class PPO(BaseAgent):
             self.value_clip_coef,
             self.num_minibatches,
             self.minibatch_size,
+            critic_grad_scale,
         )
 
         nnx.update(
@@ -328,6 +330,7 @@ class PPO(BaseAgent):
             self.value_clip_coef,
             self.num_minibatches,
             self.minibatch_size,
+            1.0,
         )
         jax.block_until_ready(warmup_result[0])
         self._jit_warmup_done = True
@@ -585,7 +588,7 @@ def _critic_epochs_jit(
     return last_loss, state
 
 
-@partial(jax.jit, static_argnums=(12, 13, 14, 15))
+@partial(jax.jit, static_argnums=(12, 13, 14, 15, 16))
 def _actor_critic_epochs_jit(
     graphdef,
     state,
@@ -603,6 +606,7 @@ def _actor_critic_epochs_jit(
     value_clip_coef: float,
     num_minibatches: int,
     minibatch_size: int,
+    critic_grad_scale: float,
 ):
     batch_size = obs.shape[0]
     zero_actor_loss = jnp.zeros((), dtype=advantages.dtype)
@@ -754,6 +758,10 @@ def _actor_critic_epochs_jit(
                     critic_loss, critic_grads = nnx.value_and_grad(
                         critic_loss_local
                     )(critic)
+                    if critic_grad_scale != 1.0:
+                        critic_grads = jax.tree_util.tree_map(
+                            lambda g: g * critic_grad_scale, critic_grads
+                        )
                     critic_opt.update(critic_grads)
 
                     _, logp_a = actor.forward(obs_mb, act_mb)
