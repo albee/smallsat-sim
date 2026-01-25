@@ -52,7 +52,7 @@ class EnvConfig(BaseEnvConfig):
             control_decimation = 25
 
             # Run ID
-            rl_run_id = 0  # @Josh perhaps use run IDs >= 10 to tell the runs apart?
+            rl_run_id = 0
 
             # Number of environments
             num_envs = 2048
@@ -73,23 +73,33 @@ class EnvConfig(BaseEnvConfig):
 
             # Hyperparams for the learning loop
             class VPG:
-                steps_per_epoch = 4096
-                epochs = 50
-                max_ep_len = 1024
+                steps_per_epoch = 512
+                epochs = 100
+                max_ep_len = 512
                 gamma = 0.99
                 lam = 0.97
-                actor_lr = 1e-4
-                critic_lr = 1e-3
+                actor_lr = 3e-4
+                critic_lr = 3e-5
+                actor_training_epochs = 3
+                critic_training_epochs = 3
 
             class PPO:
-                steps_per_epoch = 2048
+                steps_per_epoch = 512
                 epochs = 100  # Make sure rewards plateau (w/o pretraining or w/ failures might need more epochs)
                 max_ep_len = 512  # TODO: sanity check that this duration is appropriate (and change deployment_len accordingly)
                 gamma = 0.99
                 lam = 0.95
                 actor_lr = 3e-4  # Between 2 and 4e-4
-                critic_lr = 1e-3 # >= actor_lr
+                critic_lr = 1e-3  # >= actor_lr
                 entropy_coef = 3e-5  # Make sure std/log_std steadily decreases long enough (see W&B)
+                actor_training_epochs = 3
+                critic_training_epochs = 3
+                actor_critic_training_epochs = 3
+                num_minibatches = 8
+                clip_ratio = 0.2
+                target_kl = 0.01
+                use_value_clip = True
+                value_clip_coef = 0.2
 
             # Mission tolerances (tuned to current training scenario - do not change)
             sigma_pos = 3.0
@@ -113,6 +123,7 @@ class EnvConfig(BaseEnvConfig):
             context_window_len = 50
 
             # Hyperparams for the adaptation module training (NOTE: have not been tuned yet + CNN/transformer may require different sets)
+            am_epochs = 100
             am_lr = 3e-4
             am_weight_decay = 0.05
             am_grad_clip_norm = 1.0

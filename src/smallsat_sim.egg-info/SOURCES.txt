@@ -36,12 +36,14 @@ src/smallsat_sim/controllers/rl/algorithms/base_agent.py
 src/smallsat_sim/controllers/rl/algorithms/ppo.py
 src/smallsat_sim/controllers/rl/algorithms/vpg.py
 src/smallsat_sim/controllers/rl/modules/__init__.py
-src/smallsat_sim/controllers/rl/modules/adaptation_module.py
+src/smallsat_sim/controllers/rl/modules/am_cnn.py
+src/smallsat_sim/controllers/rl/modules/am_transformer.py
 src/smallsat_sim/controllers/rl/modules/base_network.py
 src/smallsat_sim/controllers/rl/modules/base_policy.py
 src/smallsat_sim/controllers/rl/modules/mlp.py
 src/smallsat_sim/controllers/rl/runners/__init__.py
 src/smallsat_sim/controllers/rl/runners/on_policy_runner.py
+src/smallsat_sim/controllers/rl/runners/rollout_utils.py
 src/smallsat_sim/controllers/rl/runners/runner_utils.py
 src/smallsat_sim/controllers/rl/storage/__init__.py
 src/smallsat_sim/controllers/rl/storage/replay_buffer.py
@@ -116,3 +118,4 @@ src/smallsat_sim/utils/xml_parser_3d.py
 src/smallsat_sim/utils/xml_parser_lightweight.py
 src/smallsat_sim/utils/xml_parser_triangle.py
 src/tests/astrobee_ctrl_test.py
+src/tests/test_functional_rollout.py

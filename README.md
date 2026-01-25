@@ -280,6 +280,26 @@ View the simulation under http://localhost:8080/vnc.html.
 Note that the simulation will not update the planned trajectory of the MPC controller, since the simulation thread only receives data regarding the current control input.
 
 
+## Testing
+
+Pytest is included as a project dependency in `pyproject.toml`.
+
+Run all tests (from the repo root):
+
+```bash
+PYTHONPATH=src pytest -q src/tests
+```
+
+Run a single test file:
+
+```bash
+PYTHONPATH=src pytest -q src/tests/test_functional_rollout.py
+```
+
+If you see missing-module errors, make sure your environment has the full
+project dependencies installed.
+
+
 ## Python Debugger 
 If you are using VSCode and want to run the python debugger in the Docker run the following command in a terminal that is attached to the Docker. Make sure to replace `experiments/test.py` with the file you want to debug.
 

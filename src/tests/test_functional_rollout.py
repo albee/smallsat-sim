@@ -1,0 +1,286 @@
+from dataclasses import dataclass
+
+import jax
+import jax.numpy as jnp
+import pytest
+
+from smallsat_sim.controllers.rl.runners import rollout_utils as ru
+
+
+@dataclass
+class DummyBatch:
+    qpos: jnp.ndarray
+
+    def replace(self, **updates: jnp.ndarray) -> "DummyBatch":
+        return DummyBatch(qpos=updates.get("qpos", self.qpos))
+
+
+def _dummy_batch_flatten(batch: DummyBatch):
+    return (batch.qpos,), None
+
+
+def _dummy_batch_unflatten(aux_data, children):
+    (qpos,) = children
+    return DummyBatch(qpos=qpos)
+
+
+jax.tree_util.register_pytree_node(DummyBatch, _dummy_batch_flatten, _dummy_batch_unflatten)
+
+
+@dataclass
+class DummyState:
+    rng: jnp.ndarray
+    mjx_batch: DummyBatch
+
+    def replace(self, **updates):
+        return DummyState(
+            rng=updates.get("rng", self.rng),
+            mjx_batch=updates.get("mjx_batch", self.mjx_batch),
+        )
+
+
+def _dummy_state_flatten(state: DummyState):
+    return (state.rng, state.mjx_batch), None
+
+
+def _dummy_state_unflatten(aux_data, children):
+    rng, mjx_batch = children
+    return DummyState(rng=rng, mjx_batch=mjx_batch)
+
+
+jax.tree_util.register_pytree_node(DummyState, _dummy_state_flatten, _dummy_state_unflatten)
+
+
+@dataclass
+class DummyStepConfig:
+    max_episode_len: int
+
+
+@dataclass
+class DummyStepOutput:
+    prev_states: jnp.ndarray
+    next_states: jnp.ndarray
+    rewards: jnp.ndarray
+    terminals: jnp.ndarray
+    commanded_ctrl: jnp.ndarray
+    applied_ctrl: jnp.ndarray
+    actual_wrench: jnp.ndarray
+    desired_wrench: jnp.ndarray
+    prev_obs: jnp.ndarray
+    next_obs: jnp.ndarray
+    reward_components: dict
+
+
+def _dummy_step_output_flatten(output: DummyStepOutput):
+    children = (
+        output.prev_states,
+        output.next_states,
+        output.rewards,
+        output.terminals,
+        output.commanded_ctrl,
+        output.applied_ctrl,
+        output.actual_wrench,
+        output.desired_wrench,
+        output.prev_obs,
+        output.next_obs,
+        output.reward_components,
+    )
+    return children, None
+
+
+def _dummy_step_output_unflatten(aux_data, children):
+    (
+        prev_states,
+        next_states,
+        rewards,
+        terminals,
+        commanded_ctrl,
+        applied_ctrl,
+        actual_wrench,
+        desired_wrench,
+        prev_obs,
+        next_obs,
+        reward_components,
+    ) = children
+    return DummyStepOutput(
+        prev_states=prev_states,
+        next_states=next_states,
+        rewards=rewards,
+        terminals=terminals,
+        commanded_ctrl=commanded_ctrl,
+        applied_ctrl=applied_ctrl,
+        actual_wrench=actual_wrench,
+        desired_wrench=desired_wrench,
+        prev_obs=prev_obs,
+        next_obs=next_obs,
+        reward_components=reward_components,
+    )
+
+
+jax.tree_util.register_pytree_node(
+    DummyStepOutput,
+    _dummy_step_output_flatten,
+    _dummy_step_output_unflatten,
+)
+
+
+def _dummy_step_config(
+    *,
+    num_envs: int,
+    max_episode_len: int,
+    res_dim: int = 0,
+    use_adaptive_approach: bool = False,
+):
+    del num_envs, res_dim, use_adaptive_approach
+    return DummyStepConfig(max_episode_len=max_episode_len)
+
+
+def test_compute_terminals_radius_threshold() -> None:
+    vec_env = pytest.importorskip("smallsat_sim.envs.vec_env")
+    states = jnp.zeros((2, 12), dtype=jnp.float32)
+    states = states.at[0, 0].set(0.1)
+    states = states.at[1, 0].set(0.31)
+
+    terminals = vec_env._compute_terminals(states)
+
+    assert bool(terminals[0])
+    assert not bool(terminals[1])
+
+
+def test_compute_penalties_residual_clip_and_terminal_terms() -> None:
+    vec_env = pytest.importorskip("smallsat_sim.envs.vec_env")
+    prev_states = jnp.zeros((2, 12), dtype=jnp.float32)
+    next_states = prev_states.at[:, 6].set(1.0)
+    terminals = jnp.array([True, False])
+    commanded_ctrl = jnp.array([[1.0, -1.0], [0.5, 0.5]], dtype=jnp.float32)
+    prev_residuals = jnp.array([[3.0, 4.0], [0.0, 0.0]], dtype=jnp.float32)
+
+    config = vec_env.VecEnvStepConfig(
+        mjx_model=None,
+        mjx_data_template=None,
+        mjx_batch_template=DummyBatch(qpos=jnp.zeros((2, 1), dtype=jnp.float32)),
+        init_qpos=jnp.zeros((2, 1), dtype=jnp.float32),
+        init_qvel=jnp.zeros((2, 1), dtype=jnp.float32),
+        num_envs=2,
+        max_start_offset=0.0,
+        control_decimation=1,
+        sigma_pos=1.0,
+        sigma_vel=1.0,
+        sigma_att=1.0,
+        sigma_angvel=1.0,
+        w_pos=1.0,
+        w_vel=1.0,
+        w_att=1.0,
+        w_angvel=1.0,
+        lam_fuel=1.0,
+        lam_speed_terminal=2.0,
+        lam_ang_speed_terminal=0.0,
+        lam_fuel_terminal=3.0,
+        lam_wrench_residual=4.0,
+        wrench_residual_tolerance=1.0,
+        wrench_residual_clip=2.0,
+        max_episode_len=8,
+        res_dim=2,
+        use_adaptive_approach=True,
+        collect_reward_components=False,
+        thruster_mixer_T=jnp.zeros((1, 1), dtype=jnp.float32),
+        base_disturbance_states=(),
+        base_perturbation_states=(),
+    )
+
+    penalties, details = vec_env._compute_penalties(
+        prev_states,
+        next_states,
+        terminals,
+        commanded_ctrl,
+        prev_residuals,
+        config,
+    )
+
+    expected = jnp.array([18.0, 1.0], dtype=jnp.float32)
+    assert jnp.allclose(penalties, expected)
+    assert jnp.allclose(details["penalty_fuel"], jnp.array([2.0, 1.0]))
+    assert jnp.allclose(details["penalty_terminal_speed"], jnp.array([2.0, 0.0]))
+    assert jnp.allclose(details["penalty_terminal_fuel"], jnp.array([6.0, 0.0]))
+    assert jnp.allclose(details["penalty_wrench_residual"], jnp.array([8.0, 0.0]))
+
+
+def test_run_functional_rollout_resets_and_reports_returns() -> None:
+    num_envs = 2
+    num_steps = 3
+
+    initial_batch = DummyBatch(qpos=jnp.zeros((num_envs, 1), dtype=jnp.float32))
+    initial_state = DummyState(
+        rng=jax.random.PRNGKey(0),
+        mjx_batch=initial_batch,
+    )
+    step_config = _dummy_step_config(num_envs=num_envs, max_episode_len=10)
+    initial_residuals = jnp.zeros((num_envs, 0), dtype=jnp.float32)
+    reference_waypoint = jnp.zeros((3,), dtype=jnp.float32)
+
+    def _vecenv_step_stub(state, actions, _waypoint, _config, _prev_residuals):
+        qpos = state.mjx_batch.qpos
+        terminals = qpos[:, 0] == 0.0
+        next_batch = state.mjx_batch.replace(qpos=qpos + 1.0)
+        next_state = state.replace(mjx_batch=next_batch)
+        rewards = jnp.full((num_envs,), 2.0, dtype=jnp.float32)
+        step_output = DummyStepOutput(
+            prev_states=qpos,
+            next_states=qpos + 1.0,
+            rewards=rewards,
+            terminals=terminals,
+            commanded_ctrl=actions,
+            applied_ctrl=actions,
+            actual_wrench=jnp.zeros((num_envs, 1), dtype=jnp.float32),
+            desired_wrench=jnp.zeros((num_envs, 1), dtype=jnp.float32),
+            prev_obs=qpos,
+            next_obs=qpos + 1.0,
+            reward_components={},
+        )
+        return next_state, step_output
+
+    def _vecenv_reset_stub(state, _config):
+        reset_qpos = jnp.full_like(state.mjx_batch.qpos, -1.0)
+        return state.replace(mjx_batch=state.mjx_batch.replace(qpos=reset_qpos))
+
+    def _prepare(_step, states, residuals, carry_extra):
+        del residuals
+        return states, carry_extra
+
+    def _sample(_step, policy_input, rng_key, carry_extra):
+        actions = jnp.zeros((num_envs, 1), dtype=jnp.float32)
+        values = jnp.ones((num_envs,), dtype=jnp.float32)
+        logp = jnp.zeros((num_envs,), dtype=jnp.float32)
+        return actions, values, logp, rng_key, carry_extra
+
+    def _post(_step, step_output, actions, residuals, reset_flag, carry_extra):
+        del step_output, actions, reset_flag
+        return residuals, None, carry_extra
+
+    def _bootstrap(_step, env_state, residuals, rng_key, carry_extra):
+        del env_state, residuals
+        return jnp.zeros((num_envs,), dtype=jnp.float32), rng_key, carry_extra
+
+    result = ru.run_functional_rollout(
+        step_config=step_config,
+        initial_state=initial_state,
+        initial_residuals=initial_residuals,
+        rng=initial_state.rng,
+        num_steps=num_steps,
+        reference_waypoint=reference_waypoint,
+        callbacks=ru.FunctionalRolloutCallbacks(
+            prepare_policy_input=_prepare,
+            sample_policy=_sample,
+            post_step=_post,
+            bootstrap_value=_bootstrap,
+        ),
+        state_features_fn=lambda batch, _: batch.qpos,
+        step_fn=_vecenv_step_stub,
+        reset_fn=_vecenv_reset_stub,
+    )
+
+    assert bool(result.done_flags[0].all())
+    assert jnp.allclose(result.episode_returns[0], jnp.full((num_envs,), 2.0))
+    assert jnp.allclose(result.episode_returns[1], jnp.zeros((num_envs,)))
+    assert jnp.allclose(result.episode_returns[2], jnp.full((num_envs,), 4.0))
+    assert jnp.allclose(result.final_state.mjx_batch.qpos, jnp.ones((num_envs, 1)))

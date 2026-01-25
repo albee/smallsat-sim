@@ -61,16 +61,11 @@ class PPO(BaseAgent):
         # Load hyperparams
         self._load_ppo_hyperparams()
 
-        # Set the number of training epochs # @Josh: tune
-        self.actor_training_epochs = 10
-        self.critic_training_epochs = 10
-        self.actor_critic_training_epochs = 10
-
         # Total batch size
         self.batch_size = self.env.num_envs * self.steps_per_epoch
 
-        # Define the size of each mini-batch
-        self.num_minibatches = min(16, self.batch_size)
+        # Define the size of each mini-batch based on config, capped by batch size.
+        self.num_minibatches = max(1, min(self.num_minibatches, self.batch_size))
 
         # Ensure fixed-size minibatches to avoid recompilation and enable JIT friendliness
         desired_minibatches = self.num_minibatches
@@ -113,9 +108,6 @@ class PPO(BaseAgent):
             ),
         )
 
-        # Set the clip ratio and the target kl divergence
-        self.clip_ratio = 0.2
-        self.target_kl = 0.01
         self._jit_warmup_done = False
 
     def update_policy_gradient(
@@ -220,7 +212,6 @@ class PPO(BaseAgent):
                     return critic_loss_fn(model, returns, obs_residuals)
 
                 critic_loss, grads = nnx.value_and_grad(loss_fn)(critic)
-
                 optimizer.update(grads)
 
         return critic_loss
@@ -246,13 +237,6 @@ class PPO(BaseAgent):
                 self.critic,
                 self.critic_optimizer,
             )
-        )
-
-        # Debug: report whether clipping is enabled and whether rollout-time
-        # values were provided (preferred). This print runs outside JIT so it
-        # helps quickly verify calling code/path.
-        print(
-            f"[PPO DEBUG] use_value_clip={self.use_value_clip} value_clip_coef={self.value_clip_coef} values_old_provided={values_old is not None}"
         )
 
         # Use provided stored (old) values if available, otherwise compute
@@ -352,29 +336,23 @@ class PPO(BaseAgent):
         """
         Load PPO-specific hyperparams.
         """
-        self.steps_per_epoch = self.env.env_cfg.control.RL.PPO.steps_per_epoch
-        self.epochs = self.env.env_cfg.control.RL.PPO.epochs
-        self.max_ep_len = self.env.env_cfg.control.RL.PPO.max_ep_len
-        self.gamma = self.env.env_cfg.control.RL.PPO.gamma
-        self.lam = self.env.env_cfg.control.RL.PPO.lam
-        self.actor_lr = self.env.env_cfg.control.RL.PPO.actor_lr
-        self.critic_lr = self.env.env_cfg.control.RL.PPO.critic_lr
-        self.entropy_coef = self.env.env_cfg.control.RL.PPO.entropy_coef
-        # Optional value clipping hyperparameters
-        try:
-            self.use_value_clip = bool(
-                getattr(self.env.env_cfg.control.RL.PPO, "use_value_clip")
-            )
-        except Exception:
-            # Turn value clipping on by default.
-            self.use_value_clip = True
-
-        try:
-            self.value_clip_coef = float(
-                getattr(self.env.env_cfg.control.RL.PPO, "value_clip_coef")
-            )
-        except Exception:
-            self.value_clip_coef = 0.2
+        cfg = self.env.env_cfg.control.RL.PPO
+        self.steps_per_epoch = cfg.steps_per_epoch
+        self.epochs = cfg.epochs
+        self.max_ep_len = cfg.max_ep_len
+        self.gamma = cfg.gamma
+        self.lam = cfg.lam
+        self.actor_lr = cfg.actor_lr
+        self.critic_lr = cfg.critic_lr
+        self.entropy_coef = cfg.entropy_coef
+        self.actor_training_epochs = int(cfg.actor_training_epochs)
+        self.critic_training_epochs = int(cfg.critic_training_epochs)
+        self.actor_critic_training_epochs = int(cfg.actor_critic_training_epochs)
+        self.num_minibatches = int(cfg.num_minibatches)
+        self.clip_ratio = float(cfg.clip_ratio)
+        self.target_kl = float(cfg.target_kl)
+        self.use_value_clip = bool(cfg.use_value_clip)
+        self.value_clip_coef = float(cfg.value_clip_coef)
 
     def _log(
         self,

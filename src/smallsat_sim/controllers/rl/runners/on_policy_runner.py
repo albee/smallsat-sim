@@ -1,7 +1,5 @@
 import os
 import time
-from dataclasses import dataclass
-from typing import Any, Callable, Optional
 
 import jax
 import jax.numpy as jnp
@@ -9,15 +7,12 @@ from flax import nnx
 import optax
 import wandb
 
-from smallsat_sim.envs.vec_env import (
-    VecEnv,
-    VecEnvState,
-    VecEnvStepConfig,
-    VecEnvStepOutput,
-    vecenv_step,
-    vecenv_reset_to_config,
-    _compute_state_features,
+from smallsat_sim.controllers.rl.runners.rollout_utils import (
+    AdaptationRolloutExtra,
+    FunctionalRolloutCallbacks,
+    run_functional_rollout,
 )
+from smallsat_sim.envs.vec_env import VecEnv, _compute_state_features
 from smallsat_sim.planners.oracle.oracle_rl import OraclePlannerRL
 from smallsat_sim.controllers.pd.vectorized_controller import VectorizedPDController
 from smallsat_sim.controllers.rl.algorithms.vpg import VPG
@@ -42,344 +37,6 @@ from smallsat_sim.utils.helpers_jax import (
     calc_extrinsic_error,
 )
 from smallsat_sim.utils.wandb_config import setup_wandb
-
-
-@dataclass
-class FunctionalRolloutCallbacks:
-    """
-    Collection of callables used by `run_functional_rollout` to interact with
-    policy logic outside the environment stepping loop.
-
-    Each callable receives the current step index together with the evolving
-    carry so callers can maintain additional per-rollout state (e.g. history
-    buffers for the adaptation module).
-    """
-
-    prepare_policy_input: Callable[
-        [int, jnp.ndarray, jnp.ndarray, Any], tuple[jnp.ndarray, Any]
-    ]
-    sample_policy: Callable[
-        [int, jnp.ndarray, jnp.ndarray, Any],
-        tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, Any],
-    ]
-    post_step: Callable[
-        [int, VecEnvStepOutput, jnp.ndarray, jnp.ndarray, bool, Any],
-        tuple[jnp.ndarray, Any, Any],
-    ]
-    bootstrap_value: Callable[
-        [int, VecEnvState, jnp.ndarray, jnp.ndarray, Any],
-        tuple[jnp.ndarray, jnp.ndarray, Any],
-    ]
-
-
-@dataclass
-class FunctionalRolloutResult:
-    """
-    Batched outputs produced by `run_functional_rollout`.
-    """
-
-    step_outputs: VecEnvStepOutput
-    actions: jnp.ndarray
-    values: jnp.ndarray
-    logp: jnp.ndarray
-    residuals: jnp.ndarray
-    episode_returns: jnp.ndarray
-    done_flags: jnp.ndarray
-    bootstrap_values: jnp.ndarray
-    aux: Any
-    final_state: VecEnvState
-    final_residuals: jnp.ndarray
-    final_rng: jnp.ndarray
-    final_extra: Any
-
-
-@dataclass
-class AdaptationRolloutExtra:
-    history: jnp.ndarray
-    counts: jnp.ndarray
-
-
-def _adaptation_rollout_extra_flatten(extra: "AdaptationRolloutExtra"):
-    children = (extra.history, extra.counts)
-    return children, None
-
-
-def _adaptation_rollout_extra_unflatten(aux_data, children):
-    history, counts = children
-    return AdaptationRolloutExtra(history=history, counts=counts)
-
-
-jax.tree_util.register_pytree_node(
-    AdaptationRolloutExtra,
-    _adaptation_rollout_extra_flatten,
-    _adaptation_rollout_extra_unflatten,
-)
-
-
-@dataclass
-class _FunctionalRolloutStep:
-    step_output: VecEnvStepOutput
-    actions: jnp.ndarray
-    values: jnp.ndarray
-    logp: jnp.ndarray
-    residuals: jnp.ndarray
-    episode_return: jnp.ndarray
-    done_flag: jnp.ndarray
-    bootstrap_value: jnp.ndarray
-    aux: Any
-
-
-def _functional_rollout_step_flatten(step: "_FunctionalRolloutStep"):
-    children = (
-        step.step_output,
-        step.actions,
-        step.values,
-        step.logp,
-        step.residuals,
-        step.episode_return,
-        step.done_flag,
-        step.bootstrap_value,
-        step.aux,
-    )
-    return children, None
-
-
-def _functional_rollout_step_unflatten(aux_data, children):
-    (
-        step_output,
-        actions,
-        values,
-        logp,
-        residuals,
-        episode_return,
-        done_flag,
-        bootstrap_value,
-        aux,
-    ) = children
-    return _FunctionalRolloutStep(
-        step_output=step_output,
-        actions=actions,
-        values=values,
-        logp=logp,
-        residuals=residuals,
-        episode_return=episode_return,
-        done_flag=done_flag,
-        bootstrap_value=bootstrap_value,
-        aux=aux,
-    )
-
-
-jax.tree_util.register_pytree_node(
-    _FunctionalRolloutStep,
-    _functional_rollout_step_flatten,
-    _functional_rollout_step_unflatten,
-)
-
-
-def run_functional_rollout(
-    *,
-    step_config: VecEnvStepConfig,
-    initial_state: VecEnvState,
-    initial_residuals: jnp.ndarray,
-    rng: jnp.ndarray,
-    num_steps: int,
-    reference_waypoint: jnp.ndarray,
-    callbacks: FunctionalRolloutCallbacks,
-    extra: Any = None,
-) -> FunctionalRolloutResult:
-    """
-    Advance the vectorised environment purely functionally for ``num_steps``.
-
-    Invariants:
-    - The helper mirrors the imperative `VecEnv.transition` semantics, including
-      the `control_decimation` inner loop and per-epoch resets when all
-      environments terminate or the configured horizon is reached.
-    - `initial_residuals` must have shape `(num_envs, res_dim)` (or `(num_envs, 0)`
-      when residuals are disabled).
-    - Callback implementations must be side-effect free; any mutable state should
-      be threaded via the `extra` carry.
-    - The returned `step_outputs` contain the per-step state snapshots needed to
-      reconstruct rewards, metrics, and logging payloads without reaching back
-      into the imperative environment.
-    """
-
-    num_envs = initial_state.mjx_batch.qpos.shape[0]
-
-    def _initial_episode_state():
-        return (
-            initial_state,
-            initial_residuals,
-            rng,
-            extra,
-            jnp.zeros((num_envs,), dtype=jnp.float32),
-            jnp.array(0, dtype=jnp.int32),
-        )
-
-    def _prepare_policy_input(
-        step_idx: int, states: jnp.ndarray, residuals: jnp.ndarray, carry_extra: Any
-    ):
-        return callbacks.prepare_policy_input(step_idx, states, residuals, carry_extra)
-
-    def _sample_policy(
-        step_idx: int,
-        policy_input: jnp.ndarray,
-        rng_key: jnp.ndarray,
-        carry_extra: Any,
-    ):
-        return callbacks.sample_policy(step_idx, policy_input, rng_key, carry_extra)
-
-    def _post_step(
-        step_idx: int,
-        step_output: VecEnvStepOutput,
-        actions: jnp.ndarray,
-        residuals: jnp.ndarray,
-        reset_pending: bool,
-        carry_extra: Any,
-    ):
-        return callbacks.post_step(
-            step_idx, step_output, actions, residuals, reset_pending, carry_extra
-        )
-
-    def _bootstrap_value(
-        step_idx: int,
-        env_state: VecEnvState,
-        residuals: jnp.ndarray,
-        rng_key: jnp.ndarray,
-        carry_extra: Any,
-    ):
-        return callbacks.bootstrap_value(
-            step_idx, env_state, residuals, rng_key, carry_extra
-        )
-
-    def _scan_body(
-        carry: tuple[
-            VecEnvState, jnp.ndarray, jnp.ndarray, Any, jnp.ndarray, jnp.ndarray
-        ],
-        step_idx: int,
-    ):
-        env_state, residuals, rng_key, carry_extra, ep_ret, ep_len = carry
-
-        states_curr = _compute_state_features(env_state.mjx_batch, reference_waypoint)
-        policy_input, carry_extra = _prepare_policy_input(
-            step_idx, states_curr, residuals, carry_extra
-        )
-        actions, values, logp, rng_key, carry_extra = _sample_policy(
-            step_idx, policy_input, rng_key, carry_extra
-        )
-
-        next_env_state, step_output = vecenv_step(
-            env_state,
-            actions,
-            reference_waypoint,
-            step_config,
-            residuals,
-        )
-        def _log_nan(_):
-            jax.debug.print("NaN in next_obs at step {s}", s=step_idx)
-            return jnp.array(0, dtype=jnp.int32)
-
-        _ = jax.lax.cond(
-            jnp.isnan(step_output.next_obs).any(),
-            _log_nan,
-            lambda _: jnp.array(0, dtype=jnp.int32),
-            operand=None,
-        )
-
-        ep_ret_next = ep_ret + step_output.rewards
-        ep_len_next = ep_len + 1
-
-        all_terminal = jnp.all(step_output.terminals)
-        timeout = ep_len_next >= step_config.max_episode_len
-        epoch_last = jnp.equal(step_idx, num_steps - 1)
-        done_without_epoch = jnp.logical_or(all_terminal, timeout)
-        done_flag = jnp.logical_or(done_without_epoch, epoch_last)
-
-        next_residuals, step_aux, carry_extra = _post_step(
-            step_idx, step_output, actions, residuals, done_without_epoch, carry_extra
-        )
-
-        bootstrap_values, rng_key, carry_extra = jax.lax.cond(
-            epoch_last,
-            lambda args: _bootstrap_value(step_idx, *args),
-            lambda args: (jnp.zeros_like(step_output.rewards), args[2], args[3]),
-            operand=(next_env_state, next_residuals, rng_key, carry_extra),
-        )
-
-        episode_return = jax.lax.cond(
-            done_flag,
-            lambda _: ep_ret_next,
-            lambda _: jnp.zeros_like(ep_ret_next),
-            operand=None,
-        )
-
-        def _reset_after_done(_):
-            reset_state = vecenv_reset_to_config(next_env_state, step_config)
-            zero_residuals = jnp.zeros_like(initial_residuals)
-            zero_return = jnp.zeros((num_envs,), dtype=ep_ret_next.dtype)
-            zero_length = jnp.array(0, dtype=ep_len_next.dtype)
-            return reset_state, zero_residuals, zero_return, zero_length
-
-        next_env_state, next_residuals, ep_ret_final, ep_len_final = jax.lax.cond(
-            jnp.logical_and(done_without_epoch, jnp.logical_not(epoch_last)),
-            _reset_after_done,
-            lambda _: (next_env_state, next_residuals, ep_ret_next, ep_len_next),
-            operand=None,
-        )
-
-        step_record = _FunctionalRolloutStep(
-            step_output=step_output,
-            actions=actions,
-            values=values,
-            logp=logp,
-            residuals=next_residuals,
-            episode_return=episode_return,
-            done_flag=done_flag,
-            bootstrap_value=bootstrap_values,
-            aux=step_aux,
-        )
-
-        new_carry = (
-            next_env_state,
-            next_residuals,
-            rng_key,
-            carry_extra,
-            ep_ret_final,
-            ep_len_final,
-        )
-        return new_carry, step_record
-
-    initial_carry = _initial_episode_state()
-    (final_state, final_residuals, final_rng, final_extra, _, _), steps = jax.lax.scan(
-        _scan_body,
-        initial_carry,
-        jnp.arange(num_steps, dtype=jnp.int32),
-    )
-
-    step_outputs = steps.step_output
-    actions = steps.actions
-    values = steps.values
-    logp = steps.logp
-    residuals = steps.residuals
-    episode_returns = steps.episode_return
-    done_flags = steps.done_flag
-    bootstrap_values = steps.bootstrap_value
-    aux = steps.aux
-
-    return FunctionalRolloutResult(
-        step_outputs=step_outputs,
-        actions=actions,
-        values=values,
-        logp=logp,
-        residuals=residuals,
-        episode_returns=episode_returns,
-        done_flags=done_flags,
-        bootstrap_values=bootstrap_values,
-        aux=aux,
-        final_state=final_state,
-        final_residuals=final_residuals,
-        final_rng=final_rng,
-        final_extra=final_extra,
-    )
 
 
 class OnPolicyRunner(object):
@@ -412,16 +69,19 @@ class OnPolicyRunner(object):
             nnx.value_and_grad(self.am_loss_fn), static_argnums=()
         )
 
-        rl_cfg = self.env.env_cfg.control.RL
+        self.rl_cfg = self.env.env_cfg.control.RL
+        # Optional regression check: compare one functional step against the
+        # imperative legacy transition path. This is useful while refactoring
+        # but should typically stay disabled during normal training
         self._functional_check_enabled = bool(
-            getattr(rl_cfg, "verify_functional_rollout", False)
+            getattr(self.rl_cfg, "verify_functional_rollout", False)
         )
         self._functional_check_ran = False
         self._functional_check_atol = float(
-            getattr(rl_cfg, "verify_functional_rollout_atol", 1e-4)
+            getattr(self.rl_cfg, "verify_functional_rollout_atol", 1e-4)
         )
         self._functional_check_rtol = float(
-            getattr(rl_cfg, "verify_functional_rollout_rtol", 1e-3)
+            getattr(self.rl_cfg, "verify_functional_rollout_rtol", 1e-3)
         )
 
         # Path to save the checkpoints
@@ -657,22 +317,17 @@ class OnPolicyRunner(object):
             epoch_start_time = time.perf_counter()
             epoch_key = self._take_keys()
             actor_key = epoch_key
-            # Apply perturbations ramp-up
-            ramp_start = max(int(self.epochs * 0.1), 1)
-            if self.env.train_with_failures and epoch >= ramp_start:
-                ramp_duration = max(self.epochs - ramp_start, 1)
-                ramp_progress = min((epoch - ramp_start) / ramp_duration, 1.0)
+            # Apply perturbations
+            if self.env.train_with_failures:
                 self.env.reset_perturbations()  # avoid accumulating failures across epochs
                 perturb_key, disturb_key, actor_key = jax.random.split(epoch_key, 3)
-                self.env.apply_random_perturbations( # @Josh
+                self.env.apply_random_perturbations(
                     key=perturb_key,
-                    fraction_perturbed_envs=0.05
-                    + (0.3 - 0.01) * max(ramp_progress, 0.0),
+                    fraction_perturbed_envs=0.4,
                 )
-                self.env.apply_random_disturbance( # @Josh
+                self.env.apply_random_disturbance(
                     key=disturb_key,
-                    fraction_disturbed_envs=0.05
-                    + (0.05 - 0.01) * max(ramp_progress, 0.0),
+                    fraction_disturbed_envs=0.1,
                 )
 
             # Accumulate rollout stats to emit once per epoch
@@ -758,6 +413,8 @@ class OnPolicyRunner(object):
                 and not self._functional_check_ran
                 and rollout_result.actions.shape[0] > 0
             ):
+                # Run the legacy-vs-functional verification once per runner
+                # invocation to avoid adding noticeable overhead to training
                 self.env.verify_functional_step(
                     initial_state,
                     rollout_result.actions[0],
@@ -1024,17 +681,15 @@ class OnPolicyRunner(object):
         state_action_dim = self.state_action_dim
 
         for epoch in range(self.epochs):
-            ramp_start = max(int(self.epochs * 0.1), 1)
-            ramp_duration = max(self.epochs - ramp_start, 1)
-            ramp_progress = min((epoch - ramp_start) / ramp_duration, 1.0)
             self.env.reset_perturbations()
-            self.env.apply_random_perturbations( # @Josh
+            self.env.apply_random_perturbations(
                 key=subkeys_train[epoch],
-                fraction_perturbed_envs=0.05 + (0.5 - 0.05) * max(ramp_progress, 0.0),
+                fraction_perturbed_envs=0.4,
+                perturbation_distribution=jnp.array([0.2, 0.2, 0.2, 0.2, 0.2, 0.2]),
             )
-            self.env.apply_random_disturbance( # @Josh
+            self.env.apply_random_disturbance(
                 key=subkeys_train[epoch],
-                fraction_disturbed_envs=0.05 + (0.15 - 0.05) * max(ramp_progress, 0.0),
+                fraction_disturbed_envs=0.1,
             )
 
             step_config = self.env.build_step_config(max_episode_len=self.max_ep_len)
@@ -1187,7 +842,6 @@ class OnPolicyRunner(object):
             angle_vals = jnp.asarray(angle_vals)
             extrinsic_vals = jnp.asarray(extrinsic_vals)
 
-            num_nn_epochs = 100
             split_key = self._take_keys()
             (
                 X_train,
@@ -1209,7 +863,7 @@ class OnPolicyRunner(object):
             last_val_loss = None
             am_train_loss_value = 0.0
 
-            for nn_epoch in range(num_nn_epochs):
+            for nn_epoch in range(self.rl_cfg.am_epochs):
                 am_train_loss, grads = self.jitted_batched_am_loss_and_grad(
                     self.am,
                     X_train,
@@ -1535,7 +1189,14 @@ class OnPolicyRunner(object):
 
     def _generate_experience(self) -> None:
         """
-        Roll out an episode where the actions are computed from a PD controller that serves as training data.
+        Roll out an episode where the actions are computed from a PD controller
+        that serves as pretraining data.
+
+        Note:
+        This method intentionally uses the legacy imperative
+        ``self.env.transition(...)`` pipeline. Keeping it in place provides a
+        stable reference path for pretraining and regression comparisons while
+        the functional rollout refactor matures.
         """
         # Check if pretraining data already exists
         file_path = os.path.join(self.ckpt_dir, self.pretraining_data_file_name)
