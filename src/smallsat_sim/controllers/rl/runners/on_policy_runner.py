@@ -331,7 +331,7 @@ class OnPolicyRunner(object):
         # Build phases: nominal -> sequential failures -> disturbances
         phases, total_epochs = build_failure_curriculum(
             train_with_failures=bool(self.env.train_with_failures),
-            fallback_epochs=int(self.epochs),
+            fallback_epochs=nominal_epochs,
             nominal_epochs=nominal_epochs,
             phase_epochs=phase_epochs,
             failure_fraction=failure_fraction,
@@ -1216,11 +1216,12 @@ class OnPolicyRunner(object):
                 eval_key = subkeys_eval[eval_idx]
                 self.env.apply_random_perturbations(
                     key=eval_key,
-                    fraction_perturbed_envs=0.5,
+                    fraction_perturbed_envs=0.4,
+                    perturbation_distribution=jnp.array([0.2, 0.2, 0.2, 0.2, 0.2]),
                 )
                 self.env.apply_random_disturbance(
                     key=eval_key,
-                    fraction_disturbed_envs=0.15,
+                    fraction_disturbed_envs=0.1,
                 )
 
             step_config = self.env.build_step_config(
