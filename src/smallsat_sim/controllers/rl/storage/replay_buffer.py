@@ -193,7 +193,7 @@ class ReplayBuffer(object):
 
         tdres_mean = jnp.mean(tdres, axis=0)
         tdres_std = jnp.std(tdres, axis=0)
-        tdres = (tdres - tdres_mean) / tdres_std
+        tdres = (tdres - tdres_mean) / (tdres_std + 1e-8)
 
         data = dict(
             obs=obs,

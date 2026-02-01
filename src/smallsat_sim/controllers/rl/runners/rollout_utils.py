@@ -268,14 +268,18 @@ def run_functional_rollout(
         timeout = ep_len_next >= step_config.max_episode_len
         epoch_last = jnp.equal(step_idx, num_steps - 1)
         done_without_epoch = jnp.logical_or(all_terminal, timeout)
-        done_flag = jnp.logical_or(done_without_epoch, epoch_last)
+        done_flag = done_without_epoch
 
         next_residuals, step_aux, carry_extra = _post_step(
             step_idx, step_output, actions, residuals, done_without_epoch, carry_extra
         )
 
+        bootstrap_condition = jnp.logical_and(
+            jnp.logical_or(timeout, epoch_last),
+            jnp.logical_not(all_terminal),
+        )
         bootstrap_values, rng_key, carry_extra = jax.lax.cond(
-            epoch_last,
+            bootstrap_condition,
             lambda args: _bootstrap_value(step_idx, *args),
             lambda args: (jnp.zeros_like(step_output.rewards), args[2], args[3]),
             operand=(next_env_state, next_residuals, rng_key, carry_extra),

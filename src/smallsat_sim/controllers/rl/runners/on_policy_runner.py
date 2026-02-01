@@ -643,6 +643,10 @@ class OnPolicyRunner(object):
                             )
                             episode_counter += 1
 
+                if buffer.path_start_idx < buffer.ptr:
+                    # Finalize the trailing slice that ends at the end of the scan.
+                    buffer.end_traj(bootstrap_vals[-1])
+
                 buffer_time = time.perf_counter() - buffer_start
 
                 epoch_reward_components = (
@@ -1032,44 +1036,70 @@ class OnPolicyRunner(object):
                 )
                 continue
 
-            history = jnp.zeros((num_envs, history_len, state_action_dim))
-            counts = jnp.zeros((num_envs,), dtype=jnp.int32)
-            tracking_vals = []
-            angle_vals = []
-            extrinsic_vals = []
+            obs_flat = next_obs.reshape(-1, next_obs.shape[-1])
+            tracking_vals = calc_lateral_tracking_error(
+                obs_flat, self.planner
+            ).reshape(self.steps_per_epoch, num_envs)
+            angle_vals = jnp.degrees(calc_attitude_error(obs_flat)).reshape(
+                self.steps_per_epoch, num_envs
+            )
+            tracking_vals = tracking_vals.mean(axis=1)
+            angle_vals = angle_vals.mean(axis=1)
 
-            for step_idx in range(self.steps_per_epoch):
-                combined = jnp.concatenate(
-                    [step_outputs.prev_states[step_idx], actions_traj[step_idx]], axis=1
+            def _history_scan(carry, scan_inputs):
+                history, counts = carry
+                step_idx, prev_states_step, actions_step, actual_step, done_step = (
+                    scan_inputs
                 )
+
+                combined = jnp.concatenate([prev_states_step, actions_step], axis=1)
                 history = jnp.roll(history, shift=-1, axis=1)
                 history = history.at[:, -1, :].set(combined)
                 counts = jnp.minimum(counts + 1, history_len)
-                history_full = history_mask[step_idx]
+                history_full = counts >= history_len
 
-                obs_step = next_obs[step_idx]
-                actual_step = actual_wrench[step_idx]
-                extrinsic_est = None
-                if bool(jnp.all(history_full)):
-                    extrinsic_est = self.adaptation_module(history)
-                tracking_mean, angle_mean, extrinsic_mean = self._compute_mean_errors(
-                    obs_step,
-                    actual_step,
-                    extrinsic_est,
+                all_full = jnp.all(history_full)
+                extrinsic_est = jax.lax.cond(
+                    all_full,
+                    lambda _: self.adaptation_module(history),
+                    lambda _: jnp.zeros_like(actual_step),
+                    operand=None,
                 )
-                tracking_vals.append(tracking_mean)
-                angle_vals.append(angle_mean)
-                extrinsic_vals.append(
-                    0.0 if extrinsic_mean is None else float(extrinsic_mean)
+                extrinsic_err = jax.lax.cond(
+                    all_full,
+                    lambda _: calc_extrinsic_error(extrinsic_est, actual_step),
+                    lambda _: jnp.zeros((num_envs,), dtype=actual_step.dtype),
+                    operand=None,
+                )
+                extrinsic_mean = extrinsic_err.mean()
+
+                reset_flag = jnp.logical_and(
+                    done_step, step_idx != (self.steps_per_epoch - 1)
+                )
+                history, counts = jax.lax.cond(
+                    reset_flag,
+                    lambda _: (
+                        jnp.zeros_like(history),
+                        jnp.zeros_like(counts),
+                    ),
+                    lambda _: (history, counts),
+                    operand=None,
                 )
 
-                if bool(done_flags[step_idx]) and step_idx != self.steps_per_epoch - 1:
-                    history = jnp.zeros((num_envs, history_len, state_action_dim))
-                    counts = jnp.zeros((num_envs,), dtype=jnp.int32)
+                return (history, counts), extrinsic_mean
 
-            tracking_vals = jnp.asarray(tracking_vals)
-            angle_vals = jnp.asarray(angle_vals)
-            extrinsic_vals = jnp.asarray(extrinsic_vals)
+            scan_inputs = (
+                jnp.arange(self.steps_per_epoch, dtype=jnp.int32),
+                step_outputs.prev_states,
+                actions_traj,
+                actual_wrench,
+                done_flags,
+            )
+            init_history = jnp.zeros((num_envs, history_len, state_action_dim))
+            init_counts = jnp.zeros((num_envs,), dtype=jnp.int32)
+            (_, _), extrinsic_vals = jax.lax.scan(
+                _history_scan, (init_history, init_counts), scan_inputs
+            )
 
             split_key = self._take_keys()
             (

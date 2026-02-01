@@ -558,36 +558,78 @@ def prepare_step_functional(
         failure_value = getattr(new_state, "failure_value", None)
         sim_time = state.mjx_batch.time
 
-        if failure_value == PerturbationStatus.STUCK_OFF.value:
-            ctrl, tmp_state = stuck_off_apply_from_state(new_state, ctrl, sim_time)
-            if tmp_state is not None:
-                new_state = tmp_state
-        elif failure_value == PerturbationStatus.STUCK_ON.value:
-            ctrl, tmp_state = stuck_on_apply_from_state(new_state, ctrl, sim_time)
-            if tmp_state is not None:
-                new_state = tmp_state
-        elif failure_value in (
-            PerturbationStatus.FAULTY_VALVE.value,
-            PerturbationStatus.SATURATED_THRUST.value,
-            PerturbationStatus.THRUST_INSTABILITY.value,
-        ):
-            ctrl, tmp_state = gp_apply_from_state(
-                new_state,
-                ctrl,
-                sim_time,
-                failure_value,
-            )
-            if tmp_state is not None:
-                new_state = tmp_state
+        if failure_value is None:
+            failure_value_arr = jnp.asarray(-1, dtype=jnp.int32)
         else:
-            # As a fallback, pass through the stuck_off/on helpers so that any
-            # mixed-status mask still receives the appropriate adjustments.
-            ctrl, tmp_state = stuck_off_apply_from_state(new_state, ctrl, sim_time)
-            if tmp_state is not None:
-                new_state = tmp_state
-            ctrl, tmp_state = stuck_on_apply_from_state(new_state, ctrl, sim_time)
-            if tmp_state is not None:
-                new_state = tmp_state
+            failure_value_arr = jnp.asarray(failure_value)
+
+        is_stuck_off = failure_value_arr == PerturbationStatus.STUCK_OFF.value
+        is_stuck_on = failure_value_arr == PerturbationStatus.STUCK_ON.value
+        is_gp = jnp.logical_or(
+            failure_value_arr == PerturbationStatus.FAULTY_VALVE.value,
+            jnp.logical_or(
+                failure_value_arr == PerturbationStatus.SATURATED_THRUST.value,
+                failure_value_arr == PerturbationStatus.THRUST_INSTABILITY.value,
+            ),
+        )
+        mode = jnp.where(
+            is_stuck_off,
+            jnp.array(0, dtype=jnp.int32),
+            jnp.where(
+                is_stuck_on,
+                jnp.array(1, dtype=jnp.int32),
+                jnp.where(
+                    is_gp,
+                    jnp.array(2, dtype=jnp.int32),
+                    jnp.array(3, dtype=jnp.int32),
+                ),
+            ),
+        )
+
+        def _branch_stuck_off(operand):
+            state_in, ctrl_in, time_in, _ = operand
+            ctrl_out, state_out = stuck_off_apply_from_state(state_in, ctrl_in, time_in)
+            return state_out, ctrl_out
+
+        def _branch_stuck_on(operand):
+            state_in, ctrl_in, time_in, _ = operand
+            ctrl_out, state_out = stuck_on_apply_from_state(state_in, ctrl_in, time_in)
+            return state_out, ctrl_out
+
+        def _branch_gp(operand):
+            state_in, ctrl_in, time_in, failure_in = operand
+            ctrl_out, state_out = gp_apply_from_state(
+                state_in,
+                ctrl_in,
+                time_in,
+                failure_in,
+            )
+            return state_out, ctrl_out
+
+        def _branch_fallback(operand):
+            state_in, ctrl_in, time_in, _ = operand
+            ctrl_mid, state_mid = stuck_off_apply_from_state(
+                state_in,
+                ctrl_in,
+                time_in,
+            )
+            ctrl_out, state_out = stuck_on_apply_from_state(
+                state_mid,
+                ctrl_mid,
+                time_in,
+            )
+            return state_out, ctrl_out
+
+        new_state, ctrl = jax.lax.switch(
+            mode,
+            (
+                _branch_stuck_off,
+                _branch_stuck_on,
+                _branch_gp,
+                _branch_fallback,
+            ),
+            (new_state, ctrl, sim_time, failure_value_arr),
+        )
 
         updated_perturbations.append(new_state)
 
@@ -1317,8 +1359,8 @@ class VecEnv(BaseEnv):
         if num_perturbed == 0:
             return
 
-        # Split the key for permutation and for subkeys for perturbations
-        perm_key, subkeys_key = jax.random.split(key, 2)
+        # Split the key for permutation, categorical sampling, and perturbation subkeys
+        perm_key, cat_key, subkeys_key = jax.random.split(key, 3)
         subkeys = jax.random.split(subkeys_key, 5)
 
         # Get a random permutation of all environment indices
@@ -1326,37 +1368,17 @@ class VecEnv(BaseEnv):
         permuted_indices = jax.random.permutation(perm_key, env_indices)
         selected_indices = permuted_indices[:num_perturbed]
 
-        # Determine number of environments for each perturbation based on distribution
-        total_weight = jnp.sum(perturbation_distribution)  # should be 1.0
-        base_counts = jnp.floor(
-            num_perturbed * perturbation_distribution / total_weight
-        ).astype(jnp.int32)
-        count_sum = int(jnp.sum(base_counts))
-        remainder = num_perturbed - count_sum
+        # Sample per-env perturbation types without host-side partitioning
+        total_weight = jnp.sum(perturbation_distribution)
+        safe_dist = jnp.where(total_weight > 0, perturbation_distribution / total_weight, perturbation_distribution)
+        logits = jnp.log(safe_dist + 1e-8)
+        categories = jax.random.categorical(cat_key, logits, shape=(num_perturbed,))
 
-        # Compute fractional parts for extra allocation
-        fractional_parts = (
-            num_perturbed * perturbation_distribution / total_weight
-        ) - base_counts
-        sorted_indices = jnp.argsort(-fractional_parts)  # indices in descending order
-        if remainder > 0:
-            base_counts = base_counts.at[sorted_indices[:remainder]].add(1)
-
-        # Partition the selected indices by counts into index arrays
-        cumulative = 0
-        indices_list = []
-        for count in base_counts.tolist():
-            indices_for_perturbation = selected_indices[cumulative : cumulative + count]
-            cumulative += count
-            indices_list.append(indices_for_perturbation)
-
-        (
-            stuck_off_thruster_envs,
-            stuck_on_thruster_envs,
-            faulty_valve_envs,
-            saturated_thrust_envs,
-            thrust_instability_envs,
-        ) = indices_list
+        stuck_off_thruster_envs = selected_indices[categories == 0]
+        stuck_on_thruster_envs = selected_indices[categories == 1]
+        faulty_valve_envs = selected_indices[categories == 2]
+        saturated_thrust_envs = selected_indices[categories == 3]
+        thrust_instability_envs = selected_indices[categories == 4]
 
         # Apply the perturbations with respective subkeys
         self.perturbations.perturbations[0].stuck_off_thruster(

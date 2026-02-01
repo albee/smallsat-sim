@@ -284,3 +284,86 @@ def test_run_functional_rollout_resets_and_reports_returns() -> None:
     assert jnp.allclose(result.episode_returns[1], jnp.zeros((num_envs,)))
     assert jnp.allclose(result.episode_returns[2], jnp.full((num_envs,), 4.0))
     assert jnp.allclose(result.final_state.mjx_batch.qpos, jnp.ones((num_envs, 1)))
+
+
+def test_run_functional_rollout_bootstraps_timeouts() -> None:
+    num_envs = 2
+    num_steps = 5
+    max_episode_len = 2
+
+    initial_batch = DummyBatch(qpos=jnp.zeros((num_envs, 1), dtype=jnp.float32))
+    initial_state = DummyState(
+        rng=jax.random.PRNGKey(0),
+        mjx_batch=initial_batch,
+    )
+    step_config = _dummy_step_config(num_envs=num_envs, max_episode_len=max_episode_len)
+    initial_residuals = jnp.zeros((num_envs, 0), dtype=jnp.float32)
+    reference_waypoint = jnp.zeros((3,), dtype=jnp.float32)
+
+    def _vecenv_step_stub(state, actions, _waypoint, _config, _prev_residuals):
+        qpos = state.mjx_batch.qpos
+        terminals = jnp.zeros((num_envs,), dtype=bool)
+        next_batch = state.mjx_batch.replace(qpos=qpos + 1.0)
+        next_state = state.replace(mjx_batch=next_batch)
+        rewards = jnp.ones((num_envs,), dtype=jnp.float32)
+        step_output = DummyStepOutput(
+            prev_states=qpos,
+            next_states=qpos + 1.0,
+            rewards=rewards,
+            terminals=terminals,
+            commanded_ctrl=actions,
+            applied_ctrl=actions,
+            actual_wrench=jnp.zeros((num_envs, 1), dtype=jnp.float32),
+            desired_wrench=jnp.zeros((num_envs, 1), dtype=jnp.float32),
+            prev_obs=qpos,
+            next_obs=qpos + 1.0,
+            reward_components={},
+        )
+        return next_state, step_output
+
+    def _vecenv_reset_stub(state, _config):
+        reset_qpos = jnp.zeros_like(state.mjx_batch.qpos)
+        return state.replace(mjx_batch=state.mjx_batch.replace(qpos=reset_qpos))
+
+    def _prepare(_step, states, residuals, carry_extra):
+        del residuals
+        return states, carry_extra
+
+    def _sample(_step, policy_input, rng_key, carry_extra):
+        actions = jnp.zeros((num_envs, 1), dtype=jnp.float32)
+        values = jnp.ones((num_envs,), dtype=jnp.float32)
+        logp = jnp.zeros((num_envs,), dtype=jnp.float32)
+        return actions, values, logp, rng_key, carry_extra
+
+    def _post(_step, step_output, actions, residuals, reset_flag, carry_extra):
+        del step_output, actions, reset_flag
+        return residuals, None, carry_extra
+
+    def _bootstrap(_step, env_state, residuals, rng_key, carry_extra):
+        del env_state, residuals, carry_extra
+        return jnp.full((num_envs,), 7.0, dtype=jnp.float32), rng_key, None
+
+    result = ru.run_functional_rollout(
+        step_config=step_config,
+        initial_state=initial_state,
+        initial_residuals=initial_residuals,
+        rng=initial_state.rng,
+        num_steps=num_steps,
+        reference_waypoint=reference_waypoint,
+        callbacks=ru.FunctionalRolloutCallbacks(
+            prepare_policy_input=_prepare,
+            sample_policy=_sample,
+            post_step=_post,
+            bootstrap_value=_bootstrap,
+        ),
+        state_features_fn=lambda batch, _: batch.qpos,
+        step_fn=_vecenv_step_stub,
+        reset_fn=_vecenv_reset_stub,
+    )
+
+    bootstrap_vals = result.bootstrap_values
+    assert jnp.allclose(bootstrap_vals[1], 7.0)
+    assert jnp.allclose(bootstrap_vals[3], 7.0)
+    assert jnp.allclose(bootstrap_vals[4], 7.0)
+    assert jnp.allclose(bootstrap_vals[0], 0.0)
+    assert jnp.allclose(bootstrap_vals[2], 0.0)

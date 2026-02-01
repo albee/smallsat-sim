@@ -1181,6 +1181,7 @@ class GPPerturbation(Perturbation):
             self._gp_subset_size,
         ) = _derive_gp_resolution(self.nu, self.num_envs)
         self._gp_failure_mode_overrides: Optional[dict] = None
+        self._gp_sample_cache: dict[tuple, tuple[jnp.ndarray, jnp.ndarray]] = {}
 
     def apply(self, input: jnp.ndarray, timestamp: float = 0.0) -> jnp.ndarray:
         if input.shape[-1] != self.nu:
@@ -1256,9 +1257,23 @@ class GPPerturbation(Perturbation):
                 valve_min=valve_min,
                 valve_max=valve_max,
             )
-            x_data, y_data = ThrusterFailureSimulator(**simulator_kwargs).generate_failure_data(
-                gp_data_key, self.failure_type
+            cache_key = (
+                int(thruster_index),
+                float(simulator_kwargs["upper_bound"]),
+                float(valve_min),
+                float(valve_max),
+                int(simulator_kwargs["num_points"]),
+                int(simulator_kwargs["subset_size"]),
+                int(self.failure_type.value),
             )
+            cached = self._gp_sample_cache.get(cache_key)
+            if cached is None:
+                x_data, y_data = ThrusterFailureSimulator(
+                    **simulator_kwargs
+                ).generate_failure_data(gp_data_key, self.failure_type)
+                self._gp_sample_cache[cache_key] = (x_data, y_data)
+            else:
+                x_data, y_data = cached
         else:
             x_data = jnp.linspace(
                 0.0,
@@ -1267,8 +1282,10 @@ class GPPerturbation(Perturbation):
             )
             y_data = x_data
 
+        start_time_print = float(start_time_value)
         print(
-            f"Thruster(s) are affected by a faulty valve starting at {start_time} seconds."
+            "Thruster(s) are affected by a faulty valve starting at "
+            f"{start_time_print} seconds."
         )
 
         self.state = gp_register_state(
