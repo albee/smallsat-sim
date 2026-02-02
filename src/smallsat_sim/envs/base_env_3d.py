@@ -199,7 +199,9 @@ class BaseEnv3D(object):
         else:
             return obs
 
-    def get_sim_rendering(self, output_filename: str) -> None:
+    def get_sim_rendering(
+        self, output_filename: str, output_dir: str | None = None
+    ) -> None:
         """
         Create and save a video rendering of the experiment.
         """
@@ -212,7 +214,14 @@ class BaseEnv3D(object):
         height, width, _ = self.frames[0].shape
 
         # Define save settings
-        video_dir = os.path.join(SMALLSAT_STEWARD_ROOT_DIR, "videos")
+        if output_dir is None:
+            video_dir = os.path.join(SMALLSAT_STEWARD_ROOT_DIR, "videos")
+        else:
+            video_dir = (
+                output_dir
+                if os.path.isabs(output_dir)
+                else os.path.join(SMALLSAT_STEWARD_ROOT_DIR, output_dir)
+            )
         os.makedirs(video_dir, exist_ok=True)  # Ensure the video directory exists
 
         video_path = os.path.join(

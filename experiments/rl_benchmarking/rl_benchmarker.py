@@ -1,3 +1,5 @@
+import os
+
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import wandb
@@ -89,6 +91,20 @@ class Benchmarker(object):
         """
         Deploy and test the RL controller.
         """
+        def _save_video(stage_name: str) -> None:
+            if self.args.video:
+                video_dir = os.path.join(
+                    "experiments",
+                    "rl_results",
+                    self.run_name,
+                    stage_name,
+                    "videos",
+                )
+                output_name = (
+                    f"{self.run_name}_{stage_name}_run{env.run_id:04d}"
+                )
+                env.get_sim_rendering(output_name, output_dir=video_dir)
+
         # Create environment
         env = AstrobeeEnvVectorized(
             args=self.args,
@@ -109,6 +125,7 @@ class Benchmarker(object):
 
         # Simulation loop
         ctrl.control(phase=phase, test_pd=test_pd)
+        _save_video("deployment")
 
         # Test stuck off thrusters
         ctrl.control(
@@ -117,6 +134,7 @@ class Benchmarker(object):
             test_pd=test_pd,
             perturbation_distribution=jnp.array([1.0, 0.0, 0.0, 0.0, 0.0]),
         )
+        _save_video("stuck_off_deployment")
 
         # Test stuck on thrusters
         ctrl.control(
@@ -125,6 +143,7 @@ class Benchmarker(object):
             test_pd=test_pd,
             perturbation_distribution=jnp.array([0.0, 1.0, 0.0, 0.0, 0.0]),
         )
+        _save_video("stuck_on_deployment")
 
         # Test faulty valve
         ctrl.control(
@@ -133,6 +152,7 @@ class Benchmarker(object):
             test_pd=test_pd,
             perturbation_distribution=jnp.array([0.0, 0.0, 1.0, 0.0, 0.0]),
         )
+        _save_video("faulty_valve_deployment")
 
         # Test saturated thrust
         ctrl.control(
@@ -141,6 +161,7 @@ class Benchmarker(object):
             test_pd=test_pd,
             perturbation_distribution=jnp.array([0.0, 0.0, 0.0, 1.0, 0.0]),
         )
+        _save_video("saturated_thrust_deployment")
 
         # Test thrust instability
         ctrl.control(
@@ -149,6 +170,7 @@ class Benchmarker(object):
             test_pd=test_pd,
             perturbation_distribution=jnp.array([0.0, 0.0, 0.0, 0.0, 1.0]),
         )
+        _save_video("thrust_instability_deployment")
 
         # Test constant force disturbances
         ctrl.control(
@@ -157,6 +179,7 @@ class Benchmarker(object):
             test_pd=test_pd,
             apply_disturbances=True,
         )
+        _save_video("constant_force_disturbances_deployment")
 
         # Save log if logging is enabled
         if self.args.log:
