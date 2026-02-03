@@ -351,6 +351,8 @@ def main():
 
     for run_name in [
         "pd_controller",
+        "nominal_mpc",
+        "lqr",
         "nn_controller",
         "nn_controller_adaptive",
         "ppo_nominal",

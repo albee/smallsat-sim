@@ -1,5 +1,6 @@
 from smallsat_sim.controllers.base_controller import BaseController
 from smallsat_sim.envs.base_env import BaseEnv
+from smallsat_sim.utils.helpers import calc_lateral_tracking_error, calc_attitude_error
 
 import numpy as np
 import casadi as ca
@@ -42,6 +43,7 @@ class LQRController(BaseController):
         )  # Perturb for numerical stability
         self.R = self.ctrl_cfg.cost.R
         self._last_stable_gain = np.zeros((self.nu, self.nx))
+        self.dt = env.env_cfg.sim.dt * self.ctrl_cfg.control_decimation
 
     def check_controllability(self, A: np.ndarray, B: np.ndarray) -> bool:
         """
@@ -77,8 +79,8 @@ class LQRController(BaseController):
             return self._last_stable_gain
 
         # Discretize the system (Euler discretization)
-        A = np.eye(self.nx) + A * 0.5
-        B = B * 0.5
+        A = np.eye(self.nx) + A * self.dt
+        B = B * self.dt
 
         # Check if the system is controllable (for debugging purposes)
         is_controllable = self.check_controllability(A, B)
@@ -121,6 +123,29 @@ class LQRController(BaseController):
         """
         Logs desired quantities if flag is enabled
         """
-        raise NotImplementedError(
-            f"The _log method is not implemented for the class {self.__class__.__name__}"
-        )
+        if self.has_logger:
+            obs_gt = env.get_obs()
+
+            tracking_error = calc_lateral_tracking_error(
+                obs=obs_gt, planner=self.planner
+            )
+            q_ref = np.array([1.0, 0.0, 0.0, 0.0])
+            if hasattr(self.planner, "trajectory") and hasattr(
+                self.planner.trajectory, "get_intermediate_reference"
+            ):
+                _, curr_arc_length = self.planner.closest_point_on_trajectory(
+                    point=obs_gt[:3]
+                )
+                q_ref = self.planner.trajectory.get_intermediate_reference(
+                    curr_arc_length
+                ).attitude
+            attitude_error = calc_attitude_error(
+                q_ref=np.asarray(q_ref).squeeze(), q=obs_gt[3:7]
+            )
+
+            self.logger.log(
+                run_id=run_id,
+                timestamp=timestamp,
+                tracking_error=tracking_error,
+                attitude_error=attitude_error,
+            )

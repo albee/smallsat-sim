@@ -273,7 +273,6 @@ class NominalMPCController(BaseMPCController):
         )
         self._visualize_prediction()
         if hasattr(self, "renderer") and self.renderer is not None:
-            _, _ = self.planner.get_reference(env.get_obs())
             self._visualize_prediction_renderer()
 
         # Save current observation and input
@@ -299,14 +298,19 @@ class NominalMPCController(BaseMPCController):
             )
 
             # Attitude error
-            _, curr_arc_length = self.planner.closest_point_on_trajectory(
-                point=obs_gt[:3]
+            q_ref = np.array([1.0, 0.0, 0.0, 0.0])
+            if hasattr(self.planner, "trajectory") and hasattr(
+                self.planner.trajectory, "get_intermediate_reference"
+            ):
+                _, curr_arc_length = self.planner.closest_point_on_trajectory(
+                    point=obs_gt[:3]
+                )
+                q_ref = self.planner.trajectory.get_intermediate_reference(
+                    curr_arc_length
+                ).attitude
+            attitude_error = calc_attitude_error(
+                q_ref=np.asarray(q_ref).squeeze(), q=obs_gt[3:7]
             )
-            q_ref = self.planner.trajectory.get_intermediate_reference(
-                curr_arc_length
-            ).attitude
-
-            attitude_error = calc_attitude_error(q_ref=q_ref, q=obs_gt[3:7])
 
             # Track solve time
             solve_time = self.ocp_solver.get_stats("time_tot")

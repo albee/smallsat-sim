@@ -202,7 +202,7 @@ def calc_lateral_tracking_error(obs: T, planner: BasePlanner) -> float:
     return np.linalg.norm(closest_point - current_pos).item()
 
 
-def calc_attitude_error(q_ref: T, q: T) -> float:
+def calc_attitude_error(q_ref: T, q: T, w_first: bool = True) -> float:
     """
     Computes the attitude error as rotation angle.
     The angle error is the smallest angle by which you would need to rotate
@@ -227,10 +227,10 @@ def calc_attitude_error(q_ref: T, q: T) -> float:
         q_normalized = q / q_norm
 
     # Ensure the quaternions are in the format [x, y, z, w]
-    # If they are in [w, x, y, z], reorder them
-    # Uncomment and adjust the following lines if necessary
-    # q_ref_normalized = q_ref_normalized[[1, 2, 3, 0]]
-    # q_normalized = q_normalized[[1, 2, 3, 0]]
+    # MuJoCo state quaternions are [w, x, y, z] by default.
+    if w_first:
+        q_ref_normalized = q_ref_normalized[[1, 2, 3, 0]]
+        q_normalized = q_normalized[[1, 2, 3, 0]]
 
     # Adjust quaternion signs for continuity
     if np.dot(q_ref_normalized, q_normalized) < 0:
