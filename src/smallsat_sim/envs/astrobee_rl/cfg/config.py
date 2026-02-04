@@ -97,9 +97,10 @@ class EnvConfig(BaseEnvConfig):
                 actor_critic_training_epochs = 3
                 num_minibatches = 8
                 clip_ratio = 0.2
-                target_kl = 0.01
+                target_kl = 0.005
                 use_value_clip = True
                 value_clip_coef = 0.2
+                debug_prints = False
 
             # Sequential failure curriculum knobs
             curriculum_nominal_epochs = 100

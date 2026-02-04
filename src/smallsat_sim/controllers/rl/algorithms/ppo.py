@@ -200,6 +200,7 @@ class PPO(BaseAgent):
                 values_old_arg,
                 self.use_value_clip,
                 self.value_clip_coef,
+                self.debug_prints,
                 self.num_minibatches,
                 self.minibatch_size,
             )
@@ -269,6 +270,7 @@ class PPO(BaseAgent):
             self.target_kl,
             self.use_value_clip,
             self.value_clip_coef,
+            self.debug_prints,
             self.num_minibatches,
             self.minibatch_size,
             critic_grad_scale,
@@ -328,6 +330,7 @@ class PPO(BaseAgent):
             self.target_kl,
             self.use_value_clip,
             self.value_clip_coef,
+            self.debug_prints,
             self.num_minibatches,
             self.minibatch_size,
             1.0,
@@ -356,6 +359,7 @@ class PPO(BaseAgent):
         self.target_kl = float(cfg.target_kl)
         self.use_value_clip = bool(cfg.use_value_clip)
         self.value_clip_coef = float(cfg.value_clip_coef)
+        self.debug_prints = bool(getattr(cfg, "debug_prints", False))
 
     def _log(
         self,
@@ -524,6 +528,7 @@ def _critic_epochs_jit(
     old_values: jnp.ndarray,
     use_value_clip: bool,
     value_clip_coef: float,
+    debug_prints: bool,
     num_minibatches: int,
     minibatch_size: int,
 ):
@@ -559,17 +564,18 @@ def _critic_epochs_jit(
                     loss_clipped = (v_clipped - returns_batches[mb]) ** 2
                     # Debug prints: report minibatch-level summaries so we can
                     # verify that clipping is happening and inspect magnitudes.
-                    jax.debug.print(
-                        "[PPO DEBUG] critic clip coef={} mean_delta={:.6f} mean_loss_unclipped={:.6f} mean_loss_clipped={:.6f} mean_return={:.6f} std_return={:.6f} mean_value={:.6f} std_value={:.6f}",
-                        value_clip_coef,
-                        jnp.mean(vals - v_old),
-                        jnp.mean(loss_unclipped),
-                        jnp.mean(loss_clipped),
-                        jnp.mean(returns_batches[mb]),
-                        jnp.std(returns_batches[mb]),
-                        jnp.mean(v_old),
-                        jnp.std(v_old),
-                    )
+                    if debug_prints:
+                        jax.debug.print(
+                            "[PPO DEBUG] critic clip coef={} mean_delta={:.6f} mean_loss_unclipped={:.6f} mean_loss_clipped={:.6f} mean_return={:.6f} std_return={:.6f} mean_value={:.6f} std_value={:.6f}",
+                            value_clip_coef,
+                            jnp.mean(vals - v_old),
+                            jnp.mean(loss_unclipped),
+                            jnp.mean(loss_clipped),
+                            jnp.mean(returns_batches[mb]),
+                            jnp.std(returns_batches[mb]),
+                            jnp.mean(v_old),
+                            jnp.std(v_old),
+                        )
                     return jnp.mean(jnp.maximum(loss_unclipped, loss_clipped))
                 else:
                     return jnp.mean((vals - returns_batches[mb]) ** 2)
@@ -588,7 +594,7 @@ def _critic_epochs_jit(
     return last_loss, state
 
 
-@partial(jax.jit, static_argnums=(12, 13, 14, 15, 16))
+@partial(jax.jit, static_argnums=(12, 13, 14, 15, 16, 17))
 def _actor_critic_epochs_jit(
     graphdef,
     state,
@@ -604,6 +610,7 @@ def _actor_critic_epochs_jit(
     target_kl: float,
     use_value_clip: bool,
     value_clip_coef: float,
+    debug_prints: bool,
     num_minibatches: int,
     minibatch_size: int,
     critic_grad_scale: float,
@@ -740,17 +747,18 @@ def _actor_critic_epochs_jit(
                             loss_unclipped = (vals - returns_mb) ** 2
                             loss_clipped = (v_clipped - returns_mb) ** 2
                             # Debug prints for actor-critic joint update minibatch
-                            jax.debug.print(
-                                "[PPO DEBUG] joint critic clip coef={} mean_delta={:.6f} mean_loss_unclipped={:.6f} mean_loss_clipped={:.6f} mean_return={:.6f} std_return={:.6f} mean_value={:.6f} std_value={:.6f}",
-                                value_clip_coef,
-                                jnp.mean(vals - v_old),
-                                jnp.mean(loss_unclipped),
-                                jnp.mean(loss_clipped),
-                                jnp.mean(returns_mb),
-                                jnp.std(returns_mb),
-                                jnp.mean(v_old),
-                                jnp.std(v_old),
-                            )
+                            if debug_prints:
+                                jax.debug.print(
+                                    "[PPO DEBUG] joint critic clip coef={} mean_delta={:.6f} mean_loss_unclipped={:.6f} mean_loss_clipped={:.6f} mean_return={:.6f} std_return={:.6f} mean_value={:.6f} std_value={:.6f}",
+                                    value_clip_coef,
+                                    jnp.mean(vals - v_old),
+                                    jnp.mean(loss_unclipped),
+                                    jnp.mean(loss_clipped),
+                                    jnp.mean(returns_mb),
+                                    jnp.std(returns_mb),
+                                    jnp.mean(v_old),
+                                    jnp.std(v_old),
+                                )
                             return jnp.mean(jnp.maximum(loss_unclipped, loss_clipped))
                         else:
                             return jnp.mean((vals - returns_mb) ** 2)
