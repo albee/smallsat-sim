@@ -33,6 +33,7 @@ class BaseEnvConfig:
         dt = 1 / 500  # simulation runs @500Hz
         max_sim_time = 200  # max. simulation time in seconds
         seed = 42  # Base seed used for JAX PRNGs unless overridden
+        verbose = False
 
         class noise:
             add_obs_noise = False  # add noise to ob of env

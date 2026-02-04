@@ -22,13 +22,14 @@ class AstrobeeEnv(BaseEnv):
         super().__init__(args=args)
 
         # Instantiate perturbations
+        verbose = getattr(self.env_cfg.sim, "verbose", False)
         self.perturbations = PerturbationList(
             [
-                StuckOffThrusters(self.model_cfg),  # 0
-                StuckOnThrusters(self.model_cfg),  # 1
-                FaultyValve(self.model_cfg),  # 2
-                SaturatedThrust(self.model_cfg),  # 3
-                ThrustInstability(self.model_cfg),  # 4
+                StuckOffThrusters(self.model_cfg, verbose=verbose),  # 0
+                StuckOnThrusters(self.model_cfg, verbose=verbose),  # 1
+                FaultyValve(self.model_cfg, verbose=verbose),  # 2
+                SaturatedThrust(self.model_cfg, verbose=verbose),  # 3
+                ThrustInstability(self.model_cfg, verbose=verbose),  # 4
             ]
         )
 
@@ -52,12 +53,13 @@ class AstrobeeEnv(BaseEnv):
         """
         Resets the perturbations
         """
+        verbose = getattr(self.env_cfg.sim, "verbose", False)
         self.perturbations = PerturbationList(
             [
-                StuckOffThrusters(self.model_cfg),  # 0
-                StuckOnThrusters(self.model_cfg),  # 1
-                FaultyValve(self.model_cfg),  # 2
-                SaturatedThrust(self.model_cfg),  # 3
-                ThrustInstability(self.model_cfg),  # 4
+                StuckOffThrusters(self.model_cfg, verbose=verbose),  # 0
+                StuckOnThrusters(self.model_cfg, verbose=verbose),  # 1
+                FaultyValve(self.model_cfg, verbose=verbose),  # 2
+                SaturatedThrust(self.model_cfg, verbose=verbose),  # 3
+                ThrustInstability(self.model_cfg, verbose=verbose),  # 4
             ]
         )

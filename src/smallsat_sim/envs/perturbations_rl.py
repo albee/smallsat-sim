@@ -462,6 +462,7 @@ class Perturbation(ABC):
             )
 
         self._key = key
+        self.verbose = getattr(env_config.sim, "verbose", False)
         self.state: Optional[PerturbationState] = PerturbationState(
             rng=self._key,
             thruster_mask=Perturbation.thruster_mask,
@@ -622,7 +623,8 @@ class PerturbationList(ABC):
             .thruster_mask.at[envs, thruster_indices]
             .set(PerturbationStatus.OPERATIONAL.value)
         )
-        print(f"Reset thruster(s).")
+        if getattr(self.perturbations[perturbation_idx], "verbose", False):
+            print(f"Reset thruster(s).")
         perturbation = self.perturbations[perturbation_idx]
         if perturbation.state is not None:
             start_times = getattr(perturbation, "start_times", None)
@@ -746,7 +748,8 @@ class StuckOffThrusters(Perturbation):
             self._key,
         )
 
-        print(f"Thruster(s) stuck off.")
+        if self.verbose:
+            print(f"Thruster(s) stuck off.")
         # print("Thruster mask: ", Perturbation.thruster_mask)
 
     def key_callback(self, keycode: int | None = None) -> None:
@@ -842,7 +845,8 @@ class StuckOnThrusters(Perturbation):
             self._key,
         )
 
-        print(f"Thruster(s) stuck on.")
+        if self.verbose:
+            print(f"Thruster(s) stuck on.")
         # print("Thruster mask: ", Perturbation.thruster_mask)
 
     def key_callback(self, keycode: int | None = None) -> None:
@@ -1282,11 +1286,12 @@ class GPPerturbation(Perturbation):
             )
             y_data = x_data
 
-        start_time_print = float(start_time_value)
-        print(
-            "Thruster(s) are affected by a faulty valve starting at "
-            f"{start_time_print} seconds."
-        )
+        if self.verbose:
+            start_time_print = float(start_time_value)
+            print(
+                "Thruster(s) are affected by a faulty valve starting at "
+                f"{start_time_print} seconds."
+            )
 
         self.state = gp_register_state(
             self.state,

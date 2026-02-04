@@ -14,12 +14,13 @@ class Hardware6DofEnv(BaseEnv3D):
         super().__init__(args=args)
 
         # Instantiate perturbations
+        verbose = getattr(self.env_cfg.sim, "verbose", False)
         self.perturbations = PerturbationList([
-            StuckOffThrusters(self.model_cfg),
-            StuckOnThrusters(self.model_cfg),
-            SamplePerturbation(self.model_cfg, 10.0),
-            FaultyValve(self.model_cfg),
-            SaturatedThrust(self.model_cfg)])
+            StuckOffThrusters(self.model_cfg, verbose=verbose),
+            StuckOnThrusters(self.model_cfg, verbose=verbose),
+            SamplePerturbation(self.model_cfg, 10.0, verbose=verbose),
+            FaultyValve(self.model_cfg, verbose=verbose),
+            SaturatedThrust(self.model_cfg, verbose=verbose)])
 
         # Instantiate disturbances
         #self.disturbances = DisturbanceList([ConstantForceDisturbance(0.05, np.array([1, 1, 1]))])
