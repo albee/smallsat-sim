@@ -60,3 +60,24 @@ class AstrobeeBenchmarkEnv(BaseEnv):
         else:
             self.renderer = None
             self._update_renderer = lambda *args, **kwargs: None
+
+    def reset_perturbations(self) -> None:
+        """
+        Resets the perturbations.
+        """
+        verbose = getattr(self.env_cfg.sim, "verbose", False)
+        self.perturbations = PerturbationList(
+            [
+                StuckOffThrusters(self.model_cfg, verbose=verbose),  # 0
+                StuckOnThrusters(self.model_cfg, verbose=verbose),  # 1
+                FaultyValve(self.model_cfg, verbose=verbose),  # 2
+                SaturatedThrust(self.model_cfg, verbose=verbose),  # 3
+                ThrustInstability(self.model_cfg, verbose=verbose),  # 4
+            ]
+        )
+
+    def reset_disturbances(self) -> None:
+        """
+        Resets the disturbances.
+        """
+        self.disturbances = None
