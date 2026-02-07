@@ -15,6 +15,8 @@ scripts=(
         # "experiments/rl_benchmarking/pretrained_ppo_adaptive_sim.py"
         # "experiments/rl_benchmarking/pretrained_ppo_adaptive_cnn.py"
         # "experiments/rl_benchmarking/pretrained_ppo_adaptive_transformer.py"
+        "experiments/rl_benchmarking/lqr.py"
+        "experiments/rl_benchmarking/nominal_mpc.py"
         )
 
 # Ensure repository root is on PYTHONPATH so `experiments` can be imported
@@ -24,7 +26,7 @@ export PYTHONPATH="$(pwd):${PYTHONPATH}"
 for file in "${scripts[@]}"; do
   if [ -e "$file" ]; then
     echo -e "\nRunning $file...\n"
-    python "$file" --headless --log --wandb
+    python "$file" --headless --log --wandb --video
   else
     echo "File $file not found."
     exit 1

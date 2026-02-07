@@ -34,6 +34,7 @@ class BaseEnvConfig:
         max_sim_time = 200  # max. simulation time in seconds
         seed = 42  # Base seed used for JAX PRNGs unless overridden
         verbose = False
+        include_floor = False
 
         class noise:
             add_obs_noise = False  # add noise to ob of env

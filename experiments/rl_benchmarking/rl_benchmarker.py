@@ -14,7 +14,7 @@ from smallsat_sim.utils.helpers import (
 from smallsat_sim.utils.logger import Logger
 from smallsat_sim.controllers.rl.runners.on_policy_runner import OnPolicyRunner
 from smallsat_sim.envs.astrobee_rl.env import AstrobeeEnvVectorized
-from smallsat_sim.envs.astrobee.env import AstrobeeEnv
+from smallsat_sim.envs.astrobee_benchmark.env import AstrobeeBenchmarkEnv
 from smallsat_sim.envs.disturbances import DisturbanceList, ConstantForceDisturbance
 from smallsat_sim.planners.oracle.oracle_rl import OraclePlannerRL
 from smallsat_sim.planners.oracle.oracle import OraclePlanner
@@ -200,6 +200,22 @@ class Benchmarker(object):
         """
         Deploy and test classic controllers (Nominal MPC, LQR) on the oracle trajectory.
         """
+        def _resolve_deployment_len() -> int | None:
+            if hasattr(env.env_cfg.control, "RL"):
+                return env.env_cfg.control.RL.deployment_len
+            try:
+                from smallsat_sim.envs.astrobee_rl.cfg import config as rl_config
+            except ImportError:
+                return None
+            return rl_config.EnvConfig().control.RL.deployment_len
+
+        def _seed_for_stage(stage_name: str) -> jax.random.PRNGKey:
+            base_seed = int(getattr(env.env_cfg.sim, "seed", 0))
+            stage_idx = stages.index(stage_name)
+            seed = base_seed + stage_idx
+            np.random.seed(seed)
+            return jax.random.PRNGKey(seed)
+
         def _save_video(env, stage_name: str) -> None:
             if self.args.video:
                 video_dir = os.path.join(
@@ -235,26 +251,26 @@ class Benchmarker(object):
         def _apply_stage_perturbation(env, stage_name: str, start_time: float) -> None:
             if stage_name == "stuck_off_deployment":
                 env.perturbations.perturbations[0].stuck_off_thruster(
-                    index=0, start_time=start_time
+                    index=None, start_time=start_time
                 )
             elif stage_name == "stuck_on_deployment":
                 env.perturbations.perturbations[1].stuck_on_thruster(
-                    index=0, start_time=start_time
+                    index=None, start_time=start_time
                 )
             elif stage_name == "faulty_valve_deployment":
                 env.perturbations.perturbations[2].register_perturbation(
-                    index=0, start_time=start_time
+                    index=None, start_time=start_time
                 )
             elif stage_name == "saturated_thrust_deployment":
                 env.perturbations.perturbations[3].register_perturbation(
-                    index=0, start_time=start_time
+                    index=None, start_time=start_time
                 )
             elif stage_name == "thrust_instability_deployment":
                 env.perturbations.perturbations[4].register_perturbation(
-                    index=0, start_time=start_time
+                    index=None, start_time=start_time
                 )
             elif stage_name == "constant_force_disturbances_deployment":
-                disturbance_key = jax.random.PRNGKey(0)
+                disturbance_key = _seed_for_stage(stage_name)
                 env.disturbances = DisturbanceList(
                     [ConstantForceDisturbance(env.env_cfg, disturbance_key)]
                 )
@@ -268,7 +284,7 @@ class Benchmarker(object):
             )
 
         # Create environment
-        env = AstrobeeEnv(args=self.args)
+        env = AstrobeeBenchmarkEnv(args=self.args)
 
         # Create planner (oracle trajectory matching RL layout)
         planner = OraclePlanner(
@@ -284,6 +300,13 @@ class Benchmarker(object):
         if controller_type == "nominal_mpc":
             ctrl = NominalMPCController(env, planner)
         else:
+            # Benchmark override: use MPC-style costs so LQR actually tracks in nominal runs.
+            env.env_cfg.control.LQR.cost.Q = (
+                env.env_cfg.control.NominalMPC.cost.Q.copy()
+            )
+            env.env_cfg.control.LQR.cost.R = (
+                env.env_cfg.control.NominalMPC.cost.R.copy()
+            )
             ctrl = LQRController(env, planner)
 
         stages = [
@@ -301,6 +324,7 @@ class Benchmarker(object):
             env.reset_perturbations()
             env.disturbances = None
             planner.idx_reference_point = 0
+            _seed_for_stage(stage_name)
 
             env.reset_to_state(
                 pos=np.array([5.0, 0.0, 10.17]),
@@ -309,7 +333,10 @@ class Benchmarker(object):
 
             step = 0
             perturbation_applied = False
+            max_steps = _resolve_deployment_len()
             while env.data.time <= env.env_cfg.sim.max_sim_time:
+                if max_steps is not None and step >= int(max_steps):
+                    break
                 if step == 100 and not perturbation_applied:
                     _apply_stage_perturbation(env, stage_name, float(env.data.time))
                     perturbation_applied = True
