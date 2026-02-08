@@ -23,7 +23,6 @@ class AstrobeeBenchmarkEnv(BaseEnv):
         self.env_cfg, self.model_cfg = self._load_cfg(
             env_name="astrobee", model_name="astrobee"
         )
-        self.env_cfg.sim.include_floor = True
         super().__init__(args=args)
 
         verbose = getattr(self.env_cfg.sim, "verbose", False)
