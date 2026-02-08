@@ -91,7 +91,7 @@ class EnvConfig(BaseEnvConfig):
                 lam = 0.95
                 actor_lr = 3e-4  # Between 2 and 4e-4
                 critic_lr = 5e-4  # >= actor_lr
-                entropy_coef = 3e-5  # Make sure std/log_std steadily decreases long enough (see W&B)
+                entropy_coef = 1e-4  # Make sure std/log_std steadily decreases long enough (see W&B)
                 actor_training_epochs = 3
                 critic_training_epochs = 3
                 actor_critic_training_epochs = 1
@@ -119,7 +119,7 @@ class EnvConfig(BaseEnvConfig):
             sigma_angvel = 6.0  # sigma_att / (N_settle * dt)
 
             # Reward weights (can play with overall magnitude s.t. critic loss is well-behaved)
-            w_pos, w_vel, w_att, w_angvel = 5e1, 0.0, 1e1, 0.0  # Disregard vel and angvel terms for now
+            w_pos, w_vel, w_att, w_angvel = 5e1, 5e0, 1e1, 0.0  # Disregard vel and angvel terms for now
 
             # Penalty weights
             lam_fuel = 1e-4
