@@ -30,7 +30,7 @@ class EnvConfig(BaseEnvConfig):
         for i in range(num_bodies):
             bodies_list.append(Body(name=f"body{i}", pos=[i, 0.0, 10.17]))
 
-        max_start_offset = 3.0  # Maximum offset from the initial position at each reset
+        max_start_offset = 2.0  # Maximum offset from the initial position at each reset
 
     # Holds all information for the controller in use
     class control:
@@ -73,9 +73,9 @@ class EnvConfig(BaseEnvConfig):
 
             # Hyperparams for the learning loop
             class VPG:
-                steps_per_epoch = 512
+                steps_per_epoch = 1024
                 epochs = 100
-                max_ep_len = 512
+                max_ep_len = 1024
                 gamma = 0.99
                 lam = 0.97
                 actor_lr = 3e-4
@@ -84,14 +84,14 @@ class EnvConfig(BaseEnvConfig):
                 critic_training_epochs = 3
 
             class PPO:
-                steps_per_epoch = 512
+                steps_per_epoch = 1024
                 epochs = 400  # Covers the nominal+curriculum phases when failures are enabled
-                max_ep_len = 512  # TODO: sanity check that this duration is appropriate (and change deployment_len accordingly)
+                max_ep_len = 1024
                 gamma = 0.99
                 lam = 0.95
                 actor_lr = 3e-4  # Between 2 and 4e-4
                 critic_lr = 5e-4  # >= actor_lr
-                entropy_coef = 1e-4  # Make sure std/log_std steadily decreases long enough (see W&B)
+                entropy_coef = 1e-4
                 actor_training_epochs = 3
                 critic_training_epochs = 3
                 actor_critic_training_epochs = 1
@@ -113,13 +113,13 @@ class EnvConfig(BaseEnvConfig):
             curriculum_eval_interval = 5
 
             # Mission tolerances (tuned to current training scenario - do not change)
-            sigma_pos = 3.0
-            sigma_vel = 3.0  # sigma_pos / (N_settle * dt)
-            sigma_att = 6.0  # radians
-            sigma_angvel = 6.0  # sigma_att / (N_settle * dt)
+            sigma_pos = 1.6
+            sigma_vel = 0.2  # sigma_pos / (N_settle * dt)
+            sigma_att = 0.4  # radians
+            sigma_angvel = 0.04  # sigma_att / (N_settle * dt)
 
             # Reward weights (can play with overall magnitude s.t. critic loss is well-behaved)
-            w_pos, w_vel, w_att, w_angvel = 5e1, 5e0, 1e1, 0.0  # Disregard vel and angvel terms for now
+            w_pos, w_vel, w_att, w_angvel = 5e1, 1e1, 2e1, 0.0  # Disregard vel and angvel terms for now
 
             # Penalty weights
             lam_fuel = 1e-4
@@ -147,6 +147,12 @@ class EnvConfig(BaseEnvConfig):
 
             # Hyperparams for the controller
             deployment_len = 512  # Set to None to disable
+
+            # Hyperparams for the deployment loop
+            deployment_radius = 5.0
+            deployment_spacing = 1.0
+            deployment_init_pos = (5.0, 0.0, 10.17)
+            deployment_max_start_offset = 0.5
 
             # Regression testing of functional rollout vs legacy rollout
             verify_functional_rollout = False

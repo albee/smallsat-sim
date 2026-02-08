@@ -22,6 +22,7 @@ from smallsat_sim.planners.oracle.oracle import OraclePlanner
 from smallsat_sim.controllers.rl.controller import RLController
 from smallsat_sim.controllers.nominal_mpc.controller import NominalMPCController
 from smallsat_sim.controllers.lqr.controller import LQRController
+from smallsat_sim.envs.astrobee_rl.cfg import config as rl_config
 
 
 class Benchmarker(object):
@@ -104,6 +105,8 @@ class Benchmarker(object):
         """
         Deploy and test the RL controller.
         """
+        rl_cfg = rl_config.EnvConfig().control.RL
+
         def _save_video(stage_name: str) -> None:
             if self.args.video:
                 video_dir = os.path.join(
@@ -123,8 +126,8 @@ class Benchmarker(object):
         env = AstrobeeEnvVectorized(
             args=self.args,
             run_name=self.run_name,
-            init_pos=jnp.array([5.0, 0.0, 10.17]),
-            max_start_offset=0.5,
+            init_pos=jnp.array(rl_cfg.deployment_init_pos, dtype=jnp.float32),
+            max_start_offset=rl_cfg.deployment_max_start_offset,
             train_with_failures=train_with_failures,
             use_pretrained=use_pretrained,
             use_adaptive_approach=use_adaptive_approach,
@@ -132,7 +135,11 @@ class Benchmarker(object):
         )
 
         # Create planner
-        planner = OraclePlannerRL(env)
+        planner = OraclePlannerRL(
+            env,
+            radius=rl_cfg.deployment_radius,
+            spacing=rl_cfg.deployment_spacing,
+        )
 
         # Create controller
         ctrl = RLController(env, planner, ckpt_name=ckpt_name)
@@ -203,6 +210,8 @@ class Benchmarker(object):
         """
         Deploy and test classic controllers (Nominal MPC, LQR) on the oracle trajectory.
         """
+        rl_cfg = rl_config.EnvConfig().control.RL
+
         def _resolve_deployment_len() -> int | None:
             if hasattr(env.env_cfg.control, "RL"):
                 return env.env_cfg.control.RL.deployment_len
@@ -247,7 +256,7 @@ class Benchmarker(object):
                 float(env.data.time),
                 run_name=self.run_name,
                 stage=stage_name,
-                mean_tracking_error=tracking_error,
+                mean_lateral_error=tracking_error,
                 mean_angle_error=angle_error,
                 mean_extrinsic_error=0.0,
             )
@@ -293,8 +302,8 @@ class Benchmarker(object):
         # Create planner (oracle trajectory matching RL layout)
         planner = OraclePlanner(
             env,
-            radius=3.0,
-            spacing=1.0,
+            radius=rl_cfg.deployment_radius,
+            spacing=rl_cfg.deployment_spacing,
             clearance_dist=0.2,
             plane="xy",
             z_offset=10.17,
@@ -331,7 +340,7 @@ class Benchmarker(object):
             _seed_for_stage(stage_name)
 
             env.reset_to_state(
-                pos=np.array([5.0, 0.0, 10.17]),
+                pos=np.array(rl_cfg.deployment_init_pos),
                 att=np.array([0.0, 0.0, 0.0]),
             )
 
