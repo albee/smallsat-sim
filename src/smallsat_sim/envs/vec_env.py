@@ -1024,6 +1024,8 @@ class VecEnv(BaseEnv):
 
         # Reward shaping
         rewards = phi_s_next - phi_s - penalties
+        terminal_bonus = jnp.asarray(self.terminal_bonus, dtype=rewards.dtype)
+        rewards = rewards + terminal_bonus * terminal.astype(rewards.dtype)
 
         if self.collect_reward_components:
             shaping_deltas = jnp.stack(
@@ -1046,6 +1048,7 @@ class VecEnv(BaseEnv):
                 "penalty_terminal_speed": vel_pen_terminal,
                 "penalty_terminal_ang_speed": angvel_pen_terminal,
                 "penalty_terminal_fuel": fuel_pen_terminal,
+                "bonus_terminal": terminal_bonus * terminal.astype(rewards.dtype),
                 "penalty_wrench_residual": wrench_residual_pen,
                 "penalty_total": penalties,
                 "reward_total": rewards,
@@ -1671,6 +1674,9 @@ class VecEnv(BaseEnv):
         self.lam_speed_terminal = self.env_cfg.control.RL.lam_speed_terminal
         self.lam_ang_speed_terminal = self.env_cfg.control.RL.lam_ang_speed_terminal
         self.lam_fuel_terminal = self.env_cfg.control.RL.lam_fuel_terminal
+        self.terminal_bonus = float(
+            getattr(self.env_cfg.control.RL, "terminal_bonus", 0.0)
+        )
         self.lam_wrench_residual = self.env_cfg.control.RL.lam_wrench_residual
         self.wrench_residual_tolerance = (
             self.env_cfg.control.RL.wrench_residual_tolerance

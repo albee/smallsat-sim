@@ -126,6 +126,7 @@ class EnvConfig(BaseEnvConfig):
             lam_speed_terminal = 1e-1
             lam_ang_speed_terminal = 1e-3
             lam_fuel_terminal = 5e-4
+            terminal_bonus = 1e0
             lam_wrench_residual = 0.0  # Disregard wrench residual for now, minimizing it is implicitly encoded in the reward
             wrench_residual_tolerance = 1e-1
             wrench_residual_clip = 0.5
