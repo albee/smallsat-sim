@@ -501,12 +501,14 @@ def vecenv_reset(
 
     def _randomize_state(rng_key):
         pos_key, quat_key = jax.random.split(rng_key)
-        random_pos = base_data.qpos[:3] + jax.random.uniform(
-            pos_key,
-            (3,),
-            minval=-max_start_offset,
-            maxval=max_start_offset,
-        )
+        base_pos = base_data.qpos[:3]
+        # Uniform disk in XY; keep Z fixed.
+        u = jax.random.uniform(pos_key, (2,))
+        r = max_start_offset * jnp.sqrt(u[0])
+        theta = 2.0 * jnp.pi * u[1]
+        dx = r * jnp.cos(theta)
+        dy = r * jnp.sin(theta)
+        random_pos = jnp.array([base_pos[0] + dx, base_pos[1] + dy, base_pos[2]])
         random_quat = _sample_random_quat(quat_key)
         return base_data.replace(qpos=jnp.concatenate([random_pos, random_quat]))
 

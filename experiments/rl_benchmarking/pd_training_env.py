@@ -1,13 +1,19 @@
 import os
 import time
 
+# Ensure a headless-safe GL backend is selected before MuJoCo imports.
+if "MUJOCO_GL" not in os.environ:
+    os.environ["MUJOCO_GL"] = "osmesa"
+
 import numpy as np
 import jax.numpy as jnp
+from mujoco import mjx
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from pathlib import Path
 
 from smallsat_sim.utils.helpers import get_args, calc_attitude_error
 from smallsat_sim.envs.astrobee_rl.env import AstrobeeEnvVectorized
@@ -24,14 +30,15 @@ def run_pd_benchmark() -> None:
     args = get_args()
 
     # Force video + headless unless explicitly disabled via CLI
-    if not getattr(args, "video", False):
-        args.video = True
     if not getattr(args, "headless", False):
         args.headless = True
 
+
     run_name = "pd_training_env"
+    repo_root = Path(__file__).resolve().parents[2]
     output_root = _ensure_dir(
         os.path.join(
+            str(repo_root),
             "experiments",
             "rl_results",
             run_name,
@@ -39,7 +46,7 @@ def run_pd_benchmark() -> None:
         )
     )
 
-    # Training env, same config as RL
+    # Training env (MJX) to match pd_controller conditions
     env = AstrobeeEnvVectorized(
         args,
         run_name=run_name,
@@ -51,7 +58,11 @@ def run_pd_benchmark() -> None:
     pd_ctrl = VectorizedPDController(env, planner)
 
     dt = env.env_cfg.sim.dt * env.env_cfg.control.control_decimation
-    max_steps = int(env.env_cfg.control.RL.max_ep_len)
+    max_steps = int(
+        getattr(env.env_cfg.control.RL, "max_ep_len", None)
+        or env.env_cfg.control.RL.PPO.max_ep_len
+    )
+    print(f"[pd_training_env] max_steps={max_steps}")
 
     # Initialize rollout
     env.reset()
@@ -65,6 +76,7 @@ def run_pd_benchmark() -> None:
     pos_err = []
     att_err = []
     rewards = []
+    saved_preview = False
 
     for step in range(max_steps):
         obs = env.get_obs()
@@ -85,8 +97,17 @@ def run_pd_benchmark() -> None:
             if (
                 env.data.time >= env.env_cfg.renderer.start_recording
                 and env.data.time <= env.env_cfg.renderer.end_recording
-            ):
+            ):                
+                # Visualize reference points (same path as pd_controller)
+                if hasattr(planner, "reference_point_list"):
+                    env._visualize_renderer(planner.reference_point_list)
+                mjx.get_data_into(env.data_vec, env.model, env.mjx_batch)
                 env._update_renderer()
+                if not saved_preview and env.frames:
+                    plt.imsave(
+                        os.path.join(output_root, "frame0.png"), env.frames[-1]
+                    )
+                    saved_preview = True
 
         # Update residuals if needed
         if env.use_adaptive_approach:
@@ -95,18 +116,15 @@ def run_pd_benchmark() -> None:
             residuals = actual_wrench - desired_wrench
 
         pos = np.asarray(env.mjx_batch.qpos[0, :3])
-        ref_pos = np.asarray(reference[0, :3])
+        ref_pos_plot = np.asarray(reference[0, :3])
         quat = np.asarray(obs[0, 3:7])
-        ref_quat = np.asarray(reference[0, 3:7])
+        ref_quat_plot = np.asarray(reference[0, 3:7])
 
         pos_traj.append(pos)
-        ref_traj.append(ref_pos)
-        pos_err.append(np.linalg.norm(pos - ref_pos))
-        att_err.append(float(np.degrees(calc_attitude_error(ref_quat, quat))))
+        ref_traj.append(ref_pos_plot)
+        pos_err.append(np.linalg.norm(pos - ref_pos_plot))
+        att_err.append(float(calc_attitude_error(ref_quat_plot, quat)))
         rewards.append(float(r[0]))
-
-        if bool(terminal[0]):
-            break
 
     pos_traj = np.asarray(pos_traj)
     ref_traj = np.asarray(ref_traj)
@@ -115,6 +133,16 @@ def run_pd_benchmark() -> None:
     att_err = np.asarray(att_err)
     times = np.arange(len(rewards)) * dt
     cumulative_return = np.cumsum(rewards)
+    print(
+        f"[pd_training_env] samples={len(rewards)} "
+        f"pos_err_nan={np.isnan(pos_err).any()} att_err_nan={np.isnan(att_err).any()} reward_nan={np.isnan(rewards).any()}"
+    )
+    if len(rewards) > 0:
+        print(
+            f"[pd_training_env] pos_err(first,last)=({pos_err[0]:.4f},{pos_err[-1]:.4f}) "
+            f"att_err(first,last)=({att_err[0]:.4f},{att_err[-1]:.4f}) "
+            f"reward(first,last)=({rewards[0]:.4f},{rewards[-1]:.4f})"
+        )
 
     # Plot: trajectory vs reference
     fig = plt.figure(figsize=(9, 7))
