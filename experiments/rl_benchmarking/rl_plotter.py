@@ -6,7 +6,8 @@ import matplotlib.pyplot as plt
 from smallsat_sim.utils.logger import Logger
 
 
-RESULTS_DIR = Path("experiments/rl_results/")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+RESULTS_DIR = REPO_ROOT / "experiments" / "rl_results"
 
 ERROR_METRICS = [
     "mean_tracking_error",

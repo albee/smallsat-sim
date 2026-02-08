@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -38,6 +39,7 @@ class Benchmarker(object):
 
         # Run name for logging
         self.run_name = run_name
+        self._repo_root = Path(__file__).resolve().parents[2]
 
     def train_and_evaluate(
         self,
@@ -105,6 +107,7 @@ class Benchmarker(object):
         def _save_video(stage_name: str) -> None:
             if self.args.video:
                 video_dir = os.path.join(
+                    str(self._repo_root),
                     "experiments",
                     "rl_results",
                     self.run_name,
@@ -219,6 +222,7 @@ class Benchmarker(object):
         def _save_video(env, stage_name: str) -> None:
             if self.args.video:
                 video_dir = os.path.join(
+                    str(self._repo_root),
                     "experiments",
                     "rl_results",
                     self.run_name,
