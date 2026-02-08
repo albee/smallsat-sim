@@ -441,7 +441,7 @@ class PPO(BaseAgent):
                 timestamp,
                 run_name=env.run_name,
                 stage=stage,
-                mean_tracking_error=tracking_error.mean(),
+                mean_lateral_error=tracking_error.mean(),
                 mean_angle_error=angle_error.mean(),
                 mean_extrinsic_error=extrinsic_error.mean(),
             )

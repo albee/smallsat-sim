@@ -683,14 +683,28 @@ class OnPolicyRunner(object):
                 else:
                     residuals = jnp.empty((self.steps_per_epoch * self.env.num_envs, 0))
 
-                if obs.size:
+                obs_abs = step_outputs.prev_obs.reshape(-1, step_outputs.prev_obs.shape[-1])
+                if obs_abs.size:
                     tracking_error_epoch = calc_lateral_tracking_error(
-                        obs, self.planner
+                        obs_abs, self.planner
                     ).mean()
-                    angle_error_epoch = jnp.degrees(calc_attitude_error(obs)).mean()
+                    angle_error_epoch = jnp.degrees(calc_attitude_error(obs_abs)).mean()
                 else:
                     tracking_error_epoch = jnp.array(0.0)
                     angle_error_epoch = jnp.array(0.0)
+
+                ref_pos = jnp.atleast_2d(self.reference_point)[:, :3]
+                if valid_done.size > 0:
+                    final_positions = step_outputs.next_obs[valid_done, :, :3]
+                    final_errors = jnp.linalg.norm(
+                        final_positions - ref_pos[None, :, :], axis=2
+                    )
+                    final_pos_error_epoch = final_errors.mean()
+                else:
+                    final_positions = step_outputs.next_obs[-1, :, :3]
+                    final_pos_error_epoch = jnp.linalg.norm(
+                        final_positions - ref_pos, axis=1
+                    ).mean()
 
                 terminal_count_epoch = jnp.asarray(terminal_count)
                 mean_ep_return_epoch = (
@@ -780,31 +794,32 @@ class OnPolicyRunner(object):
                             "curriculum/phase_epoch": phase_epoch + 1,
                             "curriculum/global_epoch": global_epoch,
                             "curriculum/critic_grad_scale": critic_grad_scale,
-                            "mean_rewards": float(rews.mean()),
-                            "actor_loss_last": actor_loss_last_f,
-                            "critic_loss_last": critic_loss_last_f,
-                            "actor_loss_mean": actor_loss_mean_f,
-                            "critic_loss_mean": critic_loss_mean_f,
-                            "true_kl_last": kl_last_f,
-                            "true_kl_mean": kl_mean_f,
-                            "clip_fraction": clip_frac_f,
-                            "adv_mean": adv_mean_f,
-                            "adv_std": adv_std_f,
-                            "value_mean": value_mean_f,
-                            "value_std": value_std_f,
-                            "return_mean": return_mean_f,
-                            "return_std": return_std_f,
-                            "explained_variance": explained_var_f,
-                            "mean_episodic_returns": float(mean_ep_return_epoch),
-                            "num_terminal": float(terminal_count_epoch),
-                            "mean_log_std": float(
-                                self.agent.actor.log_std.value.mean()
-                            ),
-                            "mean_std": float(
+                            "training_health/actor_loss_mean": actor_loss_mean_f,
+                            "training_health/critic_loss_mean": critic_loss_mean_f,
+                            "training_health/true_kl_mean": kl_mean_f,
+                            "training_health/clip_fraction": clip_frac_f,
+                            "training_health/explained_variance": explained_var_f,
+                            "policy_stats/mean_std": float(
                                 jnp.exp(self.agent.actor.log_std.value).mean()
                             ),
-                            "mean_tracking_error": float(tracking_error_epoch),
-                            "mean_angle_error": float(angle_error_epoch),
+                            "policy_stats/mean_log_std": float(
+                                self.agent.actor.log_std.value.mean()
+                            ),
+                            "task_performance/mean_episodic_returns": float(
+                                mean_ep_return_epoch
+                            ),
+                            "task_performance/num_terminal": float(
+                                terminal_count_epoch
+                            ),
+                            "task_performance/mean_lateral_error": float(
+                                tracking_error_epoch
+                            ),
+                            "task_performance/mean_angle_error": float(
+                                angle_error_epoch
+                            ),
+                            "task_performance/mean_final_position_error": float(
+                                final_pos_error_epoch
+                            ),
                             **wandb_reward_payload,
                         },
                         step=global_epoch,
@@ -821,26 +836,16 @@ class OnPolicyRunner(object):
                         phase=phase_name,
                         phase_epoch=int(phase_epoch + 1),
                         critic_grad_scale=float(critic_grad_scale),
-                        mean_rewards=float(rews.mean()),
-                        actor_loss_last=actor_loss_last_f,
-                        critic_loss_last=critic_loss_last_f,
                         actor_loss_mean=actor_loss_mean_f,
                         critic_loss_mean=critic_loss_mean_f,
-                        true_kl_last=kl_last_f,
                         true_kl_mean=kl_mean_f,
                         clip_fraction=clip_frac_f,
-                        adv_mean=adv_mean_f,
-                        adv_std=adv_std_f,
-                        value_mean=value_mean_f,
-                        value_std=value_std_f,
-                        return_mean=return_mean_f,
-                        return_std=return_std_f,
                         explained_variance=explained_var_f,
                         num_terminal=float(terminal_count_epoch),
-                        mean_log_std=float(self.agent.actor.log_std.value.mean()),
                         mean_std=float(jnp.exp(self.agent.actor.log_std.value).mean()),
-                        mean_tracking_error=float(tracking_error_epoch),
+                        mean_lateral_error=float(tracking_error_epoch),
                         mean_angle_error=float(angle_error_epoch),
+                        mean_final_position_error=float(final_pos_error_epoch),
                     )
 
                 # Safeguard: periodically evaluate and keep the best nominal checkpoint
@@ -1219,7 +1224,7 @@ class OnPolicyRunner(object):
                         last_val_loss if last_val_loss is not None else 0.0
                     ),
                     am_val_loss_mean=mean_am_val_loss,
-                    mean_tracking_error=float(tracking_vals.mean()),
+                    mean_lateral_error=float(tracking_vals.mean()),
                     mean_angle_error=float(angle_vals.mean()),
                     mean_extrinsic_error=float(extrinsic_vals.mean()),
                 )
@@ -1471,6 +1476,11 @@ class OnPolicyRunner(object):
                 float(jnp.stack(extrinsic_vals).mean()) if extrinsic_vals else 0.0
             )
             terminal_count = float(step_outputs.terminals[valid_slice].sum())
+            ref_pos = jnp.atleast_2d(self.reference_point)[:, :3]
+            final_positions = step_outputs.next_obs[done_idx, :, :3]
+            final_pos_error = float(
+                jnp.linalg.norm(final_positions - ref_pos, axis=1).mean()
+            )
 
             if self.agent.has_logger:
                 self.env.logger.log(
@@ -1481,9 +1491,10 @@ class OnPolicyRunner(object):
                     stage="evaluation",
                     mean_episodic_returns=float(returns_eval.mean()),
                     num_terminal=terminal_count,
-                    mean_tracking_error=tracking_mean,
+                    mean_lateral_error=tracking_mean,
                     mean_angle_error=angle_mean,
                     mean_extrinsic_error=mean_extrinsic_error,
+                    mean_final_position_error=final_pos_error,
                 )
 
         print(

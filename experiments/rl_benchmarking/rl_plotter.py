@@ -10,28 +10,28 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 RESULTS_DIR = REPO_ROOT / "experiments" / "rl_results"
 
 ERROR_METRICS = [
-    "mean_tracking_error",
+    "mean_lateral_error",
     "mean_angle_error",
     "mean_extrinsic_error",
 ]
 
 STAGE_METRICS_TRAIN = {
     "policy_training": [
-        "mean_tracking_error",
+        "mean_lateral_error",
         "mean_angle_error",
         "mean_extrinsic_error",
+        "mean_final_position_error",
         "mean_episodic_returns",
-        "mean_rewards",
-        "actor_loss_last",
         "actor_loss_mean",
-        "critic_loss_last",
         "critic_loss_mean",
         "num_terminal",
-        "mean_log_std",
         "mean_std",
+        "true_kl_mean",
+        "clip_fraction",
+        "explained_variance",
     ],
     "am_training": [
-        "mean_tracking_error",
+        "mean_lateral_error",
         "mean_angle_error",
         "mean_extrinsic_error",
         "am_train_loss_last",
@@ -40,9 +40,10 @@ STAGE_METRICS_TRAIN = {
         "am_val_loss_mean",
     ],
     "evaluation": [
-        "mean_tracking_error",
+        "mean_lateral_error",
         "mean_angle_error",
         "mean_extrinsic_error",
+        "mean_final_position_error",
         "mean_episodic_returns",
         "num_terminal",
     ],
