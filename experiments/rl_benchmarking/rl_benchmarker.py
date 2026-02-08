@@ -343,6 +343,12 @@ class Benchmarker(object):
 
                 ctrl_input = ctrl.get_control_input(env)
                 env.step(input=ctrl_input)
+                if self.args.video:
+                    if (
+                        env.data.time >= env.env_cfg.renderer.start_recording
+                        and env.data.time <= env.env_cfg.renderer.end_recording
+                    ):
+                        env._update_renderer()
                 _log_step(env, planner, stage_name)
                 step += 1
 
