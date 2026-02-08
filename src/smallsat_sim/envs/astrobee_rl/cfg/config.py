@@ -90,17 +90,18 @@ class EnvConfig(BaseEnvConfig):
                 gamma = 0.99
                 lam = 0.95
                 actor_lr = 3e-4  # Between 2 and 4e-4
-                critic_lr = 1e-3  # >= actor_lr
+                critic_lr = 5e-4  # >= actor_lr
                 entropy_coef = 3e-5  # Make sure std/log_std steadily decreases long enough (see W&B)
                 actor_training_epochs = 3
                 critic_training_epochs = 3
-                actor_critic_training_epochs = 3
-                num_minibatches = 8
+                actor_critic_training_epochs = 1
+                num_minibatches = 32
                 clip_ratio = 0.2
                 target_kl = 0.005
                 use_value_clip = True
                 value_clip_coef = 0.2
                 debug_prints = False
+                log_std_min = float(np.log(0.2))
 
             # Sequential failure curriculum knobs
             curriculum_nominal_epochs = 100

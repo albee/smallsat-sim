@@ -69,6 +69,9 @@ class BaseAgent(BaseController):
         ]
         act_low = jnp.asarray([fr[0] for fr in thruster_ranges], dtype=jnp.float32)
         act_high = jnp.asarray([fr[1] for fr in thruster_ranges], dtype=jnp.float32)
+        log_std_min = None
+        if hasattr(self.ctrl_cfg, "PPO") and hasattr(self.ctrl_cfg.PPO, "log_std_min"):
+            log_std_min = self.ctrl_cfg.PPO.log_std_min
         self.actor = Actor(
             env.obs_dim,
             env.act_dim,
@@ -77,6 +80,7 @@ class BaseAgent(BaseController):
             env.res_dim,
             act_low,
             act_high,
+            log_std_min=log_std_min,
         )
         self.critic = Critic(env.obs_dim, hidden_sizes, activation, env.res_dim)
         self.key = rng_key

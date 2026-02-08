@@ -672,6 +672,9 @@ class OnPolicyRunner(object):
                 actions = data["act"].reshape(-1, self.env.act_dim)
                 rews = data["rews"].reshape(-1)
                 tdres = data["tdres"].reshape(-1)
+                tdres_mean = jnp.mean(tdres)
+                tdres_std = jnp.std(tdres)
+                tdres = (tdres - tdres_mean) / (tdres_std + 1e-8)
                 returns = data["ret"].reshape(-1)
                 logp = data["logp"].reshape(-1)
                 vals = data["vals"].reshape(-1)
@@ -720,6 +723,9 @@ class OnPolicyRunner(object):
                     last_critic_loss,
                     mean_actor_loss,
                     mean_critic_loss,
+                    last_kl,
+                    mean_kl,
+                    mean_clip_frac,
                 ) = self.agent.update_actor_critic_minibatch(
                     actor_key,
                     jnp.concatenate([obs, residuals], axis=1),
@@ -744,6 +750,23 @@ class OnPolicyRunner(object):
                 critic_loss_last_f = float(last_critic_loss)
                 actor_loss_mean_f = float(mean_actor_loss)
                 critic_loss_mean_f = float(mean_critic_loss)
+                kl_last_f = float(last_kl)
+                kl_mean_f = float(mean_kl)
+                clip_frac_f = float(mean_clip_frac)
+
+                adv_mean_f = float(tdres.mean())
+                adv_std_f = float(tdres.std())
+                value_mean_f = float(vals.mean())
+                value_std_f = float(vals.std())
+                return_mean_f = float(returns.mean())
+                return_std_f = float(returns.std())
+                var_returns = jnp.var(returns)
+                explained_var = jnp.where(
+                    var_returns > 1e-8,
+                    1.0 - (jnp.var(returns - vals) / var_returns),
+                    0.0,
+                )
+                explained_var_f = float(explained_var)
 
                 # Monitor key RL metrics during training using Weights & Biases
                 if self.env.use_wandb:
@@ -762,6 +785,16 @@ class OnPolicyRunner(object):
                             "critic_loss_last": critic_loss_last_f,
                             "actor_loss_mean": actor_loss_mean_f,
                             "critic_loss_mean": critic_loss_mean_f,
+                            "true_kl_last": kl_last_f,
+                            "true_kl_mean": kl_mean_f,
+                            "clip_fraction": clip_frac_f,
+                            "adv_mean": adv_mean_f,
+                            "adv_std": adv_std_f,
+                            "value_mean": value_mean_f,
+                            "value_std": value_std_f,
+                            "return_mean": return_mean_f,
+                            "return_std": return_std_f,
+                            "explained_variance": explained_var_f,
                             "mean_episodic_returns": float(mean_ep_return_epoch),
                             "num_terminal": float(terminal_count_epoch),
                             "mean_log_std": float(
@@ -793,6 +826,16 @@ class OnPolicyRunner(object):
                         critic_loss_last=critic_loss_last_f,
                         actor_loss_mean=actor_loss_mean_f,
                         critic_loss_mean=critic_loss_mean_f,
+                        true_kl_last=kl_last_f,
+                        true_kl_mean=kl_mean_f,
+                        clip_fraction=clip_frac_f,
+                        adv_mean=adv_mean_f,
+                        adv_std=adv_std_f,
+                        value_mean=value_mean_f,
+                        value_std=value_std_f,
+                        return_mean=return_mean_f,
+                        return_std=return_std_f,
+                        explained_variance=explained_var_f,
                         num_terminal=float(terminal_count_epoch),
                         mean_log_std=float(self.agent.actor.log_std.value.mean()),
                         mean_std=float(jnp.exp(self.agent.actor.log_std.value).mean()),
