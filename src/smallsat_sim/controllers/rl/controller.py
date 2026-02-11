@@ -135,6 +135,8 @@ class RLController(object):
             if self.deployment_len is not None and step >= max_steps:
                 break
 
+            use_functional = not test_pd
+
             # Start perturbations after 100 steps
             if (
                 self.deployment_len is not None
@@ -153,19 +155,8 @@ class RLController(object):
                         fraction_disturbed_envs=1.0,
                     )
                 self.env._refresh_effect_states()
-
-            if hasattr(self.env, "renderer") and self.env.renderer is not None:
-                self.env._visualize_renderer(self.planner.reference_point_list)
-
-            use_functional = not test_pd and stage not in {
-                "deployment",
-                "stuck_off_deployment",
-                "stuck_on_deployment",
-                "faulty_valve_deployment",
-                "saturated_thrust_deployment",
-                "thrust_instability_deployment",
-                "constant_force_disturbances_deployment",
-            }
+                if use_functional:
+                    vec_state = self.env.state_struct
 
             if use_functional:
                 policy_input = (
@@ -253,7 +244,7 @@ class RLController(object):
                 ext,
             )
 
-            if step_output.terminals.all() or self.planner.completed_path.all():
+            if self.planner.completed_path.all():
                 break
 
     def _build_adaptation_module(self):
