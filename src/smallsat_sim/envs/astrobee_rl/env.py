@@ -2,6 +2,7 @@ import jax.numpy as jnp
 
 from smallsat_sim.envs.vec_env import VecEnv
 from smallsat_sim.envs.perturbations_rl import (
+    Perturbation,
     PerturbationList,
     StuckOffThrusters,
     StuckOnThrusters,
@@ -46,6 +47,8 @@ class AstrobeeEnvVectorized(VecEnv):
         super().__init__(args=args)
 
         # Instantiate perturbations
+        # Ensure a clean shared mask when constructing a new vectorized env.
+        Perturbation.thruster_mask = None
         perturbation_keys = self.next_rng_keys(5)
         self.perturbations = PerturbationList(
             [
@@ -76,6 +79,10 @@ class AstrobeeEnvVectorized(VecEnv):
         """
         Resets the perturbations.
         """
+        # Clear the shared class-level thruster mask so failures do not
+        # persist across epochs/evaluations when perturbation objects are rebuilt.
+        Perturbation.thruster_mask = None
+
         perturbation_keys = self.next_rng_keys(5)
         self.perturbations = PerturbationList(
             [

@@ -564,6 +564,51 @@ class Perturbation(ABC):
 
         return selected_thrusters
 
+    def resolve_target_envs(
+        self,
+        key: jnp.ndarray,
+        perturbed_envs: jnp.ndarray | None,
+    ) -> jnp.ndarray:
+        """
+        Resolve target environments for a failure registration.
+        """
+        return self.get_perturbed_envs(key, 1.0, perturbed_envs)
+
+    def select_shared_operational_thruster(
+        self,
+        key: jnp.ndarray,
+        perturbed_envs: jnp.ndarray,
+        preferred_thruster: int | None = None,
+    ) -> int | None:
+        """
+        Select one thruster index that is operational across all target environments.
+        Returns `None` if no shared operational thruster exists.
+        """
+        if perturbed_envs.size == 0:
+            return None
+
+        selected_envs = Perturbation.thruster_mask[perturbed_envs]
+        shared_operational = jnp.all(
+            selected_envs == PerturbationStatus.OPERATIONAL.value, axis=0
+        )
+        valid_thrusters = jnp.where(
+            shared_operational, size=self.nu, fill_value=-1
+        )[0]
+        valid_mask = valid_thrusters != -1
+        num_valid = int(valid_mask.sum())
+        if num_valid <= 0:
+            return None
+
+        if preferred_thruster is not None:
+            preferred_idx = int(preferred_thruster)
+            if 0 <= preferred_idx < self.nu and bool(shared_operational[preferred_idx]):
+                return preferred_idx
+            return None
+
+        probs = valid_mask.astype(jnp.float32) / float(num_valid)
+        chosen = jax.random.choice(key, valid_thrusters, p=probs)
+        return int(jax.device_get(chosen))
+
     @abstractmethod
     def apply(self, input: jnp.ndarray, timestamp: float = 0.0) -> jnp.ndarray:
         pass
@@ -726,7 +771,7 @@ class StuckOffThrusters(Perturbation):
         Method to shut off a random thruster or a specific one if provided.
         """
         env_key, thruster_key = jax.random.split(key)
-        stuck_off_envs = self.get_perturbed_envs(env_key, 1.0, perturbed_envs)
+        stuck_off_envs = self.resolve_target_envs(env_key, perturbed_envs)
         stuck_off_thrusters = self.select_thrusters(
             thruster_key, stuck_off_envs, perturbed_thrusters
         )
@@ -776,12 +821,24 @@ class StuckOnThrusters(Perturbation):
         self.failure_type = PerturbationStatus.STUCK_ON
         self.start_times = jnp.zeros((self.num_envs, self.nu))
 
+        self.min_thruster_force = jnp.asarray(
+            [
+                thruster.forcerange[0]
+                for thruster in self.model_config.Thrusters.thruster_list
+            ],
+            dtype=self.start_times.dtype,
+        )
         self.max_thruster_force = jnp.asarray(
             [
                 thruster.forcerange[1]
                 for thruster in self.model_config.Thrusters.thruster_list
             ],
             dtype=self.start_times.dtype,
+        )
+        # Per env/thruster stuck-on force value. Active channels are sampled uniformly
+        # within each thruster's physical force range when failure is registered.
+        self.stuck_on_force = jnp.tile(
+            self.max_thruster_force[None, :], (self.num_envs, 1)
         )
 
         # Vectorized input replacement across environments
@@ -793,7 +850,7 @@ class StuckOnThrusters(Perturbation):
             thruster_mask=Perturbation.thruster_mask,
             failure_value=self.failure_type.value,
             start_times=self.start_times,
-            max_thruster_force=self.max_thruster_force,
+            max_thruster_force=self.stuck_on_force,
         )
 
     def apply(self, input: jnp.ndarray, timestamp: float = 0.0) -> jnp.ndarray:
@@ -821,12 +878,23 @@ class StuckOnThrusters(Perturbation):
         """
         Method to unable a random thruster or a specific one if provided, to shut off.
         """
-        env_key, thruster_key = jax.random.split(key)
-        stuck_on_envs = self.get_perturbed_envs(env_key, 1.0, perturbed_envs)
+        env_key, thruster_key, force_key = jax.random.split(key, 3)
+        stuck_on_envs = self.resolve_target_envs(env_key, perturbed_envs)
 
         stuck_on_thrusters = self.select_thrusters(
             thruster_key, stuck_on_envs, perturbed_thrusters
         )
+        min_force = self.min_thruster_force[stuck_on_thrusters]
+        max_force = self.max_thruster_force[stuck_on_thrusters]
+        sampled_force = jax.random.uniform(
+            force_key,
+            shape=(stuck_on_envs.shape[0],),
+            minval=min_force,
+            maxval=max_force,
+        )
+        self.stuck_on_force = self.stuck_on_force.at[
+            stuck_on_envs, stuck_on_thrusters
+        ].set(sampled_force)
 
         Perturbation.thruster_mask = Perturbation.thruster_mask.at[
             stuck_on_envs, stuck_on_thrusters
@@ -841,7 +909,7 @@ class StuckOnThrusters(Perturbation):
             self.state,
             Perturbation.thruster_mask,
             self.start_times,
-            self.max_thruster_force,
+            self.stuck_on_force,
             self._key,
         )
 
@@ -1225,18 +1293,23 @@ class GPPerturbation(Perturbation):
         Register a perturbation and store the interpolation data.
         NOTE: the same thruster fails in all chosen envs for now.
         """
-        if index is not None:
-            thruster_index = index
-            env_key = key
-        else:
-            thruster_key, env_key = jax.random.split(key)
-            thruster_index = int(
-                jax.device_get(
-                    jax.random.randint(thruster_key, shape=(), minval=0, maxval=self.nu)
-                )
-            )
+        env_key, thruster_key = jax.random.split(key)
+        gp_perturbed_envs = self.resolve_target_envs(env_key, perturbed_envs)
+        if gp_perturbed_envs.size == 0:
+            return
 
-        gp_perturbed_envs = self.get_perturbed_envs(env_key, 1.0, perturbed_envs)
+        thruster_index = self.select_shared_operational_thruster(
+            thruster_key,
+            gp_perturbed_envs,
+            preferred_thruster=index,
+        )
+        if thruster_index is None:
+            if self.verbose:
+                print(
+                    "Could not register GP perturbation: no shared operational thruster "
+                    "for selected environments."
+                )
+            return
 
         Perturbation.thruster_mask = Perturbation.thruster_mask.at[
             gp_perturbed_envs, jnp.full(gp_perturbed_envs.shape[0], thruster_index)

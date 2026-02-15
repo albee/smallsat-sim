@@ -17,6 +17,7 @@ from smallsat_sim.envs.disturbances import (
     disturbance_state_to_serializable,
 )
 from smallsat_sim.envs.perturbations_rl import (
+    Perturbation,
     PerturbationState,
     PerturbationStatus,
     gp_apply_from_state,
@@ -1347,6 +1348,81 @@ class VecEnv(BaseEnv):
             base_perturbation_states=self.perturbation_states,
         )
 
+    def _get_active_failure_masks(self) -> tuple[jnp.ndarray, jnp.ndarray]:
+        """
+        Return boolean masks `(has_perturbation, has_disturbance)` per environment.
+        """
+        has_perturbation = jnp.zeros((self.num_envs,), dtype=bool)
+        has_disturbance = jnp.zeros((self.num_envs,), dtype=bool)
+
+        thruster_mask = getattr(Perturbation, "thruster_mask", None)
+        if thruster_mask is not None and thruster_mask.shape[0] == self.num_envs:
+            has_perturbation = jnp.any(
+                thruster_mask != PerturbationStatus.OPERATIONAL.value, axis=1
+            )
+
+        disturbance_states = getattr(self, "disturbance_states", ()) or ()
+        for state in disturbance_states:
+            if state is None:
+                continue
+            active_mask = getattr(state, "active_mask", None)
+            if active_mask is None:
+                continue
+            active_mask = jnp.asarray(active_mask).astype(bool)
+            if active_mask.shape[0] == self.num_envs:
+                has_disturbance = jnp.logical_or(has_disturbance, active_mask)
+
+        return has_perturbation, has_disturbance
+
+    def _select_envs_with_priority(
+        self,
+        key: jnp.ndarray,
+        num_selected: int,
+        priority_masks: list[jnp.ndarray],
+    ) -> jnp.ndarray:
+        """
+        Select `num_selected` unique env indices from priority tiers in order.
+        """
+        if num_selected <= 0:
+            return jnp.array([], dtype=jnp.int32)
+        remaining = int(min(num_selected, self.num_envs))
+        permuted_indices = jax.random.permutation(
+            key, jnp.arange(self.num_envs, dtype=jnp.int32)
+        )
+        selected_mask = jnp.zeros((self.num_envs,), dtype=bool)
+
+        for tier_mask in priority_masks:
+            if remaining <= 0:
+                break
+            tier_mask = jnp.asarray(tier_mask, dtype=bool)
+            if tier_mask.shape[0] != self.num_envs:
+                continue
+            tier_candidates = jnp.logical_and(tier_mask, jnp.logical_not(selected_mask))
+            tier_candidates_permuted = tier_candidates[permuted_indices]
+            candidate_count = int(tier_candidates_permuted.sum())
+            if candidate_count <= 0:
+                continue
+            take_count = min(remaining, candidate_count)
+            candidate_rank = jnp.cumsum(tier_candidates_permuted.astype(jnp.int32))
+            take_permuted = jnp.logical_and(
+                tier_candidates_permuted, candidate_rank <= take_count
+            )
+            chosen = permuted_indices[take_permuted]
+            selected_mask = selected_mask.at[chosen].set(True)
+            remaining -= take_count
+
+        if remaining > 0:
+            available_permuted = jnp.logical_not(selected_mask)[permuted_indices]
+            available_rank = jnp.cumsum(available_permuted.astype(jnp.int32))
+            take_permuted = jnp.logical_and(available_permuted, available_rank <= remaining)
+            chosen = permuted_indices[take_permuted]
+            selected_mask = selected_mask.at[chosen].set(True)
+
+        selected_permuted = selected_mask[permuted_indices]
+        selected_rank = jnp.cumsum(selected_permuted.astype(jnp.int32))
+        take_permuted = jnp.logical_and(selected_permuted, selected_rank <= num_selected)
+        return permuted_indices[take_permuted].astype(jnp.int32)
+
     def apply_random_perturbations(
         self,
         key,
@@ -1360,7 +1436,8 @@ class VecEnv(BaseEnv):
         NOTE: the thrusters are picked at random and the default times are 0.0 for now.
         """
         # Calculate number of environments to perturb
-        num_perturbed = int(self.num_envs * fraction_perturbed_envs)
+        clamped_fraction = max(0.0, min(1.0, fraction_perturbed_envs))
+        num_perturbed = int(self.num_envs * clamped_fraction)
         if num_perturbed == 0:
             return
 
@@ -1368,10 +1445,19 @@ class VecEnv(BaseEnv):
         perm_key, cat_key, subkeys_key = jax.random.split(key, 3)
         subkeys = jax.random.split(subkeys_key, 5)
 
-        # Get a random permutation of all environment indices
-        env_indices = jnp.arange(self.num_envs)
-        permuted_indices = jax.random.permutation(perm_key, env_indices)
-        selected_indices = permuted_indices[:num_perturbed]
+        # Prefer environments without any active failure/disturbance.
+        # If that pool is exhausted, prefer envs with disturbances only
+        # before reusing already perturbed envs.
+        has_perturbation, has_disturbance = self._get_active_failure_masks()
+        clean_envs = jnp.logical_not(jnp.logical_or(has_perturbation, has_disturbance))
+        disturbed_only_envs = jnp.logical_and(
+            has_disturbance, jnp.logical_not(has_perturbation)
+        )
+        selected_indices = self._select_envs_with_priority(
+            perm_key,
+            num_perturbed,
+            [clean_envs, disturbed_only_envs, has_perturbation],
+        )
 
         # Sample per-env perturbation types without host-side partitioning
         total_weight = jnp.sum(perturbation_distribution)
@@ -1417,9 +1503,18 @@ class VecEnv(BaseEnv):
         if num_disturbed == 0:
             return
 
-        env_indices = jnp.arange(self.num_envs)
-        permuted_indices = jax.random.permutation(key, env_indices)
-        selected_indices = permuted_indices[:num_disturbed]
+        # Prefer environments without any active failure/disturbance.
+        # If needed, reuse already disturbed envs before overlapping with perturbations.
+        has_perturbation, has_disturbance = self._get_active_failure_masks()
+        clean_envs = jnp.logical_not(jnp.logical_or(has_perturbation, has_disturbance))
+        perturb_only_envs = jnp.logical_and(
+            has_perturbation, jnp.logical_not(has_disturbance)
+        )
+        selected_indices = self._select_envs_with_priority(
+            key,
+            num_disturbed,
+            [clean_envs, has_disturbance, perturb_only_envs],
+        )
 
         constant_force_disturbance = None
         for disturbance in self.disturbances.disturbances:
