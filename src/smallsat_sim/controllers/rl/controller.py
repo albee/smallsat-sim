@@ -16,6 +16,7 @@ from smallsat_sim.controllers.rl.modules.am_transformer import (
 from smallsat_sim.controllers.rl.runners.runner_utils import load_trained_modules
 
 _JITTED_VECENV_STEP = jax.jit(vecenv_step, static_argnames=("config",))
+MAX_LOGGED_TRAJECTORY_ENVS = 10
 
 
 class RLController(object):
@@ -216,8 +217,6 @@ class RLController(object):
             next_waypoint = self.planner.get_reference(step_output.next_obs)
             states = step_output.next_states
 
-            step += 1
-
             actual_wrench = step_output.actual_wrench
             desired_wrench = step_output.desired_wrench
             if self.env.use_adaptive_approach:
@@ -243,9 +242,24 @@ class RLController(object):
                 actual_wrench,
                 ext,
             )
+            if self.agent.has_logger:
+                n_log_envs = min(self.env.num_envs, MAX_LOGGED_TRAJECTORY_ENVS)
+                positions = step_output.next_obs[:n_log_envs, :3]
+                self.env.logger.log(
+                    self.env.run_id,
+                    float(self.env.mjx_batch.time[0]),
+                    run_name=self.env.run_name,
+                    stage=stage,
+                    step=int(step),
+                    position_x=positions[:, 0],
+                    position_y=positions[:, 1],
+                    position_z=positions[:, 2],
+                )
 
             if self.planner.completed_path.all():
                 break
+
+            step += 1
 
     def _build_adaptation_module(self):
         """
