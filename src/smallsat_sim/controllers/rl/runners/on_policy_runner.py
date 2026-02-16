@@ -612,10 +612,6 @@ class OnPolicyRunner(object):
                 bootstrap_vals = rollout_result.bootstrap_values
                 episode_returns_traj = rollout_result.episode_returns
 
-                terminal_count = float(
-                    jnp.sum(step_outputs.terminals.astype(jnp.float32))
-                )
-
                 buffer_start = time.perf_counter()
                 start_ptr = buffer.path_start_idx
                 # Store the full trajectory in the device-friendly replay buffer
@@ -719,7 +715,19 @@ class OnPolicyRunner(object):
                         final_positions - ref_pos, axis=1
                     ).mean()
 
-                terminal_count_epoch = jnp.asarray(terminal_count)
+                terminals_any_epoch = jnp.any(step_outputs.terminals, axis=0)
+                success_env_count_epoch = jnp.asarray(
+                    terminals_any_epoch.astype(jnp.float32).sum()
+                )
+                success_rate_epoch = jnp.asarray(
+                    terminals_any_epoch.astype(jnp.float32).mean()
+                )
+                terminal_envs_at_end_epoch = jnp.asarray(
+                    step_outputs.terminals[-1].astype(jnp.float32).sum()
+                )
+                terminal_env_rate_at_end_epoch = jnp.asarray(
+                    step_outputs.terminals[-1].astype(jnp.float32).mean()
+                )
                 mean_ep_return_epoch = (
                     jnp.asarray(episode_return_sum / episode_counter_epoch)
                     if episode_counter_epoch > 0
@@ -852,8 +860,17 @@ class OnPolicyRunner(object):
                             "task_performance/mean_episodic_returns": float(
                                 mean_ep_return_epoch
                             ),
-                            "task_performance/num_terminal": float(
-                                terminal_count_epoch
+                            "task_performance/success_env_count": float(
+                                success_env_count_epoch
+                            ),
+                            "task_performance/success_rate": float(
+                                success_rate_epoch
+                            ),
+                            "task_performance/terminal_envs_at_end": float(
+                                terminal_envs_at_end_epoch
+                            ),
+                            "task_performance/terminal_env_rate_at_end": float(
+                                terminal_env_rate_at_end_epoch
                             ),
                             "task_performance/mean_lateral_error": float(
                                 tracking_error_epoch
@@ -886,7 +903,12 @@ class OnPolicyRunner(object):
                         true_kl_mean=kl_mean_f,
                         clip_fraction=clip_frac_f,
                         explained_variance=explained_var_f,
-                        num_terminal=float(terminal_count_epoch),
+                        success_env_count=float(success_env_count_epoch),
+                        success_rate=float(success_rate_epoch),
+                        terminal_envs_at_end=float(terminal_envs_at_end_epoch),
+                        terminal_env_rate_at_end=float(
+                            terminal_env_rate_at_end_epoch
+                        ),
                         mean_std=float(jnp.exp(self.agent.actor.log_std.value).mean()),
                         mean_lateral_error=float(tracking_error_epoch),
                         mean_angle_error=float(angle_error_epoch),
@@ -1524,7 +1546,15 @@ class OnPolicyRunner(object):
             mean_extrinsic_error = (
                 float(jnp.stack(extrinsic_vals).mean()) if extrinsic_vals else 0.0
             )
-            terminal_count = float(step_outputs.terminals[valid_slice].sum())
+            terminals_any_eval = jnp.any(step_outputs.terminals[valid_slice], axis=0)
+            success_env_count = float(terminals_any_eval.astype(jnp.float32).sum())
+            success_rate = float(terminals_any_eval.astype(jnp.float32).mean())
+            terminal_envs_at_end = float(
+                step_outputs.terminals[done_idx].astype(jnp.float32).sum()
+            )
+            terminal_env_rate_at_end = float(
+                step_outputs.terminals[done_idx].astype(jnp.float32).mean()
+            )
             ref_pos = jnp.atleast_2d(self.reference_point)[:, :3]
             final_positions = step_outputs.next_obs[done_idx, :, :3]
             final_pos_error = float(
@@ -1539,7 +1569,10 @@ class OnPolicyRunner(object):
                     run_name=self.env.run_name,
                     stage="evaluation",
                     mean_episodic_returns=float(returns_eval.mean()),
-                    num_terminal=terminal_count,
+                    success_env_count=success_env_count,
+                    success_rate=success_rate,
+                    terminal_envs_at_end=terminal_envs_at_end,
+                    terminal_env_rate_at_end=terminal_env_rate_at_end,
                     mean_lateral_error=tracking_mean,
                     mean_angle_error=angle_mean,
                     mean_extrinsic_error=mean_extrinsic_error,

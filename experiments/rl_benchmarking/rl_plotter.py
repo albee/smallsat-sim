@@ -25,7 +25,8 @@ STAGE_METRICS_TRAIN = {
         "mean_episodic_returns",
         "actor_loss_mean",
         "critic_loss_mean",
-        "num_terminal",
+        "success_rate",
+        "terminal_env_rate_at_end",
         "mean_std",
         "true_kl_mean",
         "clip_fraction",
@@ -46,7 +47,8 @@ STAGE_METRICS_TRAIN = {
         "mean_extrinsic_error",
         "mean_final_position_error",
         "mean_episodic_returns",
-        "num_terminal",
+        "success_rate",
+        "terminal_env_rate_at_end",
     ],
 }
 
