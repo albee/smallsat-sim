@@ -436,7 +436,20 @@ class OnPolicyRunner(object):
                     ),
                 )
                 jax.block_until_ready(rollout_result.actions)
-                rewards.append(float(rollout_result.step_outputs.rewards.mean()))
+                done_flags = rollout_result.done_flags
+                done_indices = jnp.nonzero(
+                    done_flags, size=self.episode_len, fill_value=-1
+                )[0]
+                done_indices = jax.device_get(done_indices)
+                done_idx = (
+                    int(done_indices[0])
+                    if done_indices.size and done_indices[0] >= 0
+                    else self.episode_len - 1
+                )
+                episodic_returns = rollout_result.step_outputs.rewards[
+                    : done_idx + 1
+                ].sum(axis=0)
+                rewards.append(float(episodic_returns.mean()))
 
             # Restore the training RNG after evaluation.
             self.agent.key = agent_key_before
@@ -717,6 +730,33 @@ class OnPolicyRunner(object):
                     name: values.mean()
                     for name, values in epoch_reward_components.items()
                 }
+                reward_abs = jnp.abs(step_outputs.rewards)
+                reward_scale_metrics = {
+                    "mean_step_reward": float(step_outputs.rewards.mean()),
+                    "mean_abs_step_reward": float(reward_abs.mean()),
+                    "max_abs_step_reward": float(reward_abs.max()),
+                }
+                if self.env.collect_reward_components:
+                    shaping_total = epoch_reward_components.get("shaping_total")
+                    penalty_total = epoch_reward_components.get("penalty_total")
+                    bonus_terminal = epoch_reward_components.get("bonus_terminal")
+                    if shaping_total is not None:
+                        reward_scale_metrics["mean_abs_shaping_total"] = float(
+                            jnp.abs(shaping_total).mean()
+                        )
+                    if penalty_total is not None:
+                        reward_scale_metrics["mean_abs_penalty_total"] = float(
+                            jnp.abs(penalty_total).mean()
+                        )
+                    if bonus_terminal is not None:
+                        reward_scale_metrics["mean_terminal_bonus"] = float(
+                            bonus_terminal.mean()
+                        )
+
+                if reward_scale_metrics["mean_abs_step_reward"] < 1e-4:
+                    print(
+                        "[RewardScale] mean |step reward| < 1e-4; reward/penalty magnitudes may be too small."
+                    )
                 other_rollout_time = max(
                     0.0, rollout_duration - (scan_time + buffer_time)
                 )
@@ -788,6 +828,10 @@ class OnPolicyRunner(object):
                         f"reward_components/{metric_name}": float(metric_value)
                         for metric_name, metric_value in reward_component_means.items()
                     }
+                    wandb_reward_scale_payload = {
+                        f"reward_scale/{metric_name}": metric_value
+                        for metric_name, metric_value in reward_scale_metrics.items()
+                    }
                     wandb.log(
                         {
                             "curriculum/phase": phase_name,
@@ -821,6 +865,7 @@ class OnPolicyRunner(object):
                                 final_pos_error_epoch
                             ),
                             **wandb_reward_payload,
+                            **wandb_reward_scale_payload,
                         },
                         step=global_epoch,
                     )
@@ -846,6 +891,10 @@ class OnPolicyRunner(object):
                         mean_lateral_error=float(tracking_error_epoch),
                         mean_angle_error=float(angle_error_epoch),
                         mean_final_position_error=float(final_pos_error_epoch),
+                        **{
+                            f"reward_scale_{k}": float(v)
+                            for k, v in reward_scale_metrics.items()
+                        },
                     )
 
                 # Safeguard: periodically evaluate and keep the best nominal checkpoint

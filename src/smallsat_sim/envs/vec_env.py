@@ -83,6 +83,8 @@ class VecEnvStepConfig:
     lam_speed_terminal: float
     lam_ang_speed_terminal: float
     lam_fuel_terminal: float
+    terminal_bonus: float
+    terminal_radius: float
     lam_wrench_residual: float
     wrench_residual_tolerance: float
     wrench_residual_clip: float
@@ -413,8 +415,8 @@ def _reward_components(
     return pos_reward, vel_reward, att_reward, ang_reward
 
 
-def _compute_terminals(states: jnp.ndarray) -> jnp.ndarray:
-    radius = jnp.asarray(0.3, dtype=states.dtype)
+def _compute_terminals(states: jnp.ndarray, config: VecEnvStepConfig) -> jnp.ndarray:
+    radius = jnp.asarray(config.terminal_radius, dtype=states.dtype)
     return jnp.linalg.norm(states[:, 0:3], axis=1) <= radius
 
 
@@ -716,7 +718,7 @@ def vecenv_step(
     ) = _reward_components(next_states, config)
     phi_next = pos_next + vel_next + att_next + ang_next
 
-    terminals = _compute_terminals(next_states)
+    terminals = _compute_terminals(next_states, config)
     if config.use_adaptive_approach and config.res_dim > 0:
         if prev_residuals is None or prev_residuals.shape[-1] == 0:
             mixer_T = jnp.asarray(config.thruster_mixer_T, dtype=prev_states.dtype)
@@ -744,6 +746,8 @@ def vecenv_step(
     )
 
     rewards = phi_next - phi_curr - penalties
+    terminal_bonus = jnp.asarray(config.terminal_bonus, dtype=rewards.dtype)
+    rewards = rewards + terminal_bonus * terminals.astype(rewards.dtype)
 
     if config.collect_reward_components:
         shaping_deltas = jnp.stack(
@@ -763,6 +767,7 @@ def vecenv_step(
             "shaping_angvel": shaping_deltas[:, 3],
             "shaping_total": total_shaping,
             **penalty_components,
+            "bonus_terminal": terminal_bonus * terminals.astype(rewards.dtype),
             "reward_total": rewards,
         }
     else:
@@ -1336,6 +1341,8 @@ class VecEnv(BaseEnv):
             lam_speed_terminal=float(self.lam_speed_terminal),
             lam_ang_speed_terminal=float(self.lam_ang_speed_terminal),
             lam_fuel_terminal=float(self.lam_fuel_terminal),
+            terminal_bonus=float(self.terminal_bonus),
+            terminal_radius=float(self.terminal_radius),
             lam_wrench_residual=float(self.lam_wrench_residual),
             wrench_residual_tolerance=float(self.wrench_residual_tolerance),
             wrench_residual_clip=float(self.wrench_residual_clip),
@@ -1704,7 +1711,7 @@ class VecEnv(BaseEnv):
         """
         Returns one if in terminal set, zero otherwise.
         """
-        return jnp.linalg.norm(states[0:3]) <= self.sigma_pos
+        return jnp.linalg.norm(states[0:3]) <= self.terminal_radius
 
     def _get_error_quat_logvec(
         self, q: jnp.ndarray, q_des: jnp.ndarray, eps: float = 1e-9
@@ -1773,6 +1780,9 @@ class VecEnv(BaseEnv):
         self.lam_fuel_terminal = self.env_cfg.control.RL.lam_fuel_terminal
         self.terminal_bonus = float(
             getattr(self.env_cfg.control.RL, "terminal_bonus", 0.0)
+        )
+        self.terminal_radius = float(
+            getattr(self.env_cfg.control.RL, "terminal_radius", 0.3)
         )
         self.lam_wrench_residual = self.env_cfg.control.RL.lam_wrench_residual
         self.wrench_residual_tolerance = (

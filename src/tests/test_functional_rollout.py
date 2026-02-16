@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
@@ -141,7 +142,8 @@ def test_compute_terminals_radius_threshold() -> None:
     states = states.at[0, 0].set(0.1)
     states = states.at[1, 0].set(0.31)
 
-    terminals = vec_env._compute_terminals(states)
+    config = SimpleNamespace(terminal_radius=0.3)
+    terminals = vec_env._compute_terminals(states, config)
 
     assert bool(terminals[0])
     assert not bool(terminals[1])
@@ -176,6 +178,8 @@ def test_compute_penalties_residual_clip_and_terminal_terms() -> None:
         lam_speed_terminal=2.0,
         lam_ang_speed_terminal=0.0,
         lam_fuel_terminal=3.0,
+        terminal_bonus=1.0,
+        terminal_radius=0.3,
         lam_wrench_residual=4.0,
         wrench_residual_tolerance=1.0,
         wrench_residual_clip=2.0,
