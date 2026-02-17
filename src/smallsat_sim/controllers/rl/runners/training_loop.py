@@ -618,6 +618,9 @@ def learn_runner(self) -> None:
             value_std_f = float(vals.std())
             return_mean_f = float(returns.mean())
             return_std_f = float(returns.std())
+            critic_loss_normalized_f = float(
+                critic_loss_mean_f / (return_std_f * return_std_f + 1e-8)
+            )
             var_returns = jnp.var(returns)
             explained_var = jnp.where(
                 var_returns > 1e-8,
@@ -639,6 +642,9 @@ def learn_runner(self) -> None:
                     true_kl_mean=kl_mean_f,
                     clip_fraction=clip_frac_f,
                     explained_variance=explained_var_f,
+                    return_std=return_std_f,
+                    value_std=value_std_f,
+                    critic_loss_normalized=critic_loss_normalized_f,
                     mean_std=mean_std_f,
                     mean_log_std=mean_log_std_f,
                     mean_episodic_returns=float(mean_ep_return_epoch),
@@ -686,6 +692,9 @@ def learn_runner(self) -> None:
                     true_kl_mean=kl_mean_f,
                     clip_fraction=clip_frac_f,
                     explained_variance=explained_var_f,
+                    return_std=return_std_f,
+                    value_std=value_std_f,
+                    critic_loss_normalized=critic_loss_normalized_f,
                     success_env_count=float(success_env_count_epoch),
                     success_rate=float(success_rate_epoch),
                     terminated_step_count=float(terminated_step_count_epoch),
