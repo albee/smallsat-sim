@@ -6,6 +6,7 @@ import jax.numpy as jnp
 import pytest
 
 from smallsat_sim.controllers.rl.runners import rollout_utils as ru
+from smallsat_sim.controllers.rl.storage.replay_buffer import ReplayBuffer
 
 
 @dataclass
@@ -141,12 +142,44 @@ def test_compute_terminals_radius_threshold() -> None:
     states = jnp.zeros((2, 12), dtype=jnp.float32)
     states = states.at[0, 0].set(0.1)
     states = states.at[1, 0].set(0.31)
+    hold_counts = jnp.zeros((2,), dtype=jnp.int32)
 
-    config = SimpleNamespace(terminal_radius=0.3)
-    terminals = vec_env._compute_terminals(states, config)
+    config = SimpleNamespace(
+        terminal_radius=0.3,
+        terminal_max_speed=10.0,
+        terminal_max_att_error=10.0,
+        terminal_max_ang_speed=10.0,
+        terminal_hold_steps=1,
+    )
+    terminals, counts = vec_env._compute_terminals(states, hold_counts, config)
 
     assert bool(terminals[0])
     assert not bool(terminals[1])
+    assert int(counts[0]) == 1
+    assert int(counts[1]) == 0
+
+
+def test_compute_terminals_requires_consecutive_hold_steps() -> None:
+    vec_env = pytest.importorskip("smallsat_sim.envs.vec_env")
+    states = jnp.zeros((1, 12), dtype=jnp.float32)
+    config = SimpleNamespace(
+        terminal_radius=0.3,
+        terminal_max_speed=10.0,
+        terminal_max_att_error=10.0,
+        terminal_max_ang_speed=10.0,
+        terminal_hold_steps=3,
+    )
+
+    terminals_1, counts_1 = vec_env._compute_terminals(
+        states, jnp.array([0], dtype=jnp.int32), config
+    )
+    terminals_2, counts_2 = vec_env._compute_terminals(states, counts_1, config)
+    terminals_3, counts_3 = vec_env._compute_terminals(states, counts_2, config)
+
+    assert not bool(terminals_1[0])
+    assert not bool(terminals_2[0])
+    assert bool(terminals_3[0])
+    assert int(counts_3[0]) == 3
 
 
 def test_compute_penalties_residual_clip_and_terminal_terms() -> None:
@@ -180,6 +213,15 @@ def test_compute_penalties_residual_clip_and_terminal_terms() -> None:
         lam_fuel_terminal=3.0,
         terminal_bonus=1.0,
         terminal_radius=0.3,
+        terminal_max_speed=10.0,
+        terminal_max_att_error=10.0,
+        terminal_max_ang_speed=10.0,
+        terminal_hold_steps=1,
+        enable_failure_termination=False,
+        failure_max_position_error=100.0,
+        failure_max_speed=100.0,
+        failure_max_att_error=100.0,
+        failure_max_ang_speed=100.0,
         lam_wrench_residual=4.0,
         wrench_residual_tolerance=1.0,
         wrench_residual_clip=2.0,
@@ -283,7 +325,10 @@ def test_run_functional_rollout_resets_and_reports_returns() -> None:
         reset_fn=_vecenv_reset_stub,
     )
 
-    assert bool(result.done_flags[0].all())
+    assert bool(result.done_flags[0])
+    assert bool(result.done_masks[0].all())
+    assert bool(result.terminated_masks[0].all())
+    assert not bool(result.truncated_masks[0].any())
     assert jnp.allclose(result.episode_returns[0], jnp.full((num_envs,), 2.0))
     assert jnp.allclose(result.episode_returns[1], jnp.zeros((num_envs,)))
     assert jnp.allclose(result.episode_returns[2], jnp.full((num_envs,), 4.0))
@@ -366,8 +411,52 @@ def test_run_functional_rollout_bootstraps_timeouts() -> None:
     )
 
     bootstrap_vals = result.bootstrap_values
+    assert jnp.all(result.terminated_masks == 0)
+    assert jnp.all(result.truncated_masks[1])
+    assert jnp.all(result.truncated_masks[3])
+    assert not bool(result.truncated_masks[0].any())
+    assert not bool(result.truncated_masks[2].any())
+    assert not bool(result.truncated_masks[4].any())
     assert jnp.allclose(bootstrap_vals[1], 7.0)
     assert jnp.allclose(bootstrap_vals[3], 7.0)
     assert jnp.allclose(bootstrap_vals[4], 7.0)
     assert jnp.allclose(bootstrap_vals[0], 0.0)
     assert jnp.allclose(bootstrap_vals[2], 0.0)
+
+
+def test_replay_buffer_terminated_vs_truncated_bootstrap_returns() -> None:
+    gamma = 0.9
+    buf = ReplayBuffer(
+        num_envs=1,
+        obs_dim=1,
+        act_dim=1,
+        res_dim=0,
+        size=2,
+        gamma=gamma,
+        lam=1.0,
+    )
+
+    obs = jnp.zeros((2, 1, 1), dtype=jnp.float32)
+    act = jnp.zeros((2, 1, 1), dtype=jnp.float32)
+    rew = jnp.array([[1.0], [1.0]], dtype=jnp.float32)
+    val = jnp.zeros((2, 1), dtype=jnp.float32)
+    logp = jnp.zeros((2, 1), dtype=jnp.float32)
+    residuals = jnp.zeros((2, 1, 0), dtype=jnp.float32)
+    buf.store_batch(obs, act, rew, val, logp, residuals)
+
+    done_masks = jnp.array([[True], [True]])
+    terminated_masks = jnp.array([[True], [False]])
+    truncated_masks = jnp.array([[False], [True]])
+    bootstrap = jnp.array([[0.0], [10.0]], dtype=jnp.float32)
+
+    buf.finalize_with_masks(
+        done_masks=done_masks,
+        bootstrap_values=bootstrap,
+        terminated_masks=terminated_masks,
+        truncated_masks=truncated_masks,
+    )
+    data = buf.get()
+    returns = data["ret"][:, 0]
+
+    assert jnp.isclose(returns[0], 1.0)  # terminated: no bootstrap
+    assert jnp.isclose(returns[1], 1.0 + gamma * 10.0)  # truncated: bootstrap

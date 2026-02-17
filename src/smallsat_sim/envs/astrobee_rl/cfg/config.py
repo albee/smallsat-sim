@@ -128,6 +128,19 @@ class EnvConfig(BaseEnvConfig):
             lam_fuel_terminal = 5e-4
             terminal_bonus = 1e0
             terminal_radius = 0.3
+            terminal_hold_steps = 5
+            terminal_max_speed = 0.15
+            terminal_max_att_error = 0.25  # radians
+            terminal_max_ang_speed = 0.05
+
+            # Optional failure terminations (kept off by default)
+            enable_failure_termination = False
+            failure_max_position_error = 8.0
+            failure_max_speed = 2.0
+            failure_max_att_error = 2.8  # radians
+            failure_max_ang_speed = 2.0
+
+            # Wrench
             lam_wrench_residual = 0.0  # Disregard wrench residual for now, minimizing it is implicitly encoded in the reward
             wrench_residual_tolerance = 1e-1
             wrench_residual_clip = 0.5

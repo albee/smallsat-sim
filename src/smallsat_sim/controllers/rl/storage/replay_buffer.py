@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import jax
 import jax.numpy as jnp
 
 from smallsat_sim.utils.helpers_jax import discount_cumsum
@@ -162,9 +163,90 @@ class ReplayBuffer(object):
         self.ret_buf = self.ret_buf.at[start_idx:end_idx].set(returns)
         self.ret_filled = self.ret_filled.at[start_idx:end_idx].set(True)
 
+    def finalize_with_masks(
+        self,
+        done_masks: jnp.ndarray,
+        bootstrap_values: jnp.ndarray,
+        terminated_masks: jnp.ndarray | None = None,
+        truncated_masks: jnp.ndarray | None = None,
+    ) -> None:
+        """
+        Compute returns/advantages for a fixed-horizon rollout using per-env done
+        masks and per-step bootstrap values.
+        """
+        if self.ptr == 0:
+            return
+
+        done_masks = jnp.asarray(done_masks, dtype=bool)
+        bootstrap_values = jnp.asarray(bootstrap_values)
+        expected_shape = (self.ptr, self.num_envs)
+        if done_masks.shape != expected_shape:
+            raise ValueError(
+                f"done_masks must have shape {expected_shape}, got {done_masks.shape}"
+            )
+        if bootstrap_values.shape != expected_shape:
+            raise ValueError(
+                f"bootstrap_values must have shape {expected_shape}, got {bootstrap_values.shape}"
+            )
+
+        if terminated_masks is None:
+            terminated_masks = jnp.zeros_like(done_masks)
+        else:
+            terminated_masks = jnp.asarray(terminated_masks, dtype=bool)
+            if terminated_masks.shape != expected_shape:
+                raise ValueError(
+                    f"terminated_masks must have shape {expected_shape}, got {terminated_masks.shape}"
+                )
+
+        if truncated_masks is None:
+            truncated_masks = jnp.zeros_like(done_masks)
+        else:
+            truncated_masks = jnp.asarray(truncated_masks, dtype=bool)
+            if truncated_masks.shape != expected_shape:
+                raise ValueError(
+                    f"truncated_masks must have shape {expected_shape}, got {truncated_masks.shape}"
+                )
+
+        rews = self.rew_buf[: self.ptr]
+        vals = self.val_buf[: self.ptr]
+        gamma = jnp.asarray(self.gamma, dtype=vals.dtype)
+        lam = jnp.asarray(self.lam, dtype=vals.dtype)
+        bootstrap_last = bootstrap_values[-1]
+
+        def _scan_step(carry, inputs):
+            next_adv, next_val = carry
+            rew_t, val_t, done_t, boot_t = inputs
+            next_value = jnp.where(done_t, boot_t, next_val)
+            delta = rew_t + gamma * next_value - val_t
+            adv_t = delta + gamma * lam * (1.0 - done_t.astype(vals.dtype)) * next_adv
+            ret_t = adv_t + val_t
+            return (adv_t, val_t), (adv_t, ret_t)
+
+        (_, _), (advantages_rev, returns_rev) = jax.lax.scan(
+            _scan_step,
+            (jnp.zeros((self.num_envs,), dtype=vals.dtype), bootstrap_last),
+            (
+                rews[::-1],
+                vals[::-1],
+                done_masks[::-1],
+                bootstrap_values[::-1],
+            ),
+        )
+        advantages = advantages_rev[::-1]
+        returns = returns_rev[::-1]
+
+        self.tdres_buf = self.tdres_buf.at[: self.ptr].set(advantages)
+        self.ret_buf = self.ret_buf.at[: self.ptr].set(returns)
+        self.tdres_filled = self.tdres_filled.at[: self.ptr].set(True)
+        self.ret_filled = self.ret_filled.at[: self.ptr].set(True)
+        self.done_buf = self.done_buf.at[: self.ptr].set(done_masks)
+        self.terminated_buf = self.terminated_buf.at[: self.ptr].set(terminated_masks)
+        self.truncated_buf = self.truncated_buf.at[: self.ptr].set(truncated_masks)
+        self.bootstrap_buf = self.bootstrap_buf.at[: self.ptr].set(bootstrap_values)
+
     def get(self):
         """
-        Return all the data from the buffer (with advantages normalized). Reset pointers in the buffer.
+        Return all the data from the buffer. Reset pointers in the buffer.
         """
         if self.ptr != self.max_size:
             raise RuntimeError(
@@ -191,10 +273,6 @@ class ReplayBuffer(object):
         logp = self.logp_buf
         residuals = self.residuals_buf
 
-        tdres_mean = jnp.mean(tdres, axis=0)
-        tdres_std = jnp.std(tdres, axis=0)
-        tdres = (tdres - tdres_mean) / (tdres_std + 1e-8)
-
         data = dict(
             obs=obs,
             act=act,
@@ -204,6 +282,10 @@ class ReplayBuffer(object):
             logp=logp,
             residuals=residuals,
             vals=self.val_buf,
+            done=self.done_buf,
+            terminated=self.terminated_buf,
+            truncated=self.truncated_buf,
+            bootstrap=self.bootstrap_buf,
         )
 
         self._reset_storage()
@@ -224,6 +306,10 @@ class ReplayBuffer(object):
         self.residuals_buf = jnp.zeros(residuals_shape)
         self.tdres_buf = jnp.zeros(rew_shape)
         self.ret_buf = jnp.zeros(rew_shape)
+        self.done_buf = jnp.zeros(rew_shape, dtype=bool)
+        self.terminated_buf = jnp.zeros(rew_shape, dtype=bool)
+        self.truncated_buf = jnp.zeros(rew_shape, dtype=bool)
+        self.bootstrap_buf = jnp.zeros(rew_shape)
         self.tdres_filled = jnp.zeros((self.max_size,), dtype=bool)
         self.ret_filled = jnp.zeros((self.max_size,), dtype=bool)
 

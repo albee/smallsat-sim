@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import inspect
 from typing import Any, Callable, Optional
 
 import jax
@@ -24,7 +25,7 @@ class FunctionalRolloutCallbacks:
         tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, Any],
     ]
     post_step: Callable[
-        [int, Any, jnp.ndarray, jnp.ndarray, bool, Any],
+        [int, Any, jnp.ndarray, jnp.ndarray, jnp.ndarray, Any],
         tuple[jnp.ndarray, Any, Any],
     ]
     bootstrap_value: Callable[
@@ -46,6 +47,9 @@ class FunctionalRolloutResult:
     residuals: jnp.ndarray
     episode_returns: jnp.ndarray
     done_flags: jnp.ndarray
+    done_masks: jnp.ndarray
+    terminated_masks: jnp.ndarray
+    truncated_masks: jnp.ndarray
     bootstrap_values: jnp.ndarray
     aux: Any
     final_state: Any
@@ -86,6 +90,9 @@ class _FunctionalRolloutStep:
     residuals: jnp.ndarray
     episode_return: jnp.ndarray
     done_flag: jnp.ndarray
+    done_mask: jnp.ndarray
+    terminated_mask: jnp.ndarray
+    truncated_mask: jnp.ndarray
     bootstrap_value: jnp.ndarray
     aux: Any
 
@@ -99,6 +106,9 @@ def _functional_rollout_step_flatten(step: "_FunctionalRolloutStep"):
         step.residuals,
         step.episode_return,
         step.done_flag,
+        step.done_mask,
+        step.terminated_mask,
+        step.truncated_mask,
         step.bootstrap_value,
         step.aux,
     )
@@ -114,6 +124,9 @@ def _functional_rollout_step_unflatten(aux_data, children):
         residuals,
         episode_return,
         done_flag,
+        done_mask,
+        terminated_mask,
+        truncated_mask,
         bootstrap_value,
         aux,
     ) = children
@@ -125,6 +138,9 @@ def _functional_rollout_step_unflatten(aux_data, children):
         residuals=residuals,
         episode_return=episode_return,
         done_flag=done_flag,
+        done_mask=done_mask,
+        terminated_mask=terminated_mask,
+        truncated_mask=truncated_mask,
         bootstrap_value=bootstrap_value,
         aux=aux,
     )
@@ -184,6 +200,7 @@ def run_functional_rollout(
     assert reset_fn is not None
 
     num_envs = initial_state.mjx_batch.qpos.shape[0]
+    reset_fn_accepts_mask = len(inspect.signature(reset_fn).parameters) >= 3
 
     def _initial_episode_state():
         return (
@@ -192,7 +209,7 @@ def run_functional_rollout(
             rng,
             extra,
             jnp.zeros((num_envs,), dtype=jnp.float32),
-            jnp.array(0, dtype=jnp.int32),
+            jnp.zeros((num_envs,), dtype=jnp.int32),
         )
 
     def _prepare_policy_input(
@@ -213,7 +230,7 @@ def run_functional_rollout(
         step_output: Any,
         actions: jnp.ndarray,
         residuals: jnp.ndarray,
-        reset_pending: bool,
+        reset_pending: jnp.ndarray,
         carry_extra: Any,
     ):
         return callbacks.post_step(
@@ -264,46 +281,60 @@ def run_functional_rollout(
         ep_ret_next = ep_ret + step_output.rewards
         ep_len_next = ep_len + 1
 
-        all_terminal = jnp.all(step_output.terminals)
-        timeout = ep_len_next >= step_config.max_episode_len
+        terminated_mask = step_output.terminals.astype(bool)
+        timeout_mask = ep_len_next >= step_config.max_episode_len
+        truncated_mask = jnp.logical_and(timeout_mask, jnp.logical_not(terminated_mask))
+        done_mask = jnp.logical_or(terminated_mask, truncated_mask)
         epoch_last = jnp.equal(step_idx, num_steps - 1)
-        done_without_epoch = jnp.logical_or(all_terminal, timeout)
-        done_flag = done_without_epoch
+        done_flag = jnp.any(done_mask)
+        reset_mask = jnp.logical_and(done_mask, jnp.logical_not(epoch_last))
 
         next_residuals, step_aux, carry_extra = _post_step(
-            step_idx, step_output, actions, residuals, done_without_epoch, carry_extra
+            step_idx, step_output, actions, residuals, reset_mask, carry_extra
         )
 
-        bootstrap_condition = jnp.logical_and(
-            jnp.logical_or(timeout, epoch_last),
-            jnp.logical_not(all_terminal),
+        bootstrap_mask = jnp.logical_or(
+            truncated_mask,
+            jnp.logical_and(epoch_last, jnp.logical_not(terminated_mask)),
         )
-        bootstrap_values, rng_key, carry_extra = jax.lax.cond(
-            bootstrap_condition,
+        bootstrap_values_raw, rng_key, carry_extra = jax.lax.cond(
+            jnp.any(bootstrap_mask),
             lambda args: _bootstrap_value(step_idx, *args),
             lambda args: (jnp.zeros_like(step_output.rewards), args[2], args[3]),
             operand=(next_env_state, next_residuals, rng_key, carry_extra),
         )
-
-        episode_return = jax.lax.cond(
-            done_flag,
-            lambda _: ep_ret_next,
-            lambda _: jnp.zeros_like(ep_ret_next),
-            operand=None,
+        bootstrap_values = jnp.where(
+            bootstrap_mask,
+            bootstrap_values_raw,
+            jnp.zeros_like(bootstrap_values_raw),
         )
 
-        def _reset_after_done(_):
-            reset_state = reset_fn(next_env_state, step_config)
-            zero_residuals = jnp.zeros_like(initial_residuals)
-            zero_return = jnp.zeros((num_envs,), dtype=ep_ret_next.dtype)
-            zero_length = jnp.array(0, dtype=ep_len_next.dtype)
-            return reset_state, zero_residuals, zero_return, zero_length
+        episode_return = jnp.where(
+            done_mask,
+            ep_ret_next,
+            jnp.zeros_like(ep_ret_next),
+        )
+
+        def _reset_after_done(mask):
+            if reset_fn_accepts_mask:
+                reset_state = reset_fn(next_env_state, step_config, mask)
+            else:
+                reset_state = reset_fn(next_env_state, step_config)
+            residual_mask = mask[:, None]
+            reset_residuals = jnp.where(
+                residual_mask,
+                jnp.zeros_like(next_residuals),
+                next_residuals,
+            )
+            reset_returns = jnp.where(mask, jnp.zeros_like(ep_ret_next), ep_ret_next)
+            reset_lengths = jnp.where(mask, jnp.zeros_like(ep_len_next), ep_len_next)
+            return reset_state, reset_residuals, reset_returns, reset_lengths
 
         next_env_state, next_residuals, ep_ret_final, ep_len_final = jax.lax.cond(
-            jnp.logical_and(done_without_epoch, jnp.logical_not(epoch_last)),
+            jnp.any(reset_mask),
             _reset_after_done,
             lambda _: (next_env_state, next_residuals, ep_ret_next, ep_len_next),
-            operand=None,
+            operand=reset_mask,
         )
 
         step_record = _FunctionalRolloutStep(
@@ -314,6 +345,9 @@ def run_functional_rollout(
             residuals=next_residuals,
             episode_return=episode_return,
             done_flag=done_flag,
+            done_mask=done_mask,
+            terminated_mask=terminated_mask,
+            truncated_mask=truncated_mask,
             bootstrap_value=bootstrap_values,
             aux=step_aux,
         )
@@ -342,6 +376,9 @@ def run_functional_rollout(
     residuals = steps.residuals
     episode_returns = steps.episode_return
     done_flags = steps.done_flag
+    done_masks = steps.done_mask
+    terminated_masks = steps.terminated_mask
+    truncated_masks = steps.truncated_mask
     bootstrap_values = steps.bootstrap_value
     aux = steps.aux
 
@@ -353,6 +390,9 @@ def run_functional_rollout(
         residuals=residuals,
         episode_returns=episode_returns,
         done_flags=done_flags,
+        done_masks=done_masks,
+        terminated_masks=terminated_masks,
+        truncated_masks=truncated_masks,
         bootstrap_values=bootstrap_values,
         aux=aux,
         final_state=final_state,

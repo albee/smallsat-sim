@@ -1,5 +1,6 @@
 import os
 import time
+import warnings
 
 import jax
 import jax.numpy as jnp
@@ -129,6 +130,12 @@ class OnPolicyRunner(object):
     def pretrain(self, strategy: str = "supervised_learning") -> None:
         """
         Pretrain the actor and critic networks.
+
+        Supported strategy:
+        - ``supervised_learning`` (recommended)
+
+        Deprecated strategy:
+        - ``rl`` (kept temporarily for backward compatibility)
         """
         # Check if pretraining has already been done
         file_path = os.path.join(self.ckpt_dir, self.pretraining_state_file_name)
@@ -243,12 +250,19 @@ class OnPolicyRunner(object):
                         }
                     )
         elif strategy == "rl":
+            warnings.warn(
+                "Pretraining strategy 'rl' is deprecated and will be removed in a future release. "
+                "Use strategy='supervised_learning' instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
             self.agent.update_policy_gradient(
                 self._take_keys(), obs, act_clipped, tdres, logp
             )
         else:
             raise Exception(
-                "This strategy does not exist. Options are [supervised_learning] and [rl]."
+                "Unknown pretraining strategy. Use strategy='supervised_learning'. "
+                "Strategy='rl' is deprecated."
             )
 
         # Pretrain the base network
@@ -436,19 +450,16 @@ class OnPolicyRunner(object):
                     ),
                 )
                 jax.block_until_ready(rollout_result.actions)
-                done_flags = rollout_result.done_flags
-                done_indices = jnp.nonzero(
-                    done_flags, size=self.episode_len, fill_value=-1
-                )[0]
-                done_indices = jax.device_get(done_indices)
-                done_idx = (
-                    int(done_indices[0])
-                    if done_indices.size and done_indices[0] >= 0
-                    else self.episode_len - 1
+                done_masks = rollout_result.done_masks
+                done_cum = jnp.cumsum(done_masks.astype(jnp.int32), axis=0)
+                first_episode_mask = jnp.logical_or(
+                    done_cum == 0,
+                    jnp.logical_and(done_masks, done_cum == 1),
                 )
-                episodic_returns = rollout_result.step_outputs.rewards[
-                    : done_idx + 1
-                ].sum(axis=0)
+                episodic_returns = (
+                    rollout_result.step_outputs.rewards
+                    * first_episode_mask.astype(jnp.float32)
+                ).sum(axis=0)
                 rewards.append(float(episodic_returns.mean()))
 
             # Restore the training RNG after evaluation.
@@ -608,12 +619,13 @@ class OnPolicyRunner(object):
                 values_traj = rollout_result.values
                 logp_traj = rollout_result.logp
                 residuals_traj = rollout_result.residuals
-                done_flags = rollout_result.done_flags
+                done_masks = rollout_result.done_masks
+                terminated_masks = rollout_result.terminated_masks
+                truncated_masks = rollout_result.truncated_masks
                 bootstrap_vals = rollout_result.bootstrap_values
                 episode_returns_traj = rollout_result.episode_returns
 
                 buffer_start = time.perf_counter()
-                start_ptr = buffer.path_start_idx
                 # Store the full trajectory in the device-friendly replay buffer
                 buffer.store_batch(
                     step_outputs.prev_states,
@@ -623,25 +635,27 @@ class OnPolicyRunner(object):
                     logp_traj,
                     residuals_traj,
                 )
+                buffer.finalize_with_masks(
+                    done_masks=done_masks,
+                    bootstrap_values=bootstrap_vals,
+                    terminated_masks=terminated_masks,
+                    truncated_masks=truncated_masks,
+                )
 
-                done_indices = jnp.nonzero(
-                    done_flags, size=self.steps_per_epoch, fill_value=-1
-                )[0]
-                valid_done = done_indices[done_indices >= 0]
+                done_events = done_masks.astype(jnp.float32)
                 episode_return_sum = 0.0
                 episode_counter_epoch = 0
 
-                if valid_done.size > 0:
-                    # Finalize completed trajectories so returns/advantages are available
-                    end_ptrs = start_ptr + valid_done + 1
-                    buffer.end_traj_batch(end_ptrs.tolist(), bootstrap_vals[valid_done])
-
-                    mean_returns = episode_returns_traj[valid_done].mean(axis=1)
-                    episode_return_sum = float(jnp.sum(mean_returns))
-                    episode_counter_epoch = int(mean_returns.shape[0])
+                if float(done_events.sum()) > 0.0:
+                    done_returns = episode_returns_traj * done_events
+                    episode_return_sum = float(done_returns.sum())
+                    episode_counter_epoch = int(done_events.sum())
 
                     if self.agent.has_logger:
-                        for mean_value in mean_returns.tolist():
+                        flat_done_returns = jax.device_get(done_returns).reshape(-1)
+                        for mean_value in flat_done_returns.tolist():
+                            if mean_value == 0.0:
+                                continue
                             self.env.logger.log(
                                 self.env.run_id,
                                 float(self.env.mjx_batch.time[0]),
@@ -651,10 +665,6 @@ class OnPolicyRunner(object):
                                 mean_episodic_returns=mean_value,
                             )
                             episode_counter += 1
-
-                if buffer.path_start_idx < buffer.ptr:
-                    # Finalize the trailing slice that ends at the end of the scan.
-                    buffer.end_traj(bootstrap_vals[-1])
 
                 buffer_time = time.perf_counter() - buffer_start
 
@@ -681,9 +691,6 @@ class OnPolicyRunner(object):
                 actions = data["act"].reshape(-1, self.env.act_dim)
                 rews = data["rews"].reshape(-1)
                 tdres = data["tdres"].reshape(-1)
-                tdres_mean = jnp.mean(tdres)
-                tdres_std = jnp.std(tdres)
-                tdres = (tdres - tdres_mean) / (tdres_std + 1e-8)
                 returns = data["ret"].reshape(-1)
                 logp = data["logp"].reshape(-1)
                 vals = data["vals"].reshape(-1)
@@ -703,17 +710,24 @@ class OnPolicyRunner(object):
                     angle_error_epoch = jnp.array(0.0)
 
                 ref_pos = jnp.atleast_2d(self.reference_point)[:, :3]
-                if valid_done.size > 0:
-                    final_positions = step_outputs.next_obs[valid_done, :, :3]
-                    final_errors = jnp.linalg.norm(
-                        final_positions - ref_pos[None, :, :], axis=2
-                    )
-                    final_pos_error_epoch = final_errors.mean()
-                else:
-                    final_positions = step_outputs.next_obs[-1, :, :3]
-                    final_pos_error_epoch = jnp.linalg.norm(
-                        final_positions - ref_pos, axis=1
-                    ).mean()
+                done_events_bool = done_masks.astype(bool)
+                done_count_by_env = done_events_bool.sum(axis=0)
+                done_final_pos = jnp.where(
+                    done_events_bool[:, :, None],
+                    step_outputs.next_obs[:, :, :3],
+                    0.0,
+                ).sum(axis=0)
+                safe_counts = jnp.maximum(done_count_by_env, 1)[:, None]
+                mean_done_final_pos = done_final_pos / safe_counts
+                fallback_final_pos = step_outputs.next_obs[-1, :, :3]
+                final_positions = jnp.where(
+                    done_count_by_env[:, None] > 0,
+                    mean_done_final_pos,
+                    fallback_final_pos,
+                )
+                final_pos_error_epoch = jnp.linalg.norm(
+                    final_positions - ref_pos, axis=1
+                ).mean()
 
                 terminals_any_epoch = jnp.any(step_outputs.terminals, axis=0)
                 success_env_count_epoch = jnp.asarray(
@@ -721,6 +735,46 @@ class OnPolicyRunner(object):
                 )
                 success_rate_epoch = jnp.asarray(
                     terminals_any_epoch.astype(jnp.float32).mean()
+                )
+                if self.env.collect_reward_components:
+                    terminated_success = epoch_reward_components.get(
+                        "terminated_success"
+                    )
+                    terminated_failure = epoch_reward_components.get(
+                        "terminated_failure"
+                    )
+                    if terminated_success is not None:
+                        success_termination_step_count_epoch = jnp.asarray(
+                            terminated_success.astype(jnp.float32).sum()
+                        )
+                        success_termination_env_rate_epoch = jnp.asarray(
+                            jnp.any(terminated_success > 0.0, axis=0)
+                            .astype(jnp.float32)
+                            .mean()
+                        )
+                    else:
+                        success_termination_step_count_epoch = jnp.array(0.0)
+                        success_termination_env_rate_epoch = jnp.array(0.0)
+
+                    if terminated_failure is not None:
+                        failure_termination_step_count_epoch = jnp.asarray(
+                            terminated_failure.astype(jnp.float32).sum()
+                        )
+                        failure_termination_env_rate_epoch = jnp.asarray(
+                            jnp.any(terminated_failure > 0.0, axis=0)
+                            .astype(jnp.float32)
+                            .mean()
+                        )
+                    else:
+                        failure_termination_step_count_epoch = jnp.array(0.0)
+                        failure_termination_env_rate_epoch = jnp.array(0.0)
+                else:
+                    success_termination_step_count_epoch = jnp.array(0.0)
+                    success_termination_env_rate_epoch = jnp.array(0.0)
+                    failure_termination_step_count_epoch = jnp.array(0.0)
+                    failure_termination_env_rate_epoch = jnp.array(0.0)
+                terminated_step_count_epoch = jnp.asarray(
+                    terminated_masks.astype(jnp.float32).sum()
                 )
                 terminal_envs_at_end_epoch = jnp.asarray(
                     step_outputs.terminals[-1].astype(jnp.float32).sum()
@@ -799,14 +853,6 @@ class OnPolicyRunner(object):
                     critic_grad_scale=critic_grad_scale,
                 )
                 update_duration = time.perf_counter() - update_start_time
-                epoch_total_duration = time.perf_counter() - epoch_start_time
-                print(
-                    f"[Timing] Epoch {global_epoch}/{self.epochs} "
-                    f"(phase={phase_name} {phase_epoch + 1}/{phase_epochs}): "
-                    f"rollout {rollout_duration:.2f}s "
-                    f"(scan {scan_time:.2f}s, buffer {buffer_time:.2f}s, other {other_rollout_time:.2f}s) | "
-                    f"update {update_duration:.2f}s | total {epoch_total_duration:.2f}s"
-                )
 
                 actor_loss_last_f = float(last_actor_loss)
                 critic_loss_last_f = float(last_critic_loss)
@@ -830,6 +876,7 @@ class OnPolicyRunner(object):
                 )
                 explained_var_f = float(explained_var)
 
+                logging_start_time = time.perf_counter()
                 # Monitor key RL metrics during training using Weights & Biases
                 if self.env.use_wandb:
                     wandb_reward_payload = {
@@ -860,11 +907,29 @@ class OnPolicyRunner(object):
                             "task_performance/mean_episodic_returns": float(
                                 mean_ep_return_epoch
                             ),
+                            "objective/train_mean_episodic_return": float(
+                                mean_ep_return_epoch
+                            ),
                             "task_performance/success_env_count": float(
                                 success_env_count_epoch
                             ),
                             "task_performance/success_rate": float(
                                 success_rate_epoch
+                            ),
+                            "task_performance/terminated_step_count": float(
+                                terminated_step_count_epoch
+                            ),
+                            "task_performance/success_termination_step_count": float(
+                                success_termination_step_count_epoch
+                            ),
+                            "task_performance/failure_termination_step_count": float(
+                                failure_termination_step_count_epoch
+                            ),
+                            "task_performance/success_termination_env_rate": float(
+                                success_termination_env_rate_epoch
+                            ),
+                            "task_performance/failure_termination_env_rate": float(
+                                failure_termination_env_rate_epoch
                             ),
                             "task_performance/terminal_envs_at_end": float(
                                 terminal_envs_at_end_epoch
@@ -905,6 +970,19 @@ class OnPolicyRunner(object):
                         explained_variance=explained_var_f,
                         success_env_count=float(success_env_count_epoch),
                         success_rate=float(success_rate_epoch),
+                        terminated_step_count=float(terminated_step_count_epoch),
+                        success_termination_step_count=float(
+                            success_termination_step_count_epoch
+                        ),
+                        failure_termination_step_count=float(
+                            failure_termination_step_count_epoch
+                        ),
+                        success_termination_env_rate=float(
+                            success_termination_env_rate_epoch
+                        ),
+                        failure_termination_env_rate=float(
+                            failure_termination_env_rate_epoch
+                        ),
                         terminal_envs_at_end=float(terminal_envs_at_end_epoch),
                         terminal_env_rate_at_end=float(
                             terminal_env_rate_at_end_epoch
@@ -913,18 +991,22 @@ class OnPolicyRunner(object):
                         mean_lateral_error=float(tracking_error_epoch),
                         mean_angle_error=float(angle_error_epoch),
                         mean_final_position_error=float(final_pos_error_epoch),
+                        train_mean_episodic_returns=float(mean_ep_return_epoch),
                         **{
                             f"reward_scale_{k}": float(v)
                             for k, v in reward_scale_metrics.items()
                         },
                     )
+                logging_duration = time.perf_counter() - logging_start_time
 
                 # Safeguard: periodically evaluate and keep the best nominal checkpoint
+                eval_duration = 0.0
                 eval_due = bool(active_failures) and (
                     (phase_epoch + 1) % eval_interval == 0
                     or phase_epoch == phase_epochs - 1
                 )
                 if eval_due:
+                    eval_start_time = time.perf_counter()
                     eval_keys = jax.random.split(eval_key, 3)
                     nominal_score = _eval_policy(
                         key=eval_keys[0],
@@ -961,10 +1043,25 @@ class OnPolicyRunner(object):
                         f"nominal={nominal_score:.4f} failure_k={failure_score:.4f} mixture={mixture_score:.4f} "
                         f"best_nominal={best_nominal_score:.4f}"
                     )
+                    eval_duration = time.perf_counter() - eval_start_time
 
                 # Save the trained actor and critic network weights
+                save_start_time = time.perf_counter()
                 save_trained_modules(
                     self.agent, self.ckpt_dir, self.training_state_file_name
+                )
+                save_duration = time.perf_counter() - save_start_time
+                epoch_total_duration = time.perf_counter() - epoch_start_time
+                print(
+                    f"[Timing] Epoch {global_epoch}/{self.epochs} "
+                    f"(phase={phase_name} {phase_epoch + 1}/{phase_epochs}): "
+                    f"rollout {rollout_duration:.2f}s "
+                    f"(scan {scan_time:.2f}s, buffer {buffer_time:.2f}s, other {other_rollout_time:.2f}s) | "
+                    f"update {update_duration:.2f}s | "
+                    f"logging {logging_duration:.2f}s | "
+                    f"eval {eval_duration:.2f}s | "
+                    f"save_ckpt {save_duration:.2f}s | "
+                    f"total {epoch_total_duration:.2f}s"
                 )
 
         # Restore the best nominal checkpoint at the end of the curriculum
@@ -1072,19 +1169,9 @@ class OnPolicyRunner(object):
                 history = jnp.roll(history, shift=-1, axis=1)
                 history = history.at[:, -1, :].set(combined)
                 counts = jnp.minimum(counts + 1, history_len)
-
-                def _reset_hist(_):
-                    return (
-                        jnp.zeros_like(history),
-                        jnp.zeros_like(counts),
-                    )
-
-                history, counts = jax.lax.cond(
-                    reset_flag,
-                    _reset_hist,
-                    lambda _: (history, counts),
-                    operand=None,
-                )
+                reset_mask = reset_flag[:, None, None]
+                history = jnp.where(reset_mask, jnp.zeros_like(history), history)
+                counts = jnp.where(reset_flag, jnp.zeros_like(counts), counts)
 
                 history_full = counts >= history_len
                 residuals_next = step_output.actual_wrench - step_output.desired_wrench
@@ -1136,7 +1223,7 @@ class OnPolicyRunner(object):
             actual_wrench = step_outputs.actual_wrench
             next_obs = step_outputs.next_obs
             history_mask = rollout_result.aux.astype(bool)
-            done_flags = rollout_result.done_flags
+            done_masks = rollout_result.done_masks
 
             state_action_data = jnp.concatenate(
                 [step_outputs.prev_states, actions_traj], axis=2
@@ -1193,17 +1280,15 @@ class OnPolicyRunner(object):
                 extrinsic_mean = extrinsic_err.mean()
 
                 reset_flag = jnp.logical_and(
-                    done_step, step_idx != (self.steps_per_epoch - 1)
+                    done_step,
+                    step_idx != (self.steps_per_epoch - 1),
                 )
-                history, counts = jax.lax.cond(
-                    reset_flag,
-                    lambda _: (
-                        jnp.zeros_like(history),
-                        jnp.zeros_like(counts),
-                    ),
-                    lambda _: (history, counts),
-                    operand=None,
+                history = jnp.where(
+                    reset_flag[:, None, None],
+                    jnp.zeros_like(history),
+                    history,
                 )
+                counts = jnp.where(reset_flag, jnp.zeros_like(counts), counts)
 
                 return (history, counts), extrinsic_mean
 
@@ -1212,7 +1297,7 @@ class OnPolicyRunner(object):
                 step_outputs.prev_states,
                 actions_traj,
                 actual_wrench,
-                done_flags,
+                done_masks,
             )
             init_history = jnp.zeros((num_envs, history_len, state_action_dim))
             init_counts = jnp.zeros((num_envs,), dtype=jnp.int32)
@@ -1413,19 +1498,12 @@ class OnPolicyRunner(object):
                 history = jnp.roll(history, shift=-1, axis=1)
                 history = history.at[:, -1, :].set(combined)
                 counts = jnp.minimum(counts + 1, history_len)
-
-                def _reset_hist(_):
-                    return (
-                        jnp.zeros_like(history),
-                        jnp.zeros_like(counts),
-                    )
-
-                history, counts = jax.lax.cond(
-                    reset_flag,
-                    _reset_hist,
-                    lambda _: (history, counts),
-                    operand=None,
+                history = jnp.where(
+                    reset_flag[:, None, None],
+                    jnp.zeros_like(history),
+                    history,
                 )
+                counts = jnp.where(reset_flag, jnp.zeros_like(counts), counts)
 
                 if self.env.use_adaptive_approach:
                     desired = step_output.desired_wrench
@@ -1495,68 +1573,113 @@ class OnPolicyRunner(object):
 
             step_outputs = rollout_result.step_outputs
             rewards = step_outputs.rewards
-            done_flags = rollout_result.done_flags
+            done_masks = rollout_result.done_masks
+            terminated_masks = rollout_result.terminated_masks
+            truncated_masks = rollout_result.truncated_masks
             residuals_traj = rollout_result.residuals
 
-            done_indices = jnp.nonzero(
-                done_flags, size=self.episode_len, fill_value=-1
-            )[0]
-            done_indices = jax.device_get(done_indices)
-            done_idx = (
-                int(done_indices[0])
-                if done_indices.size and done_indices[0] >= 0
-                else self.episode_len - 1
-            )
-            valid_slice = slice(0, done_idx + 1)
+            done_cum = jnp.cumsum(done_masks.astype(jnp.int32), axis=0)
+            before_first_done = done_cum == 0
+            first_done_step = jnp.logical_and(done_masks, done_cum == 1)
+            first_episode_mask = jnp.logical_or(before_first_done, first_done_step)
+            first_episode_mask_f = first_episode_mask.astype(rewards.dtype)
 
-            rewards_slice = rewards[valid_slice]
-            returns_eval = jnp.sum(rewards_slice, axis=0)
+            returns_eval = jnp.sum(rewards * first_episode_mask_f, axis=0)
             returns = returns.at[:, eval_idx].set(returns_eval)
 
-            tracking_vals = []
-            angle_vals = []
-            extrinsic_vals = []
+            mask_f = first_episode_mask_f
+            denom = jnp.maximum(mask_f.sum(), 1.0)
 
-            for step_id in range(done_idx + 1):
-                obs_step = step_outputs.next_obs[step_id]
-                actual_step = step_outputs.actual_wrench[step_id]
-                if self.env.use_adaptive_approach:
-                    if phase == 1:
-                        extr_step = actual_step
-                    else:
-                        extr_step = (
-                            residuals_traj[step_id]
-                            + step_outputs.desired_wrench[step_id]
-                        )
+            obs_seq = step_outputs.next_obs
+            flat_obs = obs_seq.reshape(-1, obs_seq.shape[-1])
+            tracking_seq = calc_lateral_tracking_error(flat_obs, self.planner).reshape(
+                self.episode_len, num_envs
+            )
+            angle_seq = jnp.degrees(calc_attitude_error(flat_obs)).reshape(
+                self.episode_len, num_envs
+            )
+            tracking_mean = float((tracking_seq * mask_f).sum() / denom)
+            angle_mean = float((angle_seq * mask_f).sum() / denom)
+
+            if self.env.use_adaptive_approach:
+                actual_seq = step_outputs.actual_wrench
+                if phase == 1:
+                    extr_seq = actual_seq
                 else:
-                    extr_step = None
-
-                tracking_step, angle_step, extr_step_error = self._compute_mean_errors(
-                    obs_step, actual_step, extr_step
-                )
-                tracking_vals.append(tracking_step)
-                angle_vals.append(angle_step)
-                if extr_step_error is not None:
-                    extrinsic_vals.append(extr_step_error)
-
-            tracking_mean = (
-                float(jnp.stack(tracking_vals).mean()) if tracking_vals else 0.0
+                    extr_seq = residuals_traj + step_outputs.desired_wrench
+                extrinsic_seq = calc_extrinsic_error(extr_seq, actual_seq)
+                mean_extrinsic_error = float((extrinsic_seq * mask_f).sum() / denom)
+            else:
+                mean_extrinsic_error = 0.0
+            terminals_any_eval = jnp.any(
+                jnp.logical_and(step_outputs.terminals, first_episode_mask), axis=0
             )
-            angle_mean = float(jnp.stack(angle_vals).mean()) if angle_vals else 0.0
-            mean_extrinsic_error = (
-                float(jnp.stack(extrinsic_vals).mean()) if extrinsic_vals else 0.0
-            )
-            terminals_any_eval = jnp.any(step_outputs.terminals[valid_slice], axis=0)
             success_env_count = float(terminals_any_eval.astype(jnp.float32).sum())
             success_rate = float(terminals_any_eval.astype(jnp.float32).mean())
+            if self.env.collect_reward_components:
+                terminated_success_eval = step_outputs.reward_components.get(
+                    "terminated_success"
+                )
+                terminated_failure_eval = step_outputs.reward_components.get(
+                    "terminated_failure"
+                )
+                if terminated_success_eval is not None:
+                    success_termination_step_count = float(
+                        (terminated_success_eval * first_episode_mask_f).sum()
+                    )
+                    success_termination_env_rate = float(
+                        jnp.any(
+                            jnp.logical_and(
+                                terminated_success_eval > 0.0, first_episode_mask
+                            ),
+                            axis=0,
+                        )
+                        .astype(jnp.float32)
+                        .mean()
+                    )
+                else:
+                    success_termination_step_count = 0.0
+                    success_termination_env_rate = 0.0
+
+                if terminated_failure_eval is not None:
+                    failure_termination_step_count = float(
+                        (terminated_failure_eval * first_episode_mask_f).sum()
+                    )
+                    failure_termination_env_rate = float(
+                        jnp.any(
+                            jnp.logical_and(
+                                terminated_failure_eval > 0.0, first_episode_mask
+                            ),
+                            axis=0,
+                        )
+                        .astype(jnp.float32)
+                        .mean()
+                    )
+                else:
+                    failure_termination_step_count = 0.0
+                    failure_termination_env_rate = 0.0
+            else:
+                success_termination_step_count = 0.0
+                success_termination_env_rate = 0.0
+                failure_termination_step_count = 0.0
+                failure_termination_env_rate = 0.0
+            terminated_step_count = float(terminated_masks.astype(jnp.float32).sum())
+
+            done_count_by_env = first_episode_mask.astype(jnp.int32).sum(axis=0)
+            last_active_idx = jnp.maximum(done_count_by_env - 1, 0)
+            env_ids = jnp.arange(num_envs, dtype=jnp.int32)
+            final_positions = step_outputs.next_obs[last_active_idx, env_ids, :3]
             terminal_envs_at_end = float(
-                step_outputs.terminals[done_idx].astype(jnp.float32).sum()
+                step_outputs.terminals[last_active_idx, env_ids]
+                .astype(jnp.float32)
+                .sum()
             )
             terminal_env_rate_at_end = float(
-                step_outputs.terminals[done_idx].astype(jnp.float32).mean()
+                step_outputs.terminals[last_active_idx, env_ids]
+                .astype(jnp.float32)
+                .mean()
             )
             ref_pos = jnp.atleast_2d(self.reference_point)[:, :3]
-            final_positions = step_outputs.next_obs[done_idx, :, :3]
             final_pos_error = float(
                 jnp.linalg.norm(final_positions - ref_pos, axis=1).mean()
             )
@@ -1569,8 +1692,14 @@ class OnPolicyRunner(object):
                     run_name=self.env.run_name,
                     stage="evaluation",
                     mean_episodic_returns=float(returns_eval.mean()),
+                    eval_mean_episodic_returns=float(returns_eval.mean()),
                     success_env_count=success_env_count,
                     success_rate=success_rate,
+                    terminated_step_count=terminated_step_count,
+                    success_termination_step_count=success_termination_step_count,
+                    failure_termination_step_count=failure_termination_step_count,
+                    success_termination_env_rate=success_termination_env_rate,
+                    failure_termination_env_rate=failure_termination_env_rate,
                     terminal_envs_at_end=terminal_envs_at_end,
                     terminal_env_rate_at_end=terminal_env_rate_at_end,
                     mean_lateral_error=tracking_mean,
@@ -1793,6 +1922,7 @@ class OnPolicyRunner(object):
         obs: jnp.ndarray,
         actual_wrench: jnp.ndarray | None = None,
         ext: jnp.ndarray | None = None,
+        mask: jnp.ndarray | None = None,
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray | None]:
         """
         Compute mean tracking, attitude, and extrinsic errors for the current step.
@@ -1800,9 +1930,14 @@ class OnPolicyRunner(object):
 
         tracking = calc_lateral_tracking_error(obs, self.planner)
         attitude = jnp.degrees(calc_attitude_error(obs))
-
-        tracking_mean = tracking.mean()
-        attitude_mean = attitude.mean()
+        if mask is not None:
+            mask_f = jnp.asarray(mask, dtype=tracking.dtype)
+            denom = jnp.maximum(mask_f.sum(), 1.0)
+            tracking_mean = (tracking * mask_f).sum() / denom
+            attitude_mean = (attitude * mask_f).sum() / denom
+        else:
+            tracking_mean = tracking.mean()
+            attitude_mean = attitude.mean()
 
         extrinsic_mean = None
         if (
@@ -1811,7 +1946,12 @@ class OnPolicyRunner(object):
             and ext is not None
         ):
             extrinsic_error = calc_extrinsic_error(ext, actual_wrench)
-            extrinsic_mean = extrinsic_error.mean()
+            if mask is not None:
+                mask_f = jnp.asarray(mask, dtype=extrinsic_error.dtype)
+                denom = jnp.maximum(mask_f.sum(), 1.0)
+                extrinsic_mean = (extrinsic_error * mask_f).sum() / denom
+            else:
+                extrinsic_mean = extrinsic_error.mean()
 
         return tracking_mean, attitude_mean, extrinsic_mean
 

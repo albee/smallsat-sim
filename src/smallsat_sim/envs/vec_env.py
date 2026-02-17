@@ -43,6 +43,7 @@ class VecEnvState:
 
     rng: jnp.ndarray
     mjx_batch: mjx.Data
+    terminal_hold_counts: jnp.ndarray
     disturbance_states: Tuple[Optional[DisturbanceState], ...] = ()
     perturbation_states: Tuple[Optional[PerturbationState], ...] = ()
 
@@ -85,10 +86,19 @@ class VecEnvStepConfig:
     lam_fuel_terminal: float
     terminal_bonus: float
     terminal_radius: float
+    terminal_max_speed: float
+    terminal_max_att_error: float
+    terminal_max_ang_speed: float
     lam_wrench_residual: float
     wrench_residual_tolerance: float
     wrench_residual_clip: float
     max_episode_len: int
+    terminal_hold_steps: int
+    enable_failure_termination: bool
+    failure_max_position_error: float
+    failure_max_speed: float
+    failure_max_att_error: float
+    failure_max_ang_speed: float
     res_dim: int
     use_adaptive_approach: bool
     collect_reward_components: bool
@@ -174,6 +184,7 @@ def _vecenv_state_flatten(state: "VecEnvState"):
     children = (
         state.rng,
         state.mjx_batch,
+        state.terminal_hold_counts,
         state.disturbance_states,
         state.perturbation_states,
     )
@@ -181,10 +192,11 @@ def _vecenv_state_flatten(state: "VecEnvState"):
 
 
 def _vecenv_state_unflatten(aux_data, children):
-    rng, mjx_batch, disturbance_states, perturbation_states = children
+    rng, mjx_batch, terminal_hold_counts, disturbance_states, perturbation_states = children
     return VecEnvState(
         rng=rng,
         mjx_batch=mjx_batch,
+        terminal_hold_counts=terminal_hold_counts,
         disturbance_states=tuple(disturbance_states),
         perturbation_states=tuple(perturbation_states),
     )
@@ -219,6 +231,7 @@ def vecenv_state_to_serializable(state: "VecEnvState") -> dict:
     return {
         "rng": np.asarray(state.rng),
         "mjx": mjx_payload,
+        "terminal_hold_counts": np.asarray(state.terminal_hold_counts),
         "disturbance_states": [
             disturbance_state_to_serializable(s) for s in state.disturbance_states
         ],
@@ -262,6 +275,12 @@ def vecenv_state_from_serializable(
     return VecEnvState(
         rng=jnp.asarray(payload["rng"]),
         mjx_batch=mjx_batch,
+        terminal_hold_counts=jnp.asarray(
+            payload.get(
+                "terminal_hold_counts",
+                np.zeros((mjx_batch.qpos.shape[0],), dtype=np.int32),
+            )
+        ),
         disturbance_states=disturbance_states,
         perturbation_states=perturbation_states,
     )
@@ -415,9 +434,46 @@ def _reward_components(
     return pos_reward, vel_reward, att_reward, ang_reward
 
 
-def _compute_terminals(states: jnp.ndarray, config: VecEnvStepConfig) -> jnp.ndarray:
+def _compute_terminals(
+    states: jnp.ndarray,
+    terminal_hold_counts: jnp.ndarray,
+    config: VecEnvStepConfig,
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
     radius = jnp.asarray(config.terminal_radius, dtype=states.dtype)
-    return jnp.linalg.norm(states[:, 0:3], axis=1) <= radius
+    max_speed = jnp.asarray(config.terminal_max_speed, dtype=states.dtype)
+    max_att_error = jnp.asarray(config.terminal_max_att_error, dtype=states.dtype)
+    max_ang_speed = jnp.asarray(config.terminal_max_ang_speed, dtype=states.dtype)
+    required_steps = max(int(config.terminal_hold_steps), 1)
+    pos_ok = jnp.linalg.norm(states[:, 0:3], axis=1) <= radius
+    speed_ok = jnp.linalg.norm(states[:, 6:9], axis=1) <= max_speed
+    att_ok = jnp.linalg.norm(states[:, 3:6], axis=1) <= max_att_error
+    ang_speed_ok = jnp.linalg.norm(states[:, 9:12], axis=1) <= max_ang_speed
+    in_terminal_set = jnp.logical_and(
+        pos_ok,
+        jnp.logical_and(speed_ok, jnp.logical_and(att_ok, ang_speed_ok)),
+    )
+    counts_next = jnp.where(in_terminal_set, terminal_hold_counts + 1, 0)
+    terminals = counts_next >= required_steps
+    return terminals, counts_next
+
+
+def _compute_failures(states: jnp.ndarray, config: VecEnvStepConfig) -> jnp.ndarray:
+    if not bool(config.enable_failure_termination):
+        return jnp.zeros((states.shape[0],), dtype=bool)
+
+    max_pos = jnp.asarray(config.failure_max_position_error, dtype=states.dtype)
+    max_speed = jnp.asarray(config.failure_max_speed, dtype=states.dtype)
+    max_att = jnp.asarray(config.failure_max_att_error, dtype=states.dtype)
+    max_ang = jnp.asarray(config.failure_max_ang_speed, dtype=states.dtype)
+
+    pos_fail = jnp.linalg.norm(states[:, 0:3], axis=1) > max_pos
+    speed_fail = jnp.linalg.norm(states[:, 6:9], axis=1) > max_speed
+    att_fail = jnp.linalg.norm(states[:, 3:6], axis=1) > max_att
+    ang_fail = jnp.linalg.norm(states[:, 9:12], axis=1) > max_ang
+    return jnp.logical_or(
+        pos_fail,
+        jnp.logical_or(speed_fail, jnp.logical_or(att_fail, ang_fail)),
+    )
 
 
 def _compute_penalties(
@@ -520,7 +576,61 @@ def vecenv_reset(
     batch = mjx_batch_template.replace(qpos=randomized_batch.qpos, qvel=init_qvel)
     batch = jax.vmap(mjx.forward, in_axes=(None, 0))(mjx_model, batch)
 
-    return VecEnvState(rng=rng_key, mjx_batch=batch)
+    return VecEnvState(
+        rng=rng_key,
+        mjx_batch=batch,
+        terminal_hold_counts=jnp.zeros((num_envs,), dtype=jnp.int32),
+    )
+
+
+def vecenv_reset_masked(
+    state: VecEnvState,
+    config: VecEnvStepConfig,
+    reset_mask: jnp.ndarray,
+) -> VecEnvState:
+    """
+    Reset only the environments selected by ``reset_mask``.
+    """
+    reset_mask = jnp.asarray(reset_mask, dtype=bool)
+    if reset_mask.shape != (config.num_envs,):
+        raise ValueError(
+            f"reset_mask must have shape ({config.num_envs},), got {reset_mask.shape}"
+        )
+    reset_state = vecenv_reset(
+        state.rng,
+        mjx_model=config.mjx_model,
+        mjx_data_template=config.mjx_data_template,
+        mjx_batch_template=config.mjx_batch_template,
+        init_qpos=config.init_qpos,
+        init_qvel=config.init_qvel,
+        num_envs=config.num_envs,
+        max_start_offset=config.max_start_offset,
+    )
+    expanded_mask = reset_mask[:, None]
+    merged_qpos = jnp.where(
+        expanded_mask,
+        reset_state.mjx_batch.qpos,
+        state.mjx_batch.qpos,
+    )
+    merged_qvel = jnp.where(
+        expanded_mask,
+        reset_state.mjx_batch.qvel,
+        state.mjx_batch.qvel,
+    )
+    merged_mjx_batch = state.mjx_batch.replace(qpos=merged_qpos, qvel=merged_qvel)
+    merged_mjx_batch = jax.vmap(mjx.forward, in_axes=(None, 0))(
+        config.mjx_model, merged_mjx_batch
+    )
+    merged_counts = jnp.where(
+        reset_mask,
+        jnp.zeros_like(state.terminal_hold_counts),
+        state.terminal_hold_counts,
+    )
+    return state.replace(
+        rng=reset_state.rng,
+        mjx_batch=merged_mjx_batch,
+        terminal_hold_counts=merged_counts,
+    )
 
 
 def prepare_step_functional(
@@ -718,7 +828,13 @@ def vecenv_step(
     ) = _reward_components(next_states, config)
     phi_next = pos_next + vel_next + att_next + ang_next
 
-    terminals = _compute_terminals(next_states, config)
+    success_terminals, next_terminal_hold_counts = _compute_terminals(
+        next_states,
+        prepared_state.terminal_hold_counts,
+        config,
+    )
+    failure_terminals = _compute_failures(next_states, config)
+    terminals = jnp.logical_or(success_terminals, failure_terminals)
     if config.use_adaptive_approach and config.res_dim > 0:
         if prev_residuals is None or prev_residuals.shape[-1] == 0:
             mixer_T = jnp.asarray(config.thruster_mixer_T, dtype=prev_states.dtype)
@@ -739,7 +855,7 @@ def vecenv_step(
     penalties, penalty_components = _compute_penalties(
         prev_states,
         next_states,
-        terminals,
+        success_terminals,
         commanded_ctrl,
         prev_residuals,
         config,
@@ -747,7 +863,7 @@ def vecenv_step(
 
     rewards = phi_next - phi_curr - penalties
     terminal_bonus = jnp.asarray(config.terminal_bonus, dtype=rewards.dtype)
-    rewards = rewards + terminal_bonus * terminals.astype(rewards.dtype)
+    rewards = rewards + terminal_bonus * success_terminals.astype(rewards.dtype)
 
     if config.collect_reward_components:
         shaping_deltas = jnp.stack(
@@ -767,7 +883,10 @@ def vecenv_step(
             "shaping_angvel": shaping_deltas[:, 3],
             "shaping_total": total_shaping,
             **penalty_components,
-            "bonus_terminal": terminal_bonus * terminals.astype(rewards.dtype),
+            "bonus_terminal": terminal_bonus
+            * success_terminals.astype(rewards.dtype),
+            "terminated_success": success_terminals.astype(rewards.dtype),
+            "terminated_failure": failure_terminals.astype(rewards.dtype),
             "reward_total": rewards,
         }
     else:
@@ -789,29 +908,37 @@ def vecenv_step(
         reward_components=reward_components,
     )
 
+    next_state = next_state.replace(terminal_hold_counts=next_terminal_hold_counts)
     return next_state, step_output
 
 
 def vecenv_reset_to_config(
     state: VecEnvState,
     config: VecEnvStepConfig,
+    reset_mask: Optional[jnp.ndarray] = None,
 ) -> VecEnvState:
     """
     Reset the VecEnvState using the configuration templates.
     """
-    reset_state = vecenv_reset(
-        state.rng,
-        mjx_model=config.mjx_model,
-        mjx_data_template=config.mjx_data_template,
-        mjx_batch_template=config.mjx_batch_template,
-        init_qpos=config.init_qpos,
-        init_qvel=config.init_qvel,
-        num_envs=config.num_envs,
-        max_start_offset=config.max_start_offset,
-    )
+    if reset_mask is None:
+        reset_state = vecenv_reset(
+            state.rng,
+            mjx_model=config.mjx_model,
+            mjx_data_template=config.mjx_data_template,
+            mjx_batch_template=config.mjx_batch_template,
+            init_qpos=config.init_qpos,
+            init_qvel=config.init_qvel,
+            num_envs=config.num_envs,
+            max_start_offset=config.max_start_offset,
+        )
+        return reset_state.replace(
+            disturbance_states=config.base_disturbance_states,
+            perturbation_states=config.base_perturbation_states,
+        )
+    reset_state = vecenv_reset_masked(state, config, reset_mask)
     return reset_state.replace(
-        disturbance_states=config.base_disturbance_states,
-        perturbation_states=config.base_perturbation_states,
+        disturbance_states=state.disturbance_states,
+        perturbation_states=state.perturbation_states,
     )
 
 
@@ -883,11 +1010,13 @@ class VecEnv(BaseEnv):
         )
         self.disturbance_states: Tuple[DisturbanceState, ...] = ()
         self.perturbation_states: Tuple[PerturbationState, ...] = ()
+        self._terminal_hold_counts = jnp.zeros((self.num_envs,), dtype=jnp.int32)
         self.reset()
         self._refresh_effect_states()
         self._state = VecEnvState(
             rng=self._rng,
             mjx_batch=self.mjx_batch,
+            terminal_hold_counts=self._terminal_hold_counts,
             disturbance_states=self.disturbance_states,
             perturbation_states=self.perturbation_states,
         )
@@ -919,6 +1048,7 @@ class VecEnv(BaseEnv):
         )
         self._rng = new_state.rng
         self.mjx_batch = new_state.mjx_batch
+        self._terminal_hold_counts = new_state.terminal_hold_counts
         self.mjx_data = self.mjx_data.replace(
             qpos=self.mjx_batch.qpos[0], qvel=self.mjx_batch.qvel[0]
         )
@@ -986,19 +1116,32 @@ class VecEnv(BaseEnv):
 
         # Check if the agent is out-of-bounds or has reached the goal
         is_terminal = jax.vmap(self._in_terminal_set)
-        terminal = is_terminal(next_states)
+        in_terminal_set = is_terminal(next_states)
+        self._terminal_hold_counts = jnp.where(
+            in_terminal_set,
+            self._terminal_hold_counts + 1,
+            0,
+        )
+        success_terminal = self._terminal_hold_counts >= self.terminal_hold_steps
+        if self.enable_failure_termination:
+            failure_terminal = jax.vmap(self._is_failure_state)(next_states)
+        else:
+            failure_terminal = jnp.zeros_like(success_terminal)
+        terminal = jnp.logical_or(success_terminal, failure_terminal)
 
         # Penalties
         fuel_pen = jnp.sum(jnp.abs(actions), axis=1)
         lin_speed_sq = jnp.sum(next_states[:, 6:9] ** 2, axis=1)
         ang_speed_sq = jnp.sum(next_states[:, 9:12] ** 2, axis=1)
         vel_pen_terminal = jnp.where(
-            terminal, self.lam_speed_terminal * lin_speed_sq, 0.0
+            success_terminal, self.lam_speed_terminal * lin_speed_sq, 0.0
         )
         angvel_pen_terminal = jnp.where(
-            terminal, self.lam_ang_speed_terminal * ang_speed_sq, 0.0
+            success_terminal, self.lam_ang_speed_terminal * ang_speed_sq, 0.0
         )
-        fuel_pen_terminal = jnp.where(terminal, self.lam_fuel_terminal * fuel_pen, 0.0)
+        fuel_pen_terminal = jnp.where(
+            success_terminal, self.lam_fuel_terminal * fuel_pen, 0.0
+        )
         fuel_penalty = self.lam_fuel * fuel_pen
         penalties = (
             fuel_penalty + vel_pen_terminal + angvel_pen_terminal + fuel_pen_terminal
@@ -1033,7 +1176,7 @@ class VecEnv(BaseEnv):
         # Reward shaping
         rewards = phi_s_next - phi_s - penalties
         terminal_bonus = jnp.asarray(self.terminal_bonus, dtype=rewards.dtype)
-        rewards = rewards + terminal_bonus * terminal.astype(rewards.dtype)
+        rewards = rewards + terminal_bonus * success_terminal.astype(rewards.dtype)
 
         if self.collect_reward_components:
             shaping_deltas = jnp.stack(
@@ -1056,7 +1199,10 @@ class VecEnv(BaseEnv):
                 "penalty_terminal_speed": vel_pen_terminal,
                 "penalty_terminal_ang_speed": angvel_pen_terminal,
                 "penalty_terminal_fuel": fuel_pen_terminal,
-                "bonus_terminal": terminal_bonus * terminal.astype(rewards.dtype),
+                "bonus_terminal": terminal_bonus
+                * success_terminal.astype(rewards.dtype),
+                "terminated_success": success_terminal.astype(rewards.dtype),
+                "terminated_failure": failure_terminal.astype(rewards.dtype),
                 "penalty_wrench_residual": wrench_residual_pen,
                 "penalty_total": penalties,
                 "reward_total": rewards,
@@ -1201,6 +1347,7 @@ class VecEnv(BaseEnv):
         self._state = state
         self._rng = state.rng
         self.mjx_batch = state.mjx_batch
+        self._terminal_hold_counts = state.terminal_hold_counts
         self.disturbance_states = state.disturbance_states
         self.perturbation_states = state.perturbation_states
 
@@ -1275,6 +1422,7 @@ class VecEnv(BaseEnv):
             legacy_state = VecEnvState(
                 rng=self._rng,
                 mjx_batch=self.mjx_batch,
+                terminal_hold_counts=self._terminal_hold_counts,
                 disturbance_states=self.disturbance_states,
                 perturbation_states=self.perturbation_states,
             )
@@ -1302,6 +1450,11 @@ class VecEnv(BaseEnv):
                 "mjx_batch.qfrc_applied",
                 func_state.mjx_batch.qfrc_applied,
                 legacy_state.mjx_batch.qfrc_applied,
+            )
+            _assert_close(
+                "terminal_hold_counts",
+                func_state.terminal_hold_counts.astype(jnp.float32),
+                legacy_state.terminal_hold_counts.astype(jnp.float32),
             )
             _assert_close("rng", func_state.rng, legacy_state.rng)
 
@@ -1343,6 +1496,15 @@ class VecEnv(BaseEnv):
             lam_fuel_terminal=float(self.lam_fuel_terminal),
             terminal_bonus=float(self.terminal_bonus),
             terminal_radius=float(self.terminal_radius),
+            terminal_max_speed=float(self.terminal_max_speed),
+            terminal_max_att_error=float(self.terminal_max_att_error),
+            terminal_max_ang_speed=float(self.terminal_max_ang_speed),
+            terminal_hold_steps=int(self.terminal_hold_steps),
+            enable_failure_termination=bool(self.enable_failure_termination),
+            failure_max_position_error=float(self.failure_max_position_error),
+            failure_max_speed=float(self.failure_max_speed),
+            failure_max_att_error=float(self.failure_max_att_error),
+            failure_max_ang_speed=float(self.failure_max_ang_speed),
             lam_wrench_residual=float(self.lam_wrench_residual),
             wrench_residual_tolerance=float(self.wrench_residual_tolerance),
             wrench_residual_clip=float(self.wrench_residual_clip),
@@ -1711,7 +1873,24 @@ class VecEnv(BaseEnv):
         """
         Returns one if in terminal set, zero otherwise.
         """
-        return jnp.linalg.norm(states[0:3]) <= self.terminal_radius
+        pos_ok = jnp.linalg.norm(states[0:3]) <= self.terminal_radius
+        speed_ok = jnp.linalg.norm(states[6:9]) <= self.terminal_max_speed
+        att_ok = jnp.linalg.norm(states[3:6]) <= self.terminal_max_att_error
+        ang_speed_ok = jnp.linalg.norm(states[9:12]) <= self.terminal_max_ang_speed
+        return jnp.logical_and(
+            pos_ok,
+            jnp.logical_and(speed_ok, jnp.logical_and(att_ok, ang_speed_ok)),
+        )
+
+    def _is_failure_state(self, states: jnp.ndarray) -> jnp.ndarray:
+        pos_fail = jnp.linalg.norm(states[0:3]) > self.failure_max_position_error
+        speed_fail = jnp.linalg.norm(states[6:9]) > self.failure_max_speed
+        att_fail = jnp.linalg.norm(states[3:6]) > self.failure_max_att_error
+        ang_fail = jnp.linalg.norm(states[9:12]) > self.failure_max_ang_speed
+        return jnp.logical_or(
+            pos_fail,
+            jnp.logical_or(speed_fail, jnp.logical_or(att_fail, ang_fail)),
+        )
 
     def _get_error_quat_logvec(
         self, q: jnp.ndarray, q_des: jnp.ndarray, eps: float = 1e-9
@@ -1783,6 +1962,33 @@ class VecEnv(BaseEnv):
         )
         self.terminal_radius = float(
             getattr(self.env_cfg.control.RL, "terminal_radius", 0.3)
+        )
+        self.terminal_max_speed = float(
+            getattr(self.env_cfg.control.RL, "terminal_max_speed", 0.15)
+        )
+        self.terminal_max_att_error = float(
+            getattr(self.env_cfg.control.RL, "terminal_max_att_error", 0.25)
+        )
+        self.terminal_max_ang_speed = float(
+            getattr(self.env_cfg.control.RL, "terminal_max_ang_speed", 0.05)
+        )
+        self.terminal_hold_steps = int(
+            getattr(self.env_cfg.control.RL, "terminal_hold_steps", 1)
+        )
+        self.enable_failure_termination = bool(
+            getattr(self.env_cfg.control.RL, "enable_failure_termination", False)
+        )
+        self.failure_max_position_error = float(
+            getattr(self.env_cfg.control.RL, "failure_max_position_error", 8.0)
+        )
+        self.failure_max_speed = float(
+            getattr(self.env_cfg.control.RL, "failure_max_speed", 2.0)
+        )
+        self.failure_max_att_error = float(
+            getattr(self.env_cfg.control.RL, "failure_max_att_error", 2.8)
+        )
+        self.failure_max_ang_speed = float(
+            getattr(self.env_cfg.control.RL, "failure_max_ang_speed", 2.0)
         )
         self.lam_wrench_residual = self.env_cfg.control.RL.lam_wrench_residual
         self.wrench_residual_tolerance = (

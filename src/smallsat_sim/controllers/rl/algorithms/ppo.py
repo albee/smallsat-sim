@@ -269,6 +269,10 @@ class PPO(BaseAgent):
         """
         Update the policy gradient and the value function (both at each minibatch, as opposed to doing it sequentially).
         """
+        tdres_mean = jnp.mean(tdres)
+        tdres_std = jnp.std(tdres)
+        tdres = (tdres - tdres_mean) / (tdres_std + 1e-8)
+
         old_actor_state = nnx.state(self.actor)
         epoch_keys = jax.random.split(key, self.actor_critic_training_epochs)
         joint_graphdef, joint_state = nnx.split(

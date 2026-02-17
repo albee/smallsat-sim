@@ -80,6 +80,7 @@ def test_prepare_step_functional_routes_failure_modes(
     env_state = vec_env.VecEnvState(
         rng=jax.random.PRNGKey(1),
         mjx_batch=dummy_batch,
+        terminal_hold_counts=jnp.zeros((num_envs,), dtype=jnp.int32),
         disturbance_states=(),
         perturbation_states=(pert_state,),
     )
@@ -112,6 +113,7 @@ def test_prepare_step_functional_fallback_applies_masked_stuck_off() -> None:
     env_state = vec_env.VecEnvState(
         rng=jax.random.PRNGKey(2),
         mjx_batch=dummy_batch,
+        terminal_hold_counts=jnp.zeros((num_envs,), dtype=jnp.int32),
         disturbance_states=(),
         perturbation_states=(pert_state,),
     )
