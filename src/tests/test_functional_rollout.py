@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from smallsat_sim.controllers.rl.runners import rollout_utils as ru
+from smallsat_sim.controllers.rl.runners import rollout as ru
 from smallsat_sim.controllers.rl.storage.replay_buffer import ReplayBuffer
 
 
