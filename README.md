@@ -155,6 +155,7 @@ Other example experiments include NASA's Astrobee free-flyer and JPL's air beari
 
 `astrobee_CL.py` : Uses the 6DoF Astrobee model, MPCC controller and mission planner. \
 `astrobee_CL_2d.py` : Uses the 3DoF Astrobee model, MPCC controller and mission planner. \
+`astrobee_docking.py` : Uses the 6DoF Astrobee model, nominal MPC controller, and a two-stage pre-dock to dock planner targeting named Gateway dock sites. \
 `udp_controller.py` : 6DoF MPCC controller that is run in a separate thread from the simulation. It listens for messages on a given port (in this case the messages are the 6DoF observations from the simulation environment) and sends the computed 6DoF control inputs on a separate port. \
 `udp_controller_2d.py` : 3DoF MPCC controller that is run in a separate thread from the simulation. It listens for messages on a given port (in this case the messages are the 6DoF observations from the simulation environment) and sends the computed 3DoF control inputs on a separate port. \
 `astrobee_CL_udp_external.py` : Runs the 6DoF simulation loop. Observations are sent to a given port, and 6DoF control inputs are received from the controller. \
