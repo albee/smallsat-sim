@@ -187,8 +187,8 @@ class Line(Segment):
     def tangent(self, arc_length: Optional[float] = None) -> np.ndarray:
         direction = self.end_point.position - self.start_point.position
 
-        if direction.all() == 0:
-            return [0, 0, 0]
+        if np.linalg.norm(direction) < 1e-12:
+            return np.zeros(3)
 
         return direction / np.linalg.norm(direction)
 

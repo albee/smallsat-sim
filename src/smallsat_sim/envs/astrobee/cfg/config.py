@@ -105,6 +105,90 @@ class EnvConfig(BaseEnvConfig):
         }
     }
 
+    class gateway:
+        # Dock sites are in the gateway_full body frame, which is aligned with world.
+        dock_sites = [
+            {
+                "name": "dock_orion_port_a",
+                "pos": [-12.8, 0.0, 0.0],
+                "quat": [1.0, 0.0, 0.0, 0.0],
+                "approach_axis": [-1.0, 0.0, 0.0],
+                "approach_offset": 2.0,
+                "size": [0.20],
+                "rgba": [1.0, 0.2, 0.2, 0.8],
+            },
+            {
+                # Orion-to-Gateway docking interface (NDS-like region), centered closer
+                # to the adapter tunnel than the engine-bell side.
+                "name": "dock_orion_interface_a",
+                "pos": [-5.95, 0.0, 0.0],
+                "quat": [1.0, 0.0, 0.0, 0.0],
+                "approach_axis": [-1.0, 0.0, 0.0],
+                "approach_offset": 2.0,
+                "size": [0.20],
+                "rgba": [0.2, 1.0, 0.35, 0.85],
+            },
+            {
+                # I-HAB <-> HALO axial interface region.
+                "name": "dock_halo_ihab_interface_a",
+                "pos": [0.89, 0.0, 0.0],
+                "quat": [1.0, 0.0, 0.0, 0.0],
+                "approach_axis": [1.0, 0.0, 0.0],
+                "approach_offset": 2.0,
+                "size": [0.20],
+                "rgba": [1.0, 0.75, 0.2, 0.85],
+            },
+            {
+                # HALO <-> PPE axial interface region.
+                "name": "dock_halo_ppe_interface_a",
+                "pos": [7.34, 0.0, 0.0],
+                "quat": [1.0, 0.0, 0.0, 0.0],
+                "approach_axis": [1.0, 0.0, 0.0],
+                "approach_offset": 2.0,
+                "size": [0.20],
+                "rgba": [0.95, 0.55, 0.15, 0.85],
+            },
+            {
+                # Crew airlock side interface candidate.
+                "name": "dock_crew_airlock_a",
+                "pos": [-3.11, -6.97, -0.02],
+                "quat": [1.0, 0.0, 0.0, 0.0],
+                "approach_axis": [0.0, -1.0, 0.0],
+                "approach_offset": 2.0,
+                "size": [0.20],
+                "rgba": [0.4, 0.9, 1.0, 0.85],
+            },
+            {
+                # HLS side interface candidate.
+                "name": "dock_hls_side_a",
+                "pos": [3.62, 7.82, 0.0],
+                "quat": [1.0, 0.0, 0.0, 0.0],
+                "approach_axis": [0.0, 1.0, 0.0],
+                "approach_offset": 2.0,
+                "size": [0.20],
+                "rgba": [0.65, 1.0, 0.65, 0.85],
+            },
+            {
+                # Logistics side interface candidate.
+                "name": "dock_logistics_side_a",
+                "pos": [3.69, -10.03, 0.0],
+                "quat": [1.0, 0.0, 0.0, 0.0],
+                "approach_axis": [0.0, -1.0, 0.0],
+                "approach_offset": 2.0,
+                "size": [0.20],
+                "rgba": [0.75, 0.85, 1.0, 0.85],
+            },
+            {
+                "name": "dock_ppe_port_a",
+                "pos": [13.2, 0.0, 0.0],
+                "quat": [1.0, 0.0, 0.0, 0.0],
+                "approach_axis": [1.0, 0.0, 0.0],
+                "approach_offset": 2.0,
+                "size": [0.20],
+                "rgba": [0.2, 0.7, 1.0, 0.8],
+            },
+        ]
+
     class Bodies:
         num_bodies = 1
         bodies_list = []

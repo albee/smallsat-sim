@@ -48,9 +48,15 @@ class PDController(BaseController):
         for i in range(model.nu):
             actuator = model.actuator(i)
             force = model.actuator(i).gear[0:3]  # Force produced by thruster 'i'
-            actuator_pos = model.site(
-                i
-            ).pos  # Position of thruster 'i' relative to body origin
+            # Resolve the actuator transmission target robustly. Using `site(i)` assumes
+            # the first `nu` sites are thruster sites, which is false in the Gateway
+            # scene (dock marker sites are defined earlier in the XML).
+            site_id = int(actuator.trnid[0])
+            if site_id >= 0:
+                actuator_pos = model.site(site_id).pos
+            else:
+                # Fallback for unusual actuator types without a site transmission.
+                actuator_pos = model.site(i).pos
             # Add direct forces and torques to B matrix. Then calculate force arms and add
             B_matrix[:, i] = actuator.gear + np.append(
                 [0, 0, 0], np.cross(actuator_pos, force)

@@ -44,6 +44,27 @@ def get_args() -> argparse.Namespace:
     parser.add_argument(
         "--wandb", action="store_true", help="Use Weights & Biases to log RL data"
     )
+    parser.add_argument(
+        "--dock_site",
+        type=str,
+        default="dock_orion_port_a",
+        help="Dock site name used by docking experiments",
+    )
+    parser.add_argument(
+        "--dock_approach_offset",
+        type=float,
+        default=None,
+        help="Override configured pre-dock distance [m] for docking experiments",
+    )
+    parser.add_argument(
+        "--dock_surface_offset",
+        type=float,
+        default=0.0,
+        help=(
+            "Shift final dock setpoint along -approach_axis [m]. "
+            "Positive values move target inward toward station surface."
+        ),
+    )
 
     # Parse the arguments
     args = parser.parse_args()
