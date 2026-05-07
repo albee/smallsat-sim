@@ -105,6 +105,8 @@ class RLController(object):
 
         self.env.reset()
         self.env.reset_perturbations()
+        if hasattr(self.env, "reset_disturbances"):
+            self.env.reset_disturbances()
         self.env._refresh_effect_states()
 
         vec_state = self.env.state_struct
@@ -191,6 +193,15 @@ class RLController(object):
                 )
                 next_obs_batch = self.env.get_obs()
                 next_states = self.env.get_states(next_waypoint)
+                reward_components = self.env.get_last_reward_components()
+                success_terminals = reward_components.get(
+                    "terminated_success",
+                    terminals.astype(rewards.dtype),
+                ).astype(bool)
+                failure_terminals = reward_components.get(
+                    "terminated_failure",
+                    jnp.zeros_like(terminals, dtype=rewards.dtype),
+                ).astype(bool)
                 step_output = VecEnvStepOutput(
                     prev_states=states,
                     next_states=next_states,
@@ -202,7 +213,9 @@ class RLController(object):
                     desired_wrench=self.env.get_desired_wrench(actions),
                     prev_obs=prev_obs if test_pd else next_obs_batch,
                     next_obs=next_obs_batch,
-                    reward_components=self.env.get_last_reward_components(),
+                    success_terminals=success_terminals,
+                    failure_terminals=failure_terminals,
+                    reward_components=reward_components,
                 )
                 vec_state = self.env.state_struct
 
@@ -220,14 +233,14 @@ class RLController(object):
             actual_wrench = step_output.actual_wrench
             desired_wrench = step_output.desired_wrench
             if self.env.use_adaptive_approach:
-                history_full = bool(jnp.all(history_counts >= history_len))
+                history_full = history_counts >= history_len
                 if phase == 1:
                     ext = actual_wrench
                     res = ext - desired_wrench
                 elif phase == 2:
-                    if history_full:
-                        ext = self.adaptation_module(state_action_history)
-                        res = ext - desired_wrench
+                    ext_pred = self.adaptation_module(state_action_history)
+                    ext = jnp.where(history_full[:, None], ext_pred, ext)
+                    res = jnp.where(history_full[:, None], ext - desired_wrench, res)
                 else:
                     raise Exception("There only exist two training phases.")
             else:
@@ -265,13 +278,20 @@ class RLController(object):
         """
         Build the right adaptation module.
         """
+        rngs = nnx.Rngs(params=self._take_keys(), dropout=self._take_keys())
         if self.env.am_architecture == "transformer":
             return TransformerAdaptationModule(
-                self.env.history_len, self.state_action_dim, self.env.ext_dim
+                self.env.history_len,
+                self.state_action_dim,
+                self.env.ext_dim,
+                rngs=rngs,
             )
         if self.env.am_architecture == "cnn":
             return CNNAdaptationModule(
-                self.env.history_len, self.state_action_dim, self.env.ext_dim
+                self.env.history_len,
+                self.state_action_dim,
+                self.env.ext_dim,
+                rngs=rngs,
             )
         raise ValueError(
             f"Unknown adaptation module architecture '{self.env.am_architecture}'."

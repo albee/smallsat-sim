@@ -414,13 +414,20 @@ class OnPolicyRunner(object):
         save_training_data(self.ckpt_dir, self.pretraining_data_file_name, data)
 
     def _build_adaptation_module(self):
+        rngs = nnx.Rngs(params=self._take_keys(), dropout=self._take_keys())
         if self.env.am_architecture == "transformer":
             return TransformerAdaptationModule(
-                self.env.history_len, self.state_action_dim, self.env.ext_dim
+                self.env.history_len,
+                self.state_action_dim,
+                self.env.ext_dim,
+                rngs=rngs,
             )
         if self.env.am_architecture == "cnn":
             return CNNAdaptationModule(
-                self.env.history_len, self.state_action_dim, self.env.ext_dim
+                self.env.history_len,
+                self.state_action_dim,
+                self.env.ext_dim,
+                rngs=rngs,
             )
         raise ValueError(
             f"Unknown adaptation module architecture '{self.env.am_architecture}'."
@@ -431,7 +438,9 @@ class OnPolicyRunner(object):
             kl_weight = float(self.am_kl_weight)
 
             def _loss(model, X: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
-                mu, log_sigma = jax.vmap(lambda hist: model(hist, return_stats=True))(X)
+                mu, log_sigma = jax.vmap(
+                    lambda hist: model(hist, return_stats=True, training=True)
+                )(X)
                 target = y[:, -1, :]
                 log_sigma = jnp.clip(log_sigma, -6.0, 2.0)
                 sigma_sq = jnp.exp(2.0 * log_sigma)

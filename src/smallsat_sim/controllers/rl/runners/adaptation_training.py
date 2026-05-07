@@ -64,6 +64,8 @@ def train_adaptation_module_on_policy_runner(self) -> None:
 
     self.env.reset()
     self.env.reset_perturbations()
+    if hasattr(self.env, "reset_disturbances"):
+        self.env.reset_disturbances()
 
     subkeys_train = self._take_keys(self.epochs)
 
@@ -86,6 +88,8 @@ def train_adaptation_module_on_policy_runner(self) -> None:
 
     for epoch in range(self.epochs):
         self.env.reset_perturbations()
+        if hasattr(self.env, "reset_disturbances"):
+            self.env.reset_disturbances()
         self.env.apply_random_perturbations(
             key=subkeys_train[epoch],
             fraction_perturbed_envs=0.4,
@@ -216,20 +220,17 @@ def train_adaptation_module_on_policy_runner(self) -> None:
             counts = jnp.minimum(counts + 1, history_len)
             history_full = counts >= history_len
 
-            all_full = jnp.all(history_full)
-            extrinsic_est = jax.lax.cond(
-                all_full,
-                lambda _: self.adaptation_module(history),
-                lambda _: jnp.zeros_like(actual_step),
-                operand=None,
+            extrinsic_est_raw = self.adaptation_module(history)
+            extrinsic_est = jnp.where(
+                history_full[:, None],
+                extrinsic_est_raw,
+                jnp.zeros_like(actual_step),
             )
-            extrinsic_err = jax.lax.cond(
-                all_full,
-                lambda _: calc_extrinsic_error(extrinsic_est, actual_step),
-                lambda _: jnp.zeros((num_envs,), dtype=actual_step.dtype),
-                operand=None,
+            extrinsic_err = calc_extrinsic_error(extrinsic_est, actual_step)
+            mask_f = history_full.astype(extrinsic_err.dtype)
+            extrinsic_mean = (extrinsic_err * mask_f).sum() / jnp.maximum(
+                mask_f.sum(), 1.0
             )
-            extrinsic_mean = extrinsic_err.mean()
 
             reset_flag = jnp.logical_and(
                 done_step,

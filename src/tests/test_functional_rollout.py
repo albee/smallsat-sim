@@ -70,6 +70,8 @@ class DummyStepOutput:
     desired_wrench: jnp.ndarray
     prev_obs: jnp.ndarray
     next_obs: jnp.ndarray
+    success_terminals: jnp.ndarray
+    failure_terminals: jnp.ndarray
     reward_components: dict
 
 
@@ -85,6 +87,8 @@ def _dummy_step_output_flatten(output: DummyStepOutput):
         output.desired_wrench,
         output.prev_obs,
         output.next_obs,
+        output.success_terminals,
+        output.failure_terminals,
         output.reward_components,
     )
     return children, None
@@ -102,6 +106,8 @@ def _dummy_step_output_unflatten(aux_data, children):
         desired_wrench,
         prev_obs,
         next_obs,
+        success_terminals,
+        failure_terminals,
         reward_components,
     ) = children
     return DummyStepOutput(
@@ -115,6 +121,8 @@ def _dummy_step_output_unflatten(aux_data, children):
         desired_wrench=desired_wrench,
         prev_obs=prev_obs,
         next_obs=next_obs,
+        success_terminals=success_terminals,
+        failure_terminals=failure_terminals,
         reward_components=reward_components,
     )
 
@@ -281,6 +289,8 @@ def test_run_functional_rollout_resets_and_reports_returns() -> None:
             desired_wrench=jnp.zeros((num_envs, 1), dtype=jnp.float32),
             prev_obs=qpos,
             next_obs=qpos + 1.0,
+            success_terminals=terminals,
+            failure_terminals=jnp.zeros_like(terminals),
             reward_components={},
         )
         return next_state, step_output
@@ -366,6 +376,8 @@ def test_run_functional_rollout_bootstraps_timeouts() -> None:
             desired_wrench=jnp.zeros((num_envs, 1), dtype=jnp.float32),
             prev_obs=qpos,
             next_obs=qpos + 1.0,
+            success_terminals=terminals,
+            failure_terminals=jnp.zeros_like(terminals),
             reward_components={},
         )
         return next_state, step_output
@@ -422,6 +434,97 @@ def test_run_functional_rollout_bootstraps_timeouts() -> None:
     assert jnp.allclose(bootstrap_vals[4], 7.0)
     assert jnp.allclose(bootstrap_vals[0], 0.0)
     assert jnp.allclose(bootstrap_vals[2], 0.0)
+
+
+def test_run_functional_rollout_records_policy_input_residuals() -> None:
+    num_envs = 1
+    num_steps = 3
+
+    initial_batch = DummyBatch(qpos=jnp.zeros((num_envs, 1), dtype=jnp.float32))
+    initial_state = DummyState(
+        rng=jax.random.PRNGKey(0),
+        mjx_batch=initial_batch,
+    )
+    step_config = _dummy_step_config(num_envs=num_envs, max_episode_len=10)
+    initial_residuals = jnp.zeros((num_envs, 1), dtype=jnp.float32)
+    reference_waypoint = jnp.zeros((3,), dtype=jnp.float32)
+
+    def _vecenv_step_stub(state, actions, _waypoint, _config, _prev_residuals):
+        qpos = state.mjx_batch.qpos
+        terminals = jnp.zeros((num_envs,), dtype=bool)
+        next_state = state.replace(mjx_batch=state.mjx_batch.replace(qpos=qpos + 1.0))
+        step_output = DummyStepOutput(
+            prev_states=qpos,
+            next_states=qpos + 1.0,
+            rewards=jnp.ones((num_envs,), dtype=jnp.float32),
+            terminals=terminals,
+            commanded_ctrl=actions,
+            applied_ctrl=actions,
+            actual_wrench=jnp.zeros((num_envs, 1), dtype=jnp.float32),
+            desired_wrench=jnp.zeros((num_envs, 1), dtype=jnp.float32),
+            prev_obs=qpos,
+            next_obs=qpos + 1.0,
+            success_terminals=terminals,
+            failure_terminals=jnp.zeros_like(terminals),
+            reward_components={},
+        )
+        return next_state, step_output
+
+    def _sample(_step, policy_input, rng_key, carry_extra):
+        actions = policy_input
+        values = jnp.zeros((num_envs,), dtype=jnp.float32)
+        logp = jnp.zeros((num_envs,), dtype=jnp.float32)
+        return actions, values, logp, rng_key, carry_extra
+
+    def _post(_step, step_output, actions, residuals, reset_flag, carry_extra):
+        del step_output, actions, reset_flag
+        return residuals + 1.0, None, carry_extra
+
+    result = ru.run_functional_rollout(
+        step_config=step_config,
+        initial_state=initial_state,
+        initial_residuals=initial_residuals,
+        rng=initial_state.rng,
+        num_steps=num_steps,
+        reference_waypoint=reference_waypoint,
+        callbacks=ru.FunctionalRolloutCallbacks(
+            prepare_policy_input=lambda _step, _states, residuals, extra: (
+                residuals,
+                extra,
+            ),
+            sample_policy=_sample,
+            post_step=_post,
+            bootstrap_value=ru.make_zero_bootstrap_value(num_envs),
+        ),
+        state_features_fn=lambda batch, _: batch.qpos,
+        step_fn=_vecenv_step_stub,
+        reset_fn=lambda state, _config: state,
+    )
+
+    expected = jnp.array([[[0.0]], [[1.0]], [[2.0]]], dtype=jnp.float32)
+    assert jnp.allclose(result.actions, expected)
+    assert jnp.allclose(result.residuals, expected)
+    assert jnp.allclose(result.final_residuals, jnp.array([[3.0]], dtype=jnp.float32))
+
+
+def test_update_history_buffer_reports_full_before_reset() -> None:
+    extra = ru.AdaptationRolloutExtra(
+        history=jnp.zeros((1, 2, 2), dtype=jnp.float32),
+        counts=jnp.array([1], dtype=jnp.int32),
+    )
+
+    history, counts, history_full, new_extra = ru.update_history_buffer(
+        carry_extra=extra,
+        prev_states=jnp.array([[2.0]], dtype=jnp.float32),
+        actions=jnp.array([[3.0]], dtype=jnp.float32),
+        reset_flag=jnp.array([True]),
+        history_len=2,
+    )
+
+    assert bool(history_full[0])
+    assert jnp.allclose(history, jnp.zeros_like(history))
+    assert jnp.allclose(counts, jnp.zeros_like(counts))
+    assert jnp.allclose(new_extra.history, jnp.zeros_like(new_extra.history))
 
 
 def test_replay_buffer_terminated_vs_truncated_bootstrap_returns() -> None:

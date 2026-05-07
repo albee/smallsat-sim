@@ -53,9 +53,8 @@ def update_history_buffer(
     history = jnp.roll(history, shift=-1, axis=1)
     history = history.at[:, -1, :].set(combined)
     counts = jnp.minimum(counts + 1, history_len)
+    history_full = counts >= history_len
     history = jnp.where(reset_flag[:, None, None], jnp.zeros_like(history), history)
     counts = jnp.where(reset_flag, jnp.zeros_like(counts), counts)
-    history_full = counts >= history_len
     new_extra = AdaptationRolloutExtra(history=history, counts=counts)
     return history, counts, history_full, new_extra
-

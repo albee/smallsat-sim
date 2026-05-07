@@ -124,6 +124,8 @@ class VecEnvStepOutput:
     desired_wrench: jnp.ndarray
     prev_obs: jnp.ndarray
     next_obs: jnp.ndarray
+    success_terminals: jnp.ndarray
+    failure_terminals: jnp.ndarray
     reward_components: Dict[str, jnp.ndarray]
 
 
@@ -139,6 +141,8 @@ def _vecenv_step_output_flatten(output: VecEnvStepOutput):
         output.desired_wrench,
         output.prev_obs,
         output.next_obs,
+        output.success_terminals,
+        output.failure_terminals,
         output.reward_components,
     )
     return children, None
@@ -156,6 +160,8 @@ def _vecenv_step_output_unflatten(aux_data, children):
         desired_wrench,
         prev_obs,
         next_obs,
+        success_terminals,
+        failure_terminals,
         reward_components,
     ) = children
     return VecEnvStepOutput(
@@ -169,6 +175,8 @@ def _vecenv_step_output_unflatten(aux_data, children):
         desired_wrench=desired_wrench,
         prev_obs=prev_obs,
         next_obs=next_obs,
+        success_terminals=success_terminals,
+        failure_terminals=failure_terminals,
         reward_components=reward_components,
     )
 
@@ -606,18 +614,19 @@ def vecenv_reset_masked(
         num_envs=config.num_envs,
         max_start_offset=config.max_start_offset,
     )
-    expanded_mask = reset_mask[:, None]
-    merged_qpos = jnp.where(
-        expanded_mask,
-        reset_state.mjx_batch.qpos,
-        state.mjx_batch.qpos,
+    def _merge_batched_leaf(reset_leaf, current_leaf):
+        if not hasattr(reset_leaf, "shape") or len(reset_leaf.shape) == 0:
+            return current_leaf
+        if reset_leaf.shape[0] != config.num_envs:
+            return current_leaf
+        mask_shape = (config.num_envs,) + (1,) * (len(reset_leaf.shape) - 1)
+        return jnp.where(reset_mask.reshape(mask_shape), reset_leaf, current_leaf)
+
+    merged_mjx_batch = jax.tree_util.tree_map(
+        _merge_batched_leaf,
+        reset_state.mjx_batch,
+        state.mjx_batch,
     )
-    merged_qvel = jnp.where(
-        expanded_mask,
-        reset_state.mjx_batch.qvel,
-        state.mjx_batch.qvel,
-    )
-    merged_mjx_batch = state.mjx_batch.replace(qpos=merged_qpos, qvel=merged_qvel)
     merged_mjx_batch = jax.vmap(mjx.forward, in_axes=(None, 0))(
         config.mjx_model, merged_mjx_batch
     )
@@ -905,6 +914,8 @@ def vecenv_step(
         desired_wrench=commanded_ctrl @ config.thruster_mixer_T,
         prev_obs=prev_obs,
         next_obs=next_obs,
+        success_terminals=success_terminals,
+        failure_terminals=failure_terminals,
         reward_components=reward_components,
     )
 

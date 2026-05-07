@@ -86,6 +86,8 @@ def learn_runner(self) -> None:
     # Initialize the environment
     self.env.reset()
     self.env.reset_perturbations()
+    if hasattr(self.env, "reset_disturbances"):
+        self.env.reset_disturbances()
     episode_counter = 0
 
     # Curriculum knobs live in config so they can be tuned without code edits
@@ -139,6 +141,8 @@ def learn_runner(self) -> None:
         for ep_key in episode_keys:
             self.env.reset()
             self.env.reset_perturbations()
+            if hasattr(self.env, "reset_disturbances"):
+                self.env.reset_disturbances()
 
             if fraction_perturbed_envs > 0.0:
                 self.env.apply_random_perturbations(
@@ -250,6 +254,8 @@ def learn_runner(self) -> None:
             # Apply failures/disturbances for this phase with fixed proportions
             if self.env.train_with_failures:
                 self.env.reset_perturbations()  # avoid accumulating failures across epochs
+                if hasattr(self.env, "reset_disturbances"):
+                    self.env.reset_disturbances()
                 if phase_failure_fraction > 0.0:
                     self.env.apply_random_perturbations(
                         key=perturb_key,
@@ -429,6 +435,8 @@ def learn_runner(self) -> None:
             # Reset the imperative environment for the next epoch
             self.env.reset()
             self.env.reset_perturbations()
+            if hasattr(self.env, "reset_disturbances"):
+                self.env.reset_disturbances()
 
             rollout_duration = time.perf_counter() - epoch_start_time
 
@@ -481,7 +489,7 @@ def learn_runner(self) -> None:
                 final_positions - ref_pos, axis=1
             ).mean()
 
-            terminals_any_epoch = jnp.any(step_outputs.terminals, axis=0)
+            terminals_any_epoch = jnp.any(step_outputs.success_terminals, axis=0)
             success_env_count_epoch = jnp.asarray(
                 terminals_any_epoch.astype(jnp.float32).sum()
             )

@@ -7,38 +7,46 @@ class CNNAdaptationModule(nnx.Module):
     Returns the extrinsics given the history of states and actions. Uses a 1-D CNN based to capture temporal correlations.
     """
 
-    def __init__(self, n_steps: int, state_action_dim: int, ext_dim: int):
+    def __init__(
+        self,
+        n_steps: int,
+        state_action_dim: int,
+        ext_dim: int,
+        rngs: nnx.Rngs | None = None,
+    ):
         super().__init__()
+        if rngs is None:
+            rngs = nnx.Rngs(params=0)
         self.encoder = nnx.Linear(
             in_features=state_action_dim,
             out_features=32,
-            rngs=nnx.Rngs(params=0),
+            rngs=rngs,
         )
         self.conv1 = nnx.Conv(
             in_features=n_steps,
             out_features=32,
             kernel_size=(8,),
             strides=(4,),
-            rngs=nnx.Rngs(params=0),
+            rngs=rngs,
         )
         self.conv2 = nnx.Conv(
             in_features=32,
             out_features=32,
             kernel_size=(5,),
             strides=(1,),
-            rngs=nnx.Rngs(params=0),
+            rngs=rngs,
         )
         self.conv3 = nnx.Conv(
             in_features=32,
             out_features=32,
             kernel_size=(5,),
             strides=(1,),
-            rngs=nnx.Rngs(params=0),
+            rngs=rngs,
         )
         self.linear_output = nnx.Linear(
             in_features=256,
             out_features=max(1, ext_dim),
-            rngs=nnx.Rngs(params=0),
+            rngs=rngs,
         )
 
     def __call__(self, x):

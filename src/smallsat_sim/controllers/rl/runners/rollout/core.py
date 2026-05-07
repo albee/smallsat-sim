@@ -200,7 +200,7 @@ def run_functional_rollout(
             actions=actions,
             values=values,
             logp=logp,
-            residuals=next_residuals,
+            residuals=residuals,
             episode_return=episode_return,
             done_flag=done_flag,
             done_mask=done_mask,
@@ -258,4 +258,3 @@ def run_functional_rollout(
         final_rng=final_rng,
         final_extra=final_extra,
     )
-

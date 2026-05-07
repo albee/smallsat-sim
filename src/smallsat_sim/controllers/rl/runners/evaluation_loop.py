@@ -70,6 +70,8 @@ def evaluate_runner(runner: Any, phase: int = 2) -> None:
         print(f"Testing policy: episode {eval_idx + 1}/{runner.n_evals}")
         runner.env.reset()
         runner.env.reset_perturbations()
+        if hasattr(runner.env, "reset_disturbances"):
+            runner.env.reset_disturbances()
 
         if runner.env.train_with_failures and eval_idx >= runner.n_evals // 2:
             eval_key = subkeys_eval[eval_idx]
@@ -215,7 +217,7 @@ def evaluate_runner(runner: Any, phase: int = 2) -> None:
             mean_extrinsic_error = 0.0
 
         terminals_any_eval = jnp.any(
-            jnp.logical_and(step_outputs.terminals, first_episode_mask), axis=0
+            jnp.logical_and(step_outputs.success_terminals, first_episode_mask), axis=0
         )
         success_env_count = float(terminals_any_eval.astype(jnp.float32).sum())
         success_rate = float(terminals_any_eval.astype(jnp.float32).mean())

@@ -102,3 +102,23 @@ class AstrobeeEnvVectorized(VecEnv):
             ]
         )
         self._refresh_effect_states()
+        if hasattr(self, "_state"):
+            self._state = self._state.replace(
+                rng=self._rng,
+                perturbation_states=self.perturbation_states
+            )
+
+    def reset_disturbances(self) -> None:
+        """
+        Resets external disturbances so curriculum fractions stay fixed per epoch.
+        """
+        disturbance_key = self.next_rng_keys(1)[0]
+        self.disturbances = DisturbanceList(
+            [ConstantForceDisturbance(self.env_cfg, disturbance_key)]
+        )
+        self._refresh_effect_states()
+        if hasattr(self, "_state"):
+            self._state = self._state.replace(
+                rng=self._rng,
+                disturbance_states=self.disturbance_states,
+            )
