@@ -1,18 +1,414 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 import warnings
 from copy import deepcopy
+from typing import Optional, Tuple
 import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
-from scipy.interpolate import interp1d
+import numpy as np
 
 from smallsat_sim.envs.base_env_config import BaseEnvConfig
 from smallsat_sim.model.base_model_config import BaseModelConfig
 
 # Import for typing
 from smallsat_sim.model.base_model_config import BaseModelConfig
+
+
+@dataclass
+class PerturbationState:
+    rng: jnp.ndarray
+    thruster_mask: jnp.ndarray
+    failure_value: Optional[int] = None
+    start_times: Optional[jnp.ndarray] = None
+    max_thruster_force: Optional[jnp.ndarray] = None
+    gp_x_samples: Optional[jnp.ndarray] = None
+    gp_y_samples: Optional[jnp.ndarray] = None
+
+
+def _perturbation_state_flatten(state: "PerturbationState"):
+    children = (
+        state.rng,
+        state.thruster_mask,
+        state.start_times,
+        state.max_thruster_force,
+        state.gp_x_samples,
+        state.gp_y_samples,
+    )
+    return children, state.failure_value
+
+
+def _perturbation_state_unflatten(aux_data, children):
+    (
+        rng,
+        thruster_mask,
+        start_times,
+        max_thruster_force,
+        gp_x_samples,
+        gp_y_samples,
+    ) = children
+    return PerturbationState(
+        rng=rng,
+        thruster_mask=thruster_mask,
+        failure_value=aux_data,
+        start_times=start_times,
+        max_thruster_force=max_thruster_force,
+        gp_x_samples=gp_x_samples,
+        gp_y_samples=gp_y_samples,
+    )
+
+
+jax.tree_util.register_pytree_node(
+    PerturbationState,
+    _perturbation_state_flatten,
+    _perturbation_state_unflatten,
+)
+
+
+def _stable_cholesky(matrix: jnp.ndarray, base_jitter: float, max_attempts: int = 5):
+    """Perform a Cholesky factorization, growing the jitter until the factor is finite."""
+    dtype = matrix.dtype
+    eye = jnp.eye(matrix.shape[0], dtype=dtype)
+    jitter0 = jnp.asarray(base_jitter, dtype=dtype)
+
+    def attempt(jitter):
+        return jsp.linalg.cholesky(matrix + jitter * eye, lower=True)
+
+    chol0 = attempt(jitter0)
+
+    def cond_fn(state):
+        step, jitter, chol = state
+        bad = jnp.logical_not(jnp.isfinite(chol).all())
+        return jnp.logical_and(bad, step < max_attempts)
+
+    def body_fn(state):
+        step, jitter, _ = state
+        jitter = jitter * 10.0
+        chol = attempt(jitter)
+        return step + 1, jitter, chol
+
+    init_state = (jnp.array(0, dtype=jnp.int32), jitter0, chol0)
+    _, _, chol = jax.lax.while_loop(cond_fn, body_fn, init_state)
+    return jnp.nan_to_num(chol)
+
+
+def _derive_gp_resolution(num_thrusters: int, num_envs: int) -> Tuple[int, int]:
+    """
+    Mirror the classic perturbation setup: use more support points as the number of
+    thrusters grows, and make the GP subset size depend on how many environments are
+    being simulated in parallel.
+    """
+    num_points = max(32, min(256, 4 * max(1, num_thrusters)))
+    # Scale subset size with the vectorized batch but keep it well-conditioned.
+    subset_target = max(8, num_envs // 64 if num_envs > 0 else 8)
+    subset_size = min(num_points, subset_target)
+    if subset_size > num_points - 2:
+        subset_size = max(2, num_points - 2)
+    return num_points, subset_size
+
+
+def perturbation_state_to_serializable(
+    state: Optional["PerturbationState"],
+) -> Optional[dict]:
+    if state is None:
+        return None
+
+    to_np = lambda x: None if x is None else np.asarray(x)
+
+    return {
+        "rng": np.asarray(state.rng),
+        "thruster_mask": np.asarray(state.thruster_mask),
+        "failure_value": (
+            None if state.failure_value is None else int(state.failure_value)
+        ),
+        "start_times": to_np(state.start_times),
+        "max_thruster_force": to_np(state.max_thruster_force),
+        "gp_x_samples": to_np(state.gp_x_samples),
+        "gp_y_samples": to_np(state.gp_y_samples),
+    }
+
+
+def perturbation_state_from_serializable(
+    payload: Optional[dict],
+) -> Optional["PerturbationState"]:
+    if payload is None:
+        return None
+
+    to_jnp = lambda x: None if x is None else jnp.asarray(x)
+
+    return PerturbationState(
+        rng=jnp.asarray(payload["rng"]),
+        thruster_mask=jnp.asarray(payload["thruster_mask"]),
+        failure_value=payload["failure_value"],
+        start_times=to_jnp(payload["start_times"]),
+        max_thruster_force=to_jnp(payload["max_thruster_force"]),
+        gp_x_samples=to_jnp(payload["gp_x_samples"]),
+        gp_y_samples=to_jnp(payload["gp_y_samples"]),
+    )
+
+
+def _broadcast_to_control_shape(arr: jnp.ndarray, control: jnp.ndarray) -> jnp.ndarray:
+    """
+    Utility to broadcast stored perturbation arrays (which may be recorded per-env or per-thruster)
+    to the full control array shape.
+    """
+    arr = jnp.asarray(arr)
+    control = jnp.asarray(control)
+    control_ndim = control.ndim
+    if control_ndim == 0:
+        return jnp.asarray(arr)
+    if arr.shape == control.shape:
+        return arr
+
+    if arr.ndim == 0:
+        arr = jnp.reshape(arr, (1,) * control_ndim)
+    elif arr.ndim == 1:
+        if arr.shape[0] == control.shape[-1]:
+            arr = jnp.reshape(arr, (1, control.shape[-1]))
+        elif arr.shape[0] == control.shape[0]:
+            arr = jnp.reshape(arr, (control.shape[0], 1))
+        else:
+            arr = jnp.reshape(arr, (1,) * (control_ndim - 1) + arr.shape)
+    elif arr.ndim == control_ndim - 1:
+        if arr.shape[-1] == control.shape[-1]:
+            arr = jnp.reshape(arr, (1,) + arr.shape)
+        elif arr.shape[0] == control.shape[0]:
+            arr = jnp.reshape(arr, arr.shape + (1,))
+        else:
+            arr = jnp.reshape(arr, (1,) * (control_ndim - arr.ndim) + arr.shape)
+    elif arr.ndim > control_ndim:
+        arr = jnp.reshape(arr, arr.shape[-control_ndim:])
+    else:
+        arr = jnp.reshape(arr, (1,) * (control_ndim - arr.ndim) + arr.shape)
+
+    return jnp.broadcast_to(arr, control.shape)
+
+
+def stuck_off_apply_from_state(
+    state: Optional[PerturbationState],
+    control: jnp.ndarray,
+    timestamp: float,
+) -> Tuple[jnp.ndarray, Optional[PerturbationState]]:
+    if state is None:
+        return control, state
+    control = jnp.asarray(control)
+    mask = jnp.asarray(state.thruster_mask)
+    if mask.ndim == 1:
+        if mask.shape[0] == control.shape[0]:
+            mask = mask[:, None]
+        elif mask.shape[0] == control.shape[-1]:
+            mask = mask[None, :]
+        else:
+            mask = mask.reshape((1,) * (control.ndim - mask.ndim) + mask.shape)
+    elif mask.ndim < control.ndim:
+        mask = mask.reshape((1,) * (control.ndim - mask.ndim) + mask.shape)
+    mask = jnp.broadcast_to(mask, control.shape)
+    mask = mask == PerturbationStatus.STUCK_OFF.value
+
+    if state.start_times is not None:
+        start_times = _broadcast_to_control_shape(state.start_times, control)
+    else:
+        start_times = jnp.zeros(control.shape, dtype=control.dtype)
+
+    timestamp_arr = _broadcast_to_control_shape(
+        jnp.asarray(timestamp, dtype=start_times.dtype),
+        control,
+    )
+    active = jnp.logical_and(mask, timestamp_arr >= start_times)
+    control = jnp.where(active, 0.0, control)
+    return control, state
+
+
+def stuck_off_activate_state(
+    state: Optional[PerturbationState],
+    thruster_mask: jnp.ndarray,
+    start_times: jnp.ndarray,
+    rng: jnp.ndarray,
+) -> PerturbationState:
+    return PerturbationState(
+        rng=rng,
+        thruster_mask=thruster_mask,
+        failure_value=PerturbationStatus.STUCK_OFF.value,
+        start_times=start_times,
+        max_thruster_force=state.max_thruster_force if state else None,
+        gp_x_samples=state.gp_x_samples if state else None,
+        gp_y_samples=state.gp_y_samples if state else None,
+    )
+
+
+def stuck_on_apply_from_state(
+    state: Optional[PerturbationState],
+    control: jnp.ndarray,
+    timestamp: float,
+) -> Tuple[jnp.ndarray, Optional[PerturbationState]]:
+    if state is None:
+        return control, state
+
+    start_times = state.start_times
+    max_force = state.max_thruster_force
+    if start_times is None or max_force is None:
+        return control, state
+
+    control = jnp.asarray(control)
+    mask = _broadcast_to_control_shape(state.thruster_mask, control)
+    mask = mask == PerturbationStatus.STUCK_ON.value
+
+    start_times = _broadcast_to_control_shape(start_times, control)
+
+    timestamp_arr = _broadcast_to_control_shape(
+        jnp.asarray(timestamp, dtype=start_times.dtype),
+        control,
+    )
+    active = jnp.logical_and(mask, timestamp_arr >= start_times)
+    broadcast_force = _broadcast_to_control_shape(max_force, control)
+    control = jnp.where(active, broadcast_force, control)
+    return control, state
+
+
+def stuck_on_activate_state(
+    state: Optional[PerturbationState],
+    thruster_mask: jnp.ndarray,
+    start_times: jnp.ndarray,
+    max_thruster_force: jnp.ndarray,
+    rng: jnp.ndarray,
+) -> PerturbationState:
+    return PerturbationState(
+        rng=rng,
+        thruster_mask=thruster_mask,
+        failure_value=PerturbationStatus.STUCK_ON.value,
+        start_times=start_times,
+        max_thruster_force=max_thruster_force,
+        gp_x_samples=state.gp_x_samples if state else None,
+        gp_y_samples=state.gp_y_samples if state else None,
+    )
+
+
+def gp_apply_from_state(
+    state: Optional[PerturbationState],
+    control: jnp.ndarray,
+    timestamp: float,
+    failure_value: int,
+) -> Tuple[jnp.ndarray, Optional[PerturbationState]]:
+    if (
+        state is None
+        or state.start_times is None
+        or state.gp_x_samples is None
+        or state.gp_y_samples is None
+    ):
+        return control, state
+
+    control = jnp.asarray(control)
+    original_control = control
+    sanitize = lambda arr: jnp.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+    gp_x_samples = sanitize(state.gp_x_samples)
+    gp_y_samples = sanitize(state.gp_y_samples)
+    state = replace(state, gp_x_samples=gp_x_samples, gp_y_samples=gp_y_samples)
+
+    mask = _broadcast_to_control_shape(state.thruster_mask, control)
+    mask = mask == failure_value
+
+    start_times = _broadcast_to_control_shape(state.start_times, control)
+
+    timestamp_arr = _broadcast_to_control_shape(
+        jnp.asarray(timestamp, dtype=start_times.dtype),
+        control,
+    )
+    active = jnp.logical_and(mask, timestamp_arr >= start_times)
+
+    gp_support = jnp.any(
+        jnp.diff(state.gp_x_samples, axis=-1) != 0, axis=-1
+    )  # True when we have a non-degenerate grid
+    gp_support = _broadcast_to_control_shape(gp_support, control)
+    active = jnp.logical_and(active, gp_support)
+
+    def _interp_single(args):
+        active_flag, value, xs, ys = args
+        return jax.lax.cond(
+            active_flag,
+            lambda tup: jnp.interp(tup[0], tup[1], tup[2]),
+            lambda tup: tup[0],
+            (value, xs, ys),
+        )
+
+    def _interp_row(ctrl_row, active_row):
+        return jax.vmap(
+            lambda a, v, xs, ys: _interp_single((a, v, xs, ys)),
+            in_axes=(0, 0, 0, 0),
+        )(active_row, ctrl_row, gp_x_samples, gp_y_samples)
+
+    control = jax.vmap(
+        lambda ctrl_row, active_row: _interp_row(ctrl_row, active_row),
+        in_axes=(0, 0),
+    )(control, active)
+
+    def _debug_nan(_):
+        jax.debug.print(
+            "NaN in GP control output at timestamp {t}, active={active}, xs_nan={xs_nan}, ys_nan={ys_nan}, ctrl_nan={ctrl_nan}",
+            t=timestamp,
+            active=jnp.any(active),
+            xs_nan=jnp.isnan(gp_x_samples).any(),
+            ys_nan=jnp.isnan(gp_y_samples).any(),
+            ctrl_nan=nan_mask.any(),
+        )
+        return jnp.array(0, dtype=jnp.int32)
+
+    nan_mask = jnp.isnan(control)
+    control = jnp.where(nan_mask, original_control, control)
+
+    _ = jax.lax.cond(
+        nan_mask.any(),
+        _debug_nan,
+        lambda _: jnp.array(0, dtype=jnp.int32),
+        operand=None,
+    )
+
+    max_force = state.max_thruster_force
+    if max_force is not None:
+        # Temporary diagnostic clamp to ensure GP perturbations stay within the physical thrust envelope.
+        broadcast_force = _broadcast_to_control_shape(max_force, control)
+        control = jnp.clip(control, -broadcast_force, broadcast_force)
+
+    return control, state
+
+
+def gp_register_state(
+    state: Optional[PerturbationState],
+    thruster_mask: jnp.ndarray,
+    start_times: jnp.ndarray,
+    rng: jnp.ndarray,
+    failure_value: int,
+    thruster_index: int,
+    x_samples: jnp.ndarray,
+    y_samples: jnp.ndarray,
+) -> PerturbationState:
+    num_thrusters = thruster_mask.shape[1]
+    num_points = x_samples.shape[0]
+    sanitize = lambda arr: jnp.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+    x_samples = sanitize(x_samples)
+    y_samples = sanitize(y_samples)
+
+    if state is not None and state.gp_x_samples is not None:
+        gp_x = state.gp_x_samples
+        gp_y = state.gp_y_samples
+    else:
+        gp_x = jnp.zeros((num_thrusters, num_points), dtype=x_samples.dtype)
+        gp_y = jnp.zeros_like(gp_x)
+
+    gp_x = gp_x.at[thruster_index].set(x_samples)
+    gp_y = gp_y.at[thruster_index].set(y_samples)
+    gp_x = sanitize(gp_x)
+    gp_y = sanitize(gp_y)
+
+    return PerturbationState(
+        rng=rng,
+        thruster_mask=thruster_mask,
+        failure_value=failure_value,
+        start_times=start_times,
+        max_thruster_force=state.max_thruster_force if state else None,
+        gp_x_samples=gp_x,
+        gp_y_samples=gp_y,
+    )
 
 
 class PerturbationStatus(Enum):
@@ -66,6 +462,11 @@ class Perturbation(ABC):
             )
 
         self._key = key
+        self.verbose = getattr(env_config.sim, "verbose", False)
+        self.state: Optional[PerturbationState] = PerturbationState(
+            rng=self._key,
+            thruster_mask=Perturbation.thruster_mask,
+        )
 
     def _split_keys(self, key: jnp.ndarray | None, count: int) -> jnp.ndarray:
         """
@@ -77,6 +478,8 @@ class Perturbation(ABC):
         source = self._key if key is None else key
         splits = jax.random.split(source, count + 1)
         self._key = splits[0]
+        if self.state is not None:
+            self.state = replace(self.state, rng=self._key)
         return splits[1:]
 
     def get_perturbed_envs(
@@ -161,6 +564,51 @@ class Perturbation(ABC):
 
         return selected_thrusters
 
+    def resolve_target_envs(
+        self,
+        key: jnp.ndarray,
+        perturbed_envs: jnp.ndarray | None,
+    ) -> jnp.ndarray:
+        """
+        Resolve target environments for a failure registration.
+        """
+        return self.get_perturbed_envs(key, 1.0, perturbed_envs)
+
+    def select_shared_operational_thruster(
+        self,
+        key: jnp.ndarray,
+        perturbed_envs: jnp.ndarray,
+        preferred_thruster: int | None = None,
+    ) -> int | None:
+        """
+        Select one thruster index that is operational across all target environments.
+        Returns `None` if no shared operational thruster exists.
+        """
+        if perturbed_envs.size == 0:
+            return None
+
+        selected_envs = Perturbation.thruster_mask[perturbed_envs]
+        shared_operational = jnp.all(
+            selected_envs == PerturbationStatus.OPERATIONAL.value, axis=0
+        )
+        valid_thrusters = jnp.where(
+            shared_operational, size=self.nu, fill_value=-1
+        )[0]
+        valid_mask = valid_thrusters != -1
+        num_valid = int(valid_mask.sum())
+        if num_valid <= 0:
+            return None
+
+        if preferred_thruster is not None:
+            preferred_idx = int(preferred_thruster)
+            if 0 <= preferred_idx < self.nu and bool(shared_operational[preferred_idx]):
+                return preferred_idx
+            return None
+
+        probs = valid_mask.astype(jnp.float32) / float(num_valid)
+        chosen = jax.random.choice(key, valid_thrusters, p=probs)
+        return int(jax.device_get(chosen))
+
     @abstractmethod
     def apply(self, input: jnp.ndarray, timestamp: float = 0.0) -> jnp.ndarray:
         pass
@@ -220,7 +668,16 @@ class PerturbationList(ABC):
             .thruster_mask.at[envs, thruster_indices]
             .set(PerturbationStatus.OPERATIONAL.value)
         )
-        print(f"Reset thruster(s).")
+        if getattr(self.perturbations[perturbation_idx], "verbose", False):
+            print(f"Reset thruster(s).")
+        perturbation = self.perturbations[perturbation_idx]
+        if perturbation.state is not None:
+            start_times = getattr(perturbation, "start_times", None)
+            perturbation.state = replace(
+                perturbation.state,
+                thruster_mask=perturbation.thruster_mask,
+                start_times=start_times,
+            )
 
     def key_callback(self, keycode: int | None = None):
         """
@@ -278,6 +735,16 @@ class StuckOffThrusters(Perturbation):
 
         self.failure_type = PerturbationStatus.STUCK_OFF
         self.start_times = jnp.zeros((self.num_envs, self.nu))
+        self.state = PerturbationState(
+            rng=self._key,
+            thruster_mask=Perturbation.thruster_mask,
+            failure_value=self.failure_type.value,
+            start_times=self.start_times,
+        )
+        self._gp_num_points, self._gp_subset_size = _derive_gp_resolution(
+            self.nu, self.num_envs
+        )
+        self._gp_failure_mode_overrides: dict | None = None
 
     def apply(self, input: jnp.ndarray, timestamp: float = 0.0) -> jnp.ndarray:
         if input.shape[-1] != self.nu:
@@ -288,15 +755,10 @@ class StuckOffThrusters(Perturbation):
         input = input.reshape(
             self.num_envs, self.nu
         )  # Reshape to account for multiple envs
-
-        input = input.at[
-            jnp.logical_and(
-                Perturbation.thruster_mask == PerturbationStatus.STUCK_OFF.value,
-                timestamp >= self.start_times,
-            )
-        ].set(0.0)
-
-        return input
+        adjusted, state = stuck_off_apply_from_state(self.state, input, timestamp)
+        if state is not None:
+            self.state = state
+        return adjusted
 
     def stuck_off_thruster(
         self,
@@ -309,7 +771,7 @@ class StuckOffThrusters(Perturbation):
         Method to shut off a random thruster or a specific one if provided.
         """
         env_key, thruster_key = jax.random.split(key)
-        stuck_off_envs = self.get_perturbed_envs(env_key, 1.0, perturbed_envs)
+        stuck_off_envs = self.resolve_target_envs(env_key, perturbed_envs)
         stuck_off_thrusters = self.select_thrusters(
             thruster_key, stuck_off_envs, perturbed_thrusters
         )
@@ -324,8 +786,15 @@ class StuckOffThrusters(Perturbation):
         self.start_times = self.start_times.at[stuck_off_envs, stuck_off_thrusters].set(
             start_time_value
         )
+        self.state = stuck_off_activate_state(
+            self.state,
+            Perturbation.thruster_mask,
+            self.start_times,
+            self._key,
+        )
 
-        print(f"Thruster(s) stuck off.")
+        if self.verbose:
+            print(f"Thruster(s) stuck off.")
         # print("Thruster mask: ", Perturbation.thruster_mask)
 
     def key_callback(self, keycode: int | None = None) -> None:
@@ -352,6 +821,13 @@ class StuckOnThrusters(Perturbation):
         self.failure_type = PerturbationStatus.STUCK_ON
         self.start_times = jnp.zeros((self.num_envs, self.nu))
 
+        self.min_thruster_force = jnp.asarray(
+            [
+                thruster.forcerange[0]
+                for thruster in self.model_config.Thrusters.thruster_list
+            ],
+            dtype=self.start_times.dtype,
+        )
         self.max_thruster_force = jnp.asarray(
             [
                 thruster.forcerange[1]
@@ -359,10 +835,22 @@ class StuckOnThrusters(Perturbation):
             ],
             dtype=self.start_times.dtype,
         )
+        # Per env/thruster stuck-on force value. Active channels are sampled uniformly
+        # within each thruster's physical force range when failure is registered.
+        self.stuck_on_force = jnp.tile(
+            self.max_thruster_force[None, :], (self.num_envs, 1)
+        )
 
         # Vectorized input replacement across environments
         self.replace_thrust_inputs = jax.vmap(
             self.replace_with_upper_thrust_bound, in_axes=(0, 0, 0, None)
+        )
+        self.state = PerturbationState(
+            rng=self._key,
+            thruster_mask=Perturbation.thruster_mask,
+            failure_value=self.failure_type.value,
+            start_times=self.start_times,
+            max_thruster_force=self.stuck_on_force,
         )
 
     def apply(self, input: jnp.ndarray, timestamp: float = 0.0) -> jnp.ndarray:
@@ -375,11 +863,10 @@ class StuckOnThrusters(Perturbation):
             self.num_envs, self.nu
         )  # Reshape to account for multiple envs
 
-        input = self.replace_thrust_inputs(
-            input, Perturbation.thruster_mask, self.start_times, timestamp
-        )
-
-        return input
+        adjusted, state = stuck_on_apply_from_state(self.state, input, timestamp)
+        if state is not None:
+            self.state = state
+        return adjusted
 
     def stuck_on_thruster(
         self,
@@ -391,12 +878,23 @@ class StuckOnThrusters(Perturbation):
         """
         Method to unable a random thruster or a specific one if provided, to shut off.
         """
-        env_key, thruster_key = jax.random.split(key)
-        stuck_on_envs = self.get_perturbed_envs(env_key, 1.0, perturbed_envs)
+        env_key, thruster_key, force_key = jax.random.split(key, 3)
+        stuck_on_envs = self.resolve_target_envs(env_key, perturbed_envs)
 
         stuck_on_thrusters = self.select_thrusters(
             thruster_key, stuck_on_envs, perturbed_thrusters
         )
+        min_force = self.min_thruster_force[stuck_on_thrusters]
+        max_force = self.max_thruster_force[stuck_on_thrusters]
+        sampled_force = jax.random.uniform(
+            force_key,
+            shape=(stuck_on_envs.shape[0],),
+            minval=min_force,
+            maxval=max_force,
+        )
+        self.stuck_on_force = self.stuck_on_force.at[
+            stuck_on_envs, stuck_on_thrusters
+        ].set(sampled_force)
 
         Perturbation.thruster_mask = Perturbation.thruster_mask.at[
             stuck_on_envs, stuck_on_thrusters
@@ -407,8 +905,16 @@ class StuckOnThrusters(Perturbation):
         self.start_times = self.start_times.at[stuck_on_envs, stuck_on_thrusters].set(
             start_time_value
         )
+        self.state = stuck_on_activate_state(
+            self.state,
+            Perturbation.thruster_mask,
+            self.start_times,
+            self.stuck_on_force,
+            self._key,
+        )
 
-        print(f"Thruster(s) stuck on.")
+        if self.verbose:
+            print(f"Thruster(s) stuck on.")
         # print("Thruster mask: ", Perturbation.thruster_mask)
 
     def key_callback(self, keycode: int | None = None) -> None:
@@ -453,6 +959,7 @@ class ThrusterFailureSimulator:
         subset_size=40,
         valve_min=0.1,
         valve_max=0.5,
+        failure_mode_overrides: Optional[dict] = None,
     ):
         self.num_points = num_points
         self.upper_bound = upper_bound
@@ -462,7 +969,9 @@ class ThrusterFailureSimulator:
         self.demanded_force = jnp.linspace(
             0, upper_bound, num_points
         )  # Values between 0 and upper_bound
-        self.failure_modes = self._get_failure_modes()
+        self.failure_modes = self._apply_overrides(
+            self._get_failure_modes(), failure_mode_overrides
+        )
 
     @dataclass
     class _GPPosterior:
@@ -490,6 +999,7 @@ class ThrusterFailureSimulator:
             kernel_type="RBF",
             lengthscale=0.2,
             outputscale=1.0,
+            jitter=1e-5,
         ):
             dtype = jnp.float32
             train_x = jnp.asarray(train_x, dtype=dtype).reshape(-1, 1)
@@ -498,15 +1008,18 @@ class ThrusterFailureSimulator:
             self._train_x = train_x
             self._kernel = self._choose_kernel(kernel_type, lengthscale, outputscale)
             self._mean_value = float(jnp.mean(train_y))
-            self._jitter = jnp.asarray(1e-6, dtype=dtype)
+            self._train_jitter = jnp.asarray(jitter, dtype=dtype)
+            self._predictive_jitter = jnp.asarray(max(jitter, 1e-6), dtype=dtype)
 
             centered_y = train_y - self._mean_value
             k_xx = self._kernel(train_x, train_x)
             noise = 1e-6 * jnp.eye(train_x.shape[0], dtype=k_xx.dtype)
-            self._train_chol = jsp.linalg.cholesky(
-                k_xx + noise + self._jitter * jnp.eye(k_xx.shape[0], dtype=k_xx.dtype),
-                lower=True,
+            train_mat = (
+                k_xx
+                + noise
+                + self._train_jitter * jnp.eye(k_xx.shape[0], dtype=k_xx.dtype)
             )
+            self._train_chol = _stable_cholesky(train_mat, self._train_jitter)
             self._alpha = jsp.linalg.cho_solve((self._train_chol, True), centered_y)
 
         def _choose_kernel(self, kernel_type, lengthscale, outputscale):
@@ -550,10 +1063,10 @@ class ThrusterFailureSimulator:
             k_tt = self._kernel(test_x, test_x)
             predictive_cov = k_tt - jnp.matmul(v.T, v)
             predictive_cov = (predictive_cov + predictive_cov.T) * 0.5
-            predictive_cov = predictive_cov + self._jitter * jnp.eye(
+            predictive_cov = predictive_cov + self._predictive_jitter * jnp.eye(
                 predictive_cov.shape[0], dtype=predictive_cov.dtype
             )
-            scale_tril = jsp.linalg.cholesky(predictive_cov, lower=True)
+            scale_tril = _stable_cholesky(predictive_cov, self._predictive_jitter)
 
             return ThrusterFailureSimulator._GPPosterior(
                 loc=predictive_mean, scale_tril=scale_tril
@@ -563,12 +1076,15 @@ class ThrusterFailureSimulator:
         key_actual, key_subset, key_sample = jax.random.split(key, 3)
 
         actual_force = self._get_actual_force(key_actual, failure_type)
-        subset_indices = self._select_subset_indices(key_subset)
+        if jnp.isnan(actual_force).any():
+            print(
+                f"[ThrusterFailureSimulator] actual_force has NaNs for failure {failure_type}"
+            )
+        params = self.failure_modes[failure_type]
+        subset_override = params.get("subset_size", self.subset_size)
+        subset_indices = self._select_subset_indices(key_subset, subset_override)
         demanded_force_subset = self.demanded_force[subset_indices]
         actual_force_subset = actual_force[subset_indices]
-
-        # Initialize GP model and likelihood
-        params = self.failure_modes[failure_type]
 
         model = self.ThrusterFailureGPModel(
             demanded_force_subset,
@@ -576,12 +1092,18 @@ class ThrusterFailureSimulator:
             kernel_type=params["kernel"],
             lengthscale=params["lengthscale"],
             outputscale=params["outputscale"],
+            jitter=params.get("jitter", 1e-4),
         )
 
         x_test = jnp.linspace(0, self.upper_bound, self.num_points)
         sampled_function = self._sample_gp_function(
             model, x_test, failure_type, key_sample
         )
+        if jnp.isnan(sampled_function).any():
+            print(
+                "[ThrusterFailureSimulator] sampled_function contains NaNs "
+                f"(failure={failure_type}, min={jnp.nanmin(sampled_function)}, max={jnp.nanmax(sampled_function)})"
+            )
 
         sampled_function = jax.lax.clamp(
             0.0, jnp.asarray(sampled_function), self.upper_bound
@@ -634,13 +1156,20 @@ class ThrusterFailureSimulator:
         else:
             raise ValueError(f"Unknown failure type: {failure_type}")
 
-    def _select_subset_indices(self, key):
-        indices = jax.random.choice(
-            key,
-            jnp.arange(1, self.num_points - 1),
-            shape=(self.subset_size - 2,),
-            replace=False,
-        )
+    def _select_subset_indices(self, key, subset_size: Optional[int] = None):
+        subset_size = int(subset_size or self.subset_size)
+        subset_size = max(2, min(subset_size, self.num_points))
+        interior = subset_size - 2
+        pool = jnp.arange(1, self.num_points - 1)
+        if interior <= 0 or pool.size == 0:
+            indices = jnp.array([], dtype=pool.dtype)
+        else:
+            indices = jax.random.choice(
+                key,
+                pool,
+                shape=(interior,),
+                replace=False,
+            )
         start = jnp.array([0], dtype=indices.dtype)
         end = jnp.array([self.num_points - 1], dtype=indices.dtype)
         indices = jnp.concatenate([start, indices, end])
@@ -654,27 +1183,48 @@ class ThrusterFailureSimulator:
         else:
             return observed_pred.sample(sample_key)
 
+    def _apply_overrides(self, modes: dict, overrides: Optional[dict]) -> dict:
+        if not overrides:
+            return modes
+        patched = dict(modes)
+        for key, params in overrides.items():
+            if isinstance(key, PerturbationStatus):
+                status = key
+            elif isinstance(key, str):
+                status = PerturbationStatus[key] if key in PerturbationStatus.__members__ else key
+            else:
+                status = PerturbationStatus(int(key))
+            base = dict(patched.get(status, {}))
+            base.update(params)
+            patched[status] = base
+        return patched
+
     def _get_failure_modes(self):
+        base_jitter = 1e-4
         return {
             PerturbationStatus.SATURATED_THRUST: {
                 "kernel": "Matern",
                 "lengthscale": 0.1,
                 "outputscale": 0.01,
+                "jitter": base_jitter,
             },
             PerturbationStatus.FAULTY_VALVE: {
                 "kernel": "Matern",
                 "lengthscale": 0.3,
                 "outputscale": 0.4,
+                "jitter": 5e-4,
             },
             PerturbationStatus.THRUST_INSTABILITY: {
                 "kernel": "Matern",
                 "lengthscale": 0.15,
                 "outputscale": 0.5,
+                "jitter": 5e-4,
             },
             "thermal_stress": {
                 "kernel": "Matern",
                 "lengthscale": 0.15,
                 "outputscale": 0.5,
+                "jitter": base_jitter,
             },
         }
 
@@ -692,9 +1242,18 @@ class GPPerturbation(Perturbation):
         self.failure_type = failure_type
         self.start_times = jnp.zeros((self.num_envs, self.nu))
         self.thruster_list = deepcopy(model_config.Thrusters.thruster_list)
-
-        # Store interpolation functions for each thruster
-        self.interpolations = [None] * self.nu
+        self.state = PerturbationState(
+            rng=self._key,
+            thruster_mask=Perturbation.thruster_mask,
+            failure_value=self.failure_type.value,
+            start_times=self.start_times,
+        )
+        (
+            self._gp_num_points,
+            self._gp_subset_size,
+        ) = _derive_gp_resolution(self.nu, self.num_envs)
+        self._gp_failure_mode_overrides: Optional[dict] = None
+        self._gp_sample_cache: dict[tuple, tuple[jnp.ndarray, jnp.ndarray]] = {}
 
     def apply(self, input: jnp.ndarray, timestamp: float = 0.0) -> jnp.ndarray:
         if input.shape[-1] != self.nu:
@@ -702,33 +1261,24 @@ class GPPerturbation(Perturbation):
                 f"{self.__class__.__name__}: skipping perturbation because actuator dimension does not match configuration."
             )
             return input
-        input = input.reshape(
-            self.num_envs, self.nu
-        )  # Reshape to account for multiple envs
-
-        # Do a elementwise AND operation
-        faulty = jnp.logical_and(
-            Perturbation.thruster_mask == self.failure_type.value,
-            timestamp >= self.start_times,
+        reshaped = input.reshape(self.num_envs, self.nu)
+        adjusted, new_state = gp_apply_from_state(
+            self.state,
+            reshaped,
+            timestamp,
+            self.failure_type.value,
         )
+        if new_state is not None:
+            self.state = new_state
+        return adjusted
 
-        # Apply interpolation only to the affected thrusters with active perturbations
-        if jnp.any(faulty):
-            env_indices, thruster_indices = jnp.where(faulty)
-            affected_inputs = input[env_indices, thruster_indices]
-
-            interpolated_values = jnp.asarray(
-                [
-                    self.interpolations[thruster_idx](input_value)
-                    for input_value, thruster_idx in zip(
-                        affected_inputs, thruster_indices, strict=True
-                    )
-                ]
-            )
-
-            input = input.at[env_indices, thruster_indices].set(interpolated_values)
-
-        return input
+    def _gp_simulator_kwargs(self, **base_kwargs):
+        kwargs = dict(base_kwargs)
+        kwargs["num_points"] = self._gp_num_points
+        kwargs["subset_size"] = self._gp_subset_size
+        if self._gp_failure_mode_overrides:
+            kwargs["failure_mode_overrides"] = self._gp_failure_mode_overrides
+        return kwargs
 
     def register_perturbation(
         self,
@@ -743,18 +1293,23 @@ class GPPerturbation(Perturbation):
         Register a perturbation and store the interpolation data.
         NOTE: the same thruster fails in all chosen envs for now.
         """
-        if index is not None:
-            thruster_index = index
-            env_key = key
-        else:
-            thruster_key, env_key = jax.random.split(key)
-            thruster_index = int(
-                jax.device_get(
-                    jax.random.randint(thruster_key, shape=(), minval=0, maxval=self.nu)
-                )
-            )
+        env_key, thruster_key = jax.random.split(key)
+        gp_perturbed_envs = self.resolve_target_envs(env_key, perturbed_envs)
+        if gp_perturbed_envs.size == 0:
+            return
 
-        gp_perturbed_envs = self.get_perturbed_envs(env_key, 1.0, perturbed_envs)
+        thruster_index = self.select_shared_operational_thruster(
+            thruster_key,
+            gp_perturbed_envs,
+            preferred_thruster=index,
+        )
+        if thruster_index is None:
+            if self.verbose:
+                print(
+                    "Could not register GP perturbation: no shared operational thruster "
+                    "for selected environments."
+                )
+            return
 
         Perturbation.thruster_mask = Perturbation.thruster_mask.at[
             gp_perturbed_envs, jnp.full(gp_perturbed_envs.shape[0], thruster_index)
@@ -772,32 +1327,54 @@ class GPPerturbation(Perturbation):
         if not isinstance(valve_max, jnp.ndarray):
             valve_max = 0.8 * self.thruster_list[thruster_index].ctrlrange[-1]
 
-        # Get the GP-data
         if valve_min is not None and valve_max is not None:
             gp_data_key = self._split_keys(None, 1)[0]
-            x_data, y_data = ThrusterFailureSimulator(
+            simulator_kwargs = self._gp_simulator_kwargs(
                 upper_bound=self.thruster_list[thruster_index].ctrlrange[-1],
                 valve_min=valve_min,
                 valve_max=valve_max,
-            ).generate_failure_data(gp_data_key, self.failure_type)
+            )
+            cache_key = (
+                int(thruster_index),
+                float(simulator_kwargs["upper_bound"]),
+                float(valve_min),
+                float(valve_max),
+                int(simulator_kwargs["num_points"]),
+                int(simulator_kwargs["subset_size"]),
+                int(self.failure_type.value),
+            )
+            cached = self._gp_sample_cache.get(cache_key)
+            if cached is None:
+                x_data, y_data = ThrusterFailureSimulator(
+                    **simulator_kwargs
+                ).generate_failure_data(gp_data_key, self.failure_type)
+                self._gp_sample_cache[cache_key] = (x_data, y_data)
+            else:
+                x_data, y_data = cached
+        else:
+            x_data = jnp.linspace(
+                0.0,
+                self.thruster_list[thruster_index].ctrlrange[-1],
+                2,
+            )
+            y_data = x_data
 
-        # Plot data
-        if False:
-            plt.figure()
-            plt.plot(x_data, y_data, "--")
+        if self.verbose:
+            start_time_print = float(start_time_value)
+            print(
+                "Thruster(s) are affected by a faulty valve starting at "
+                f"{start_time_print} seconds."
+            )
 
-            plt.show()
-
-        # Create the interpolation function for the affected thruster
-        # self.interpolations[gp_perturbed_envs, thruster_index] = interp1d(
-        #     x_data, y_data, kind="linear", fill_value="extrapolate"
-        # ) TODO
-        self.interpolations[thruster_index] = interp1d(
-            x_data, y_data, kind="linear", fill_value="extrapolate"
-        )
-
-        print(
-            f"Thruster(s) are affected by a faulty valve starting at {start_time} seconds."
+        self.state = gp_register_state(
+            self.state,
+            Perturbation.thruster_mask,
+            self.start_times,
+            self._key,
+            self.failure_type.value,
+            thruster_index,
+            jnp.asarray(x_data),
+            jnp.asarray(y_data),
         )
 
     def key_callback(self, keycode: int | None = None) -> None:

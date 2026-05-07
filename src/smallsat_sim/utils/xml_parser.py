@@ -419,6 +419,20 @@ def generate_mujoco_xml_gateway(env_config, model_config, free_floating: bool = 
                     xml_content += f"        <mesh name='{geom.name}' file='{geom.mesh}' scale='{xmlify(geom.asset_scale)}'/>\n"
 
     # Import meshes of lunar gateway within the same worldbody section
+    gateway_cfg = getattr(env_config, "gateway", None)
+    dock_sites = getattr(gateway_cfg, "dock_sites", []) if gateway_cfg else []
+
+    dock_site_xml = ""
+    for dock_site in dock_sites:
+        name = dock_site["name"]
+        pos = dock_site["pos"]
+        quat = dock_site.get("quat", [1.0, 0.0, 0.0, 0.0])
+        rgba = dock_site.get("rgba", [1.0, 0.3, 0.1, 0.8])
+        size = dock_site.get("size", [0.2])
+        size_str = str(size) if isinstance(size, (float, int)) else xmlify(size)
+        dock_site_xml += f"""            <site name="{name}" type="sphere" pos="{xmlify(pos)}" quat="{xmlify(quat)}" size="{size_str}" rgba="{xmlify(rgba)}"/>
+"""
+
     xml_content += """      </asset>
     <worldbody>
         <body name="gateway_full">
@@ -457,6 +471,9 @@ def generate_mujoco_xml_gateway(env_config, model_config, free_floating: bool = 
             <geom mesh="gateway_simple_23" class="collision"/>
             <geom mesh="gateway_simple_24" class="collision"/>
             <geom mesh="gateway_simple_25" class="collision"/>
+"""
+    xml_content += dock_site_xml
+    xml_content += """
         </body>
 """
     # Generates the free-floating bodiesin the simulation

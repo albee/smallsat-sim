@@ -6,7 +6,7 @@ import jax.numpy as jnp
 
 class OraclePlannerRL(BasePlanner):
     def __init__(
-        self, env: VecEnv, radius=5.0, spacing=0.5, clearance_dist=0.2
+        self, env: VecEnv, radius=3.0, spacing=1.0, clearance_dist=0.2
     ) -> None:
         super().__init__(env)
         self.radius = radius

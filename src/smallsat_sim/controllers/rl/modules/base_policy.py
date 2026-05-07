@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -15,11 +16,12 @@ class Actor(nnx.Module):
         self,
         obs_dim: int,
         act_dim: int,
-        hidden_sizes: int,
+        hidden_sizes: Sequence[int],
         activation,
         res_dim: int,
         act_low: jnp.ndarray,
         act_high: jnp.ndarray,
+        log_std_min: float | None = None,
     ) -> None:
         super().__init__()
         self.obs_dim = obs_dim
@@ -35,8 +37,17 @@ class Actor(nnx.Module):
         self._log_range_safe = jnp.log(self._range_safe)
         log_std = -0.5 * jnp.ones(act_dim)
         self.log_std = nnx.Param(log_std)
+        if log_std_min is None:
+            self.log_std_min = None
+        else:
+            self.log_std_min = jnp.asarray(log_std_min, dtype=jnp.float32)
+        if isinstance(hidden_sizes, int):
+            hidden_layer_sizes = [hidden_sizes]
+        else:
+            hidden_layer_sizes = list(hidden_sizes)
+        layer_sizes = [obs_dim + res_dim] + hidden_layer_sizes + [act_dim]
         self.mu_net = mlp(
-            [obs_dim + res_dim] + [hidden_sizes] + [act_dim],
+            layer_sizes,
             activation,
             output_activation=None,
             last_layer_std=0.01,
@@ -47,7 +58,10 @@ class Actor(nnx.Module):
         Return a Gaussian distribution over actions given observations.
         """
         mu = self.mu_net(obs_residuals)
-        std = jnp.exp(self.log_std.value)
+        log_std = self.log_std.value
+        if self.log_std_min is not None:
+            log_std = jnp.maximum(log_std, self.log_std_min)
+        std = jnp.exp(log_std)
         return distrax.MultivariateNormalDiag(mu, std)
 
     def _log_prob_from_dist(

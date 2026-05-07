@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 import jax.numpy as jnp
 from flax import nnx
 
@@ -12,14 +13,19 @@ class Critic(nnx.Module):
     def __init__(
         self,
         obs_dim: int,
-        hidden_sizes: int,
+        hidden_sizes: Sequence[int],
         activation,
         res_dim: int,
     ) -> None:
         super().__init__()
         self.obs_dim = obs_dim
+        if isinstance(hidden_sizes, int):
+            hidden_layer_sizes = [hidden_sizes]
+        else:
+            hidden_layer_sizes = list(hidden_sizes)
+        layer_sizes = [obs_dim + res_dim] + hidden_layer_sizes + [1]
         self.v_net = mlp(
-            [obs_dim + res_dim] + [hidden_sizes] + [1],
+            layer_sizes,
             activation,
             last_layer_std=1.0,
         )

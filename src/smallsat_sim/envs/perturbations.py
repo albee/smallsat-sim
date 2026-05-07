@@ -45,13 +45,14 @@ class Perturbation(ABC):
     actual thrust.
     """
 
-    def __init__(self, model_config: BaseModelConfig) -> None:
+    def __init__(self, model_config: BaseModelConfig, *, verbose: bool = False) -> None:
         # Extract the number of thrusters
         self.nu = model_config.Thrusters.n_thrusters
 
         # Thruster mask to document the operational status of thrusters
         self.thruster_mask = jnp.full(self.nu, PerturbationStatus.OPERATIONAL.value)
         self.model_config = model_config
+        self.verbose = verbose
 
     def select_thruster(self, index: Optional[int]) -> int:
         """
@@ -127,7 +128,8 @@ class PerturbationList(ABC):
             .set(PerturbationStatus.OPERATIONAL.value)
         )
         # It doesn't matter which perturbation is used for the reset
-        print(f"Thruster {index} is fully functional.")
+        if getattr(self.perturbations[0], "verbose", False):
+            print(f"Thruster {index} is fully functional.")
 
     def key_callback(self, keycode: Optional[int] = None):
         """
@@ -177,8 +179,8 @@ class StuckOffThrusters(Perturbation):
     This perturbation completly shuts off/fails thrusters.
     """
 
-    def __init__(self, model_config: BaseModelConfig) -> None:
-        super().__init__(model_config)
+    def __init__(self, model_config: BaseModelConfig, *, verbose: bool = False) -> None:
+        super().__init__(model_config, verbose=verbose)
 
         self.failure_type = PerturbationStatus.STUCK_OFF
         self.start_times = jnp.zeros(self.nu)
@@ -210,9 +212,10 @@ class StuckOffThrusters(Perturbation):
             PerturbationStatus.STUCK_OFF.value
         )
         self.start_times = self.start_times.at[thruster_index].set(start_time_value)
-        print(
-            f"Thruster {thruster_index} is stuck off starting at {start_time} seconds."
-        )
+        if self.verbose:
+            print(
+                f"Thruster {thruster_index} is stuck off starting at {start_time} seconds."
+            )
 
     def key_callback(self, keycode: Optional[int] = None) -> None:
         # Call correct method for key callbacks
@@ -224,8 +227,8 @@ class StuckOnThrusters(Perturbation):
     Thrusters unable to be turned off.
     """
 
-    def __init__(self, model_config: BaseModelConfig) -> None:
-        super().__init__(model_config)
+    def __init__(self, model_config: BaseModelConfig, *, verbose: bool = False) -> None:
+        super().__init__(model_config, verbose=verbose)
 
         self.model_config = model_config
 
@@ -265,7 +268,8 @@ class StuckOnThrusters(Perturbation):
             PerturbationStatus.STUCK_ON.value
         )
         self.start_times = self.start_times.at[thruster_index].set(start_time_value)
-        print(f"Thruster {thruster_index} is stuck on.")
+        if self.verbose:
+            print(f"Thruster {thruster_index} is stuck on.")
 
     def key_callback(self, keycode: Optional[int] = None) -> None:
         # Call correct method for key callbacks
@@ -277,8 +281,10 @@ class SamplePerturbation(Perturbation):
     This is a prototype of a non-parametric, time-varying perturbation.
     """
 
-    def __init__(self, model_config: BaseModelConfig, max_duration: float) -> None:
-        super().__init__(model_config)
+    def __init__(
+        self, model_config: BaseModelConfig, max_duration: float, *, verbose: bool = False
+    ) -> None:
+        super().__init__(model_config, verbose=verbose)
 
         self.model_config = model_config
 
@@ -328,7 +334,8 @@ class SamplePerturbation(Perturbation):
         self.thruster_mask = self.thruster_mask.at[thruster_index].set(
             PerturbationStatus.SAMPLE_PERTURBATION.value
         )
-        print(f"Thruster {thruster_index} is failing.")
+        if self.verbose:
+            print(f"Thruster {thruster_index} is failing.")
 
     def key_callback(self, keycode: Optional[int] = None) -> None:
         # Call correct method for key callbacks
@@ -579,8 +586,8 @@ class ThrusterFailureSimulator:
 
 
 class GPPerturbation(Perturbation):
-    def __init__(self, model_config, failure_type) -> None:
-        super().__init__(model_config)
+    def __init__(self, model_config, failure_type, *, verbose: bool = False) -> None:
+        super().__init__(model_config, verbose=verbose)
 
         self.failure_type = failure_type
         self.start_times = jnp.zeros(self.nu)
@@ -660,17 +667,18 @@ class GPPerturbation(Perturbation):
             x_data, y_data, kind="linear", fill_value="extrapolate"
         )
 
-        print(
-            f"Thruster {thruster_index} is affected by a faulty valve starting at {start_time} seconds."
-        )
+        if self.verbose:
+            print(
+                f"Thruster {thruster_index} is affected by a faulty valve starting at {start_time} seconds."
+            )
 
     def key_callback(self, keycode: Optional[int] = None) -> None:
         pass
 
 
 class FaultyValve(GPPerturbation):
-    def __init__(self, model_config) -> None:
-        super().__init__(model_config, PerturbationStatus.FAULTY_VALVE)
+    def __init__(self, model_config, *, verbose: bool = False) -> None:
+        super().__init__(model_config, PerturbationStatus.FAULTY_VALVE, verbose=verbose)
 
     def register_perturbation(
         self,
@@ -687,8 +695,10 @@ class FaultyValve(GPPerturbation):
 
 
 class SaturatedThrust(GPPerturbation):
-    def __init__(self, model_config) -> None:
-        super().__init__(model_config, PerturbationStatus.SATURATED_THRUST)
+    def __init__(self, model_config, *, verbose: bool = False) -> None:
+        super().__init__(
+            model_config, PerturbationStatus.SATURATED_THRUST, verbose=verbose
+        )
 
     def register_perturbation(
         self,
@@ -701,8 +711,10 @@ class SaturatedThrust(GPPerturbation):
 
 
 class ThrustInstability(GPPerturbation):
-    def __init__(self, model_config) -> None:
-        super().__init__(model_config, PerturbationStatus.THRUST_INSTABILITY)
+    def __init__(self, model_config, *, verbose: bool = False) -> None:
+        super().__init__(
+            model_config, PerturbationStatus.THRUST_INSTABILITY, verbose=verbose
+        )
 
     def register_perturbation(
         self,

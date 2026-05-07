@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from typing import Optional, Dict, Any, Tuple
+import numpy as np
 import jax
 import jax.numpy as jnp
 
@@ -23,6 +25,7 @@ class Disturbance(ABC):
 
     def __init__(self, key: jnp.ndarray) -> None:
         self._key = key
+        self.state: Optional["DisturbanceState"] = None
 
     def _split_keys(self, count: int = 1) -> jnp.ndarray:
         """
@@ -34,6 +37,19 @@ class Disturbance(ABC):
         self._key = splits[0]
         return splits[1:]
 
+    def _update_state(
+        self,
+        active_mask: jnp.ndarray,
+        start_times: jnp.ndarray,
+        params: Dict[str, Any],
+    ) -> None:
+        self.state = DisturbanceState(
+            rng=self._key,
+            active_mask=active_mask,
+            start_times=start_times,
+            params=params,
+        )
+
     @abstractmethod
     def apply(self, timestamp: Optional[float] = 0.0) -> jnp.ndarray:
         pass
@@ -41,6 +57,114 @@ class Disturbance(ABC):
     @abstractmethod
     def key_callback(self, keycode: Optional[int] = None) -> None:
         pass
+
+
+@dataclass
+class DisturbanceState:
+    rng: jnp.ndarray
+    active_mask: jnp.ndarray
+    start_times: jnp.ndarray
+    params: dict
+
+
+def _disturbance_state_flatten(state: "DisturbanceState"):
+    children = (
+        state.rng,
+        state.active_mask,
+        state.start_times,
+        state.params,
+    )
+    return children, None
+
+
+def _disturbance_state_unflatten(aux_data, children):
+    rng, active_mask, start_times, params = children
+    return DisturbanceState(
+        rng=rng,
+        active_mask=active_mask,
+        start_times=start_times,
+        params=params,
+    )
+
+
+jax.tree_util.register_pytree_node(
+    DisturbanceState,
+    _disturbance_state_flatten,
+    _disturbance_state_unflatten,
+)
+
+
+def disturbance_state_to_serializable(
+    state: Optional["DisturbanceState"],
+) -> Optional[dict]:
+    if state is None:
+        return None
+    to_np = lambda x: None if x is None else np.asarray(x)
+    params_np = jax.tree_util.tree_map(to_np, state.params)
+    return {
+        "rng": np.asarray(state.rng),
+        "active_mask": np.asarray(state.active_mask),
+        "start_times": np.asarray(state.start_times),
+        "params": params_np,
+    }
+
+
+def disturbance_state_from_serializable(
+    payload: Optional[dict],
+) -> Optional["DisturbanceState"]:
+    if payload is None:
+        return None
+    to_jnp = lambda x: None if x is None else jnp.asarray(x)
+    params = jax.tree_util.tree_map(to_jnp, payload["params"])
+    return DisturbanceState(
+        rng=jnp.asarray(payload["rng"]),
+        active_mask=jnp.asarray(payload["active_mask"]),
+        start_times=jnp.asarray(payload["start_times"]),
+        params=params,
+    )
+
+
+def constant_force_apply_from_state(
+    state: Optional[DisturbanceState],
+    timestamp: float,
+    const_force: jnp.ndarray,
+) -> Tuple[jnp.ndarray, Optional[DisturbanceState]]:
+    if state is None or const_force is None:
+        return jnp.zeros_like(const_force), state
+
+    active_mask = state.active_mask.astype(const_force.dtype)
+    time_mask = (timestamp >= state.start_times).astype(const_force.dtype)
+    force = const_force * active_mask[:, None] * time_mask[:, None]
+    return force, state
+
+
+def constant_force_activate_state(
+    state: Optional[DisturbanceState],
+    env_indices: jnp.ndarray,
+    start_times: jnp.ndarray,
+    const_force: jnp.ndarray,
+    rng: jnp.ndarray,
+) -> DisturbanceState:
+    num_envs = const_force.shape[0]
+    if state is None:
+        active_mask = jnp.zeros((num_envs,), dtype=bool)
+        current_start_times = jnp.zeros((num_envs,), dtype=start_times.dtype)
+    else:
+        active_mask = state.active_mask
+        current_start_times = state.start_times
+
+    if env_indices is not None and env_indices.size > 0:
+        active_mask = active_mask.at[env_indices].set(True)
+        current_start_times = current_start_times.at[env_indices].set(
+            start_times[env_indices]
+        )
+
+    return DisturbanceState(
+        rng=rng,
+        active_mask=active_mask,
+        start_times=current_start_times,
+        params={"const_force": const_force},
+    )
 
 
 class DisturbanceList(ABC):
@@ -168,15 +292,23 @@ class ConstantForceDisturbance(Disturbance):
         # Save constant disturbance as 6D array
         force, torque = self.magnitude * self.direction, jnp.zeros((self.num_envs, 3))
         self.const_force = jnp.concatenate((force, torque), axis=1)
+        self._update_state(
+            active_mask=jnp.zeros((self.num_envs,), dtype=bool),
+            start_times=self.start_times,
+            params={
+                "const_force": self.const_force,
+            },
+        )
 
     def apply(self, timestamp: Optional[float] = 0.0) -> jnp.ndarray:
-        disturbance_mask, time_mask = jnp.zeros_like(self.const_force), jnp.zeros_like(
-            self.const_force
+        force, new_state = constant_force_apply_from_state(
+            self.state,
+            float(timestamp),
+            self.const_force,
         )
-        if self.disturbed_envs is not None:
-            disturbance_mask = disturbance_mask.at[self.disturbed_envs, :].set(1)
-        time_mask = time_mask.at[timestamp >= self.start_times, :].set(1)
-        return self.const_force * disturbance_mask * time_mask
+        if new_state is not None:
+            self.state = new_state
+        return force
 
     def const_force_disturbance(
         self,
@@ -197,6 +329,17 @@ class ConstantForceDisturbance(Disturbance):
 
         if self.disturbed_envs is not None and self.disturbed_envs.size > 0:
             self.start_times = self.start_times.at[self.disturbed_envs].set(start_time)
+        self.state = constant_force_activate_state(
+            self.state,
+            (
+                self.disturbed_envs
+                if self.disturbed_envs is not None
+                else jnp.array([], dtype=int)
+            ),
+            self.start_times,
+            self.const_force,
+            self._key,
+        )
         print("Constant force disturbance is active.")
 
     def deactivate_const_force_disturbance(self) -> None:
@@ -209,3 +352,17 @@ class ConstantForceDisturbance(Disturbance):
     def key_callback(self, keycode: Optional[int] = None) -> None:
         # Call correct method for key callbacks
         self.const_force_disturbance()
+
+    def to_state(self, env_config) -> DisturbanceState:
+        """
+        Create an immutable state snapshot for functional helpers.
+        """
+        num_envs = (
+            env_config.control.RL.num_envs if hasattr(env_config.control, "RL") else 1
+        )
+        return DisturbanceState(
+            rng=self._key,
+            active_mask=jnp.zeros((num_envs,), dtype=bool),
+            start_times=jnp.zeros((num_envs,)),
+            params={},
+        )

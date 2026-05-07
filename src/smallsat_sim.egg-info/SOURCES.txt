@@ -36,12 +36,15 @@ src/smallsat_sim/controllers/rl/algorithms/base_agent.py
 src/smallsat_sim/controllers/rl/algorithms/ppo.py
 src/smallsat_sim/controllers/rl/algorithms/vpg.py
 src/smallsat_sim/controllers/rl/modules/__init__.py
-src/smallsat_sim/controllers/rl/modules/adaptation_module.py
+src/smallsat_sim/controllers/rl/modules/am_cnn.py
+src/smallsat_sim/controllers/rl/modules/am_transformer.py
 src/smallsat_sim/controllers/rl/modules/base_network.py
 src/smallsat_sim/controllers/rl/modules/base_policy.py
 src/smallsat_sim/controllers/rl/modules/mlp.py
 src/smallsat_sim/controllers/rl/runners/__init__.py
+src/smallsat_sim/controllers/rl/runners/curriculum.py
 src/smallsat_sim/controllers/rl/runners/on_policy_runner.py
+src/smallsat_sim/controllers/rl/runners/rollout_utils.py
 src/smallsat_sim/controllers/rl/runners/runner_utils.py
 src/smallsat_sim/controllers/rl/storage/__init__.py
 src/smallsat_sim/controllers/rl/storage/replay_buffer.py
@@ -62,6 +65,8 @@ src/smallsat_sim/envs/astrobee/env.py
 src/smallsat_sim/envs/astrobee/cfg/config.py
 src/smallsat_sim/envs/astrobee_2d/env.py
 src/smallsat_sim/envs/astrobee_2d/cfg/config.py
+src/smallsat_sim/envs/astrobee_benchmark/__init__.py
+src/smallsat_sim/envs/astrobee_benchmark/env.py
 src/smallsat_sim/envs/astrobee_rl/__init__.py
 src/smallsat_sim/envs/astrobee_rl/env.py
 src/smallsat_sim/envs/astrobee_rl/cfg/config.py
@@ -116,3 +121,5 @@ src/smallsat_sim/utils/xml_parser_3d.py
 src/smallsat_sim/utils/xml_parser_lightweight.py
 src/smallsat_sim/utils/xml_parser_triangle.py
 src/tests/astrobee_ctrl_test.py
+src/tests/test_functional_rollout.py
+src/tests/test_vec_env_perturbation_routing.py

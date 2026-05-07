@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -6,40 +7,48 @@ import matplotlib.pyplot as plt
 from smallsat_sim.utils.logger import Logger
 
 
-RESULTS_DIR = Path("experiments/rl_results/")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+RESULTS_DIR = REPO_ROOT / "experiments" / "rl_results"
 
 ERROR_METRICS = [
-    "mean_tracking_error",
+    "mean_lateral_error",
     "mean_angle_error",
     "mean_extrinsic_error",
 ]
 
 STAGE_METRICS_TRAIN = {
     "policy_training": [
-        "mean_tracking_error",
+        "mean_lateral_error",
         "mean_angle_error",
         "mean_extrinsic_error",
+        "mean_final_position_error",
         "mean_episodic_returns",
-        "mean_rewards",
-        "actor_loss",
-        "critic_loss",
-        "num_terminal",
-        "mean_log_std",
+        "actor_loss_mean",
+        "critic_loss_mean",
+        "success_rate",
+        "terminal_env_rate_at_end",
         "mean_std",
+        "true_kl_mean",
+        "clip_fraction",
+        "explained_variance",
     ],
     "am_training": [
-        "mean_tracking_error",
+        "mean_lateral_error",
         "mean_angle_error",
         "mean_extrinsic_error",
-        "am_train_loss",
-        "am_val_loss",
+        "am_train_loss_last",
+        "am_train_loss_mean",
+        "am_val_loss_last",
+        "am_val_loss_mean",
     ],
     "evaluation": [
-        "mean_tracking_error",
+        "mean_lateral_error",
         "mean_angle_error",
         "mean_extrinsic_error",
+        "mean_final_position_error",
         "mean_episodic_returns",
-        "num_terminal",
+        "success_rate",
+        "terminal_env_rate_at_end",
     ],
 }
 
@@ -54,6 +63,25 @@ DEPLOYMENT_STAGES = [
 ]
 
 STAGE_METRICS_TEST = {stage: ERROR_METRICS for stage in DEPLOYMENT_STAGES}
+TRAJECTORY_MAX_TRACES = 100
+# Set to an integer to restrict plotting to one execution (RunID).
+# Keep as None to include all RunIDs.
+RUN_ID_FILTER: int | None = None
+
+
+def _parse_args() -> argparse.Namespace:
+    """
+    Parse command-line arguments for the plotting script.
+    """
+    parser = argparse.ArgumentParser(description="Plot RL benchmarking results.")
+    parser.add_argument(
+        "-r",
+        "--run-id",
+        type=int,
+        default=None,
+        help="Filter logs by RunID. Omit to include all RunIDs.",
+    )
+    return parser.parse_args()
 
 
 def plot_results(logger: Logger, run_name: str) -> None:
@@ -61,7 +89,7 @@ def plot_results(logger: Logger, run_name: str) -> None:
     Plot the results of a simulation run (based on the logged data).
     """
     # Load **all** the logs
-    df = logger.load_all_logs(run_id=0)
+    df = logger.load_all_logs(run_id=RUN_ID_FILTER)
 
     if "run_name" not in df.columns:
         print("Column 'run_name' not found in DataFrame")
@@ -121,6 +149,9 @@ def plot_results(logger: Logger, run_name: str) -> None:
                         x_col="timestamp",
                         to_seconds=True,
                     )
+
+        plot_deployment_metrics_all_stages_for_run(df_run, dir_name, run_name)
+        plot_deployment_trajectories(df_run, dir_name, run_name)
 
 
 def plot_metric(
@@ -265,7 +296,7 @@ def plot_deployment_errors_all_runs(logger: Logger) -> None:
     deployment stage.
     """
     try:
-        df = logger.load_all_logs(run_id=0)
+        df = logger.load_all_logs(run_id=RUN_ID_FILTER)
     except FileNotFoundError as exc:
         print(f"Unable to load logs for multi-run deployment plots: {exc}")
         return
@@ -300,6 +331,294 @@ def plot_deployment_errors_all_runs(logger: Logger) -> None:
                 x_col="timestamp",
                 to_seconds=True,
             )
+
+
+def plot_deployment_metrics_all_stages_for_run(
+    df_run: pd.DataFrame,
+    base_dir: Path,
+    run_name: str,
+) -> None:
+    """
+    For one run, compare deployment stages on the same axes for each deployment error metric.
+    """
+    if "stage" not in df_run.columns:
+        return
+
+    output_dir = base_dir / run_name / "deployment_all_stages"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for metric in ERROR_METRICS:
+        if metric not in df_run.columns:
+            continue
+
+        plt.figure(figsize=(9, 6))
+        plotted = False
+
+        for stage_name in DEPLOYMENT_STAGES:
+            stage_data = df_run[df_run["stage"] == stage_name]
+            if stage_data.empty:
+                continue
+
+            time_col = _resolve_column_name(stage_data, "timestamp")
+            if time_col is None:
+                time_col = _resolve_column_name(stage_data, "step")
+
+            columns = [metric]
+            if time_col is not None:
+                columns.append(time_col)
+
+            metric_df = stage_data[columns].dropna()
+            if metric_df.empty:
+                continue
+
+            if time_col is not None:
+                metric_df = metric_df.sort_values(time_col)
+                x_series = _prepare_x_data(metric_df[time_col], to_seconds=True)
+            else:
+                x_series = pd.Series(
+                    np.arange(len(metric_df), dtype=float), index=metric_df.index
+                )
+
+            y_series = metric_df[metric]
+            valid_mask = x_series.notna()
+            x_series = x_series[valid_mask]
+            y_series = y_series[valid_mask]
+            if y_series.empty:
+                continue
+
+            plt.plot(x_series, y_series, label=stage_name.replace("_", " "))
+            plotted = True
+
+        if not plotted:
+            plt.close()
+            continue
+
+        metric_label = metric.replace("_", " ").title()
+        plt.xlabel("Time (s)")
+        plt.ylabel(metric_label)
+        plt.title(f"{metric_label} Across Deployment Stages ({run_name})")
+        plt.legend()
+        plt.savefig(output_dir / f"{metric}_all_stages.svg", format="svg")
+        plt.savefig(output_dir / f"{metric}_all_stages.pdf", format="pdf")
+        plt.close()
+
+
+def plot_deployment_trajectories(
+    df_run: pd.DataFrame,
+    base_dir: Path,
+    run_name: str,
+) -> None:
+    """
+    Plot 3D trajectories for each deployment stage and one combined deployment plot.
+    """
+    combined = {}
+    any_stage_plotted = False
+
+    for stage_name in DEPLOYMENT_STAGES:
+        stage_df = df_run[df_run["stage"] == stage_name]
+        trajectories = _extract_stage_trajectories(stage_df)
+        if trajectories is None:
+            continue
+
+        any_stage_plotted = True
+        combined[stage_name] = trajectories
+        stage_output = base_dir / run_name / stage_name
+        stage_output.mkdir(parents=True, exist_ok=True)
+        _plot_3d_trajectories(
+            trajectories,
+            output_path=stage_output / "trajectories_3d",
+            title=f"3D Trajectories ({stage_name.replace('_', ' ').title()})",
+            color=None,
+            label_prefix="sat",
+        )
+
+    if not any_stage_plotted:
+        print(
+            f"No deployment trajectory data found for '{run_name}'. "
+            "Run deployment with the updated logger to generate 3D plots."
+        )
+        return
+
+    _plot_3d_trajectories_all_stages(
+        combined,
+        output_path=base_dir / run_name / "deployment" / "trajectories_3d_all_stages",
+    )
+
+
+def _extract_stage_trajectories(
+    stage_df: pd.DataFrame,
+) -> np.ndarray | None:
+    """
+    Convert per-step logged vectorized positions into a ``[T, N, 3]`` trajectory tensor.
+    """
+    if stage_df.empty:
+        return None
+
+    pos_x_col = _resolve_column_name(stage_df, "position_x")
+    pos_y_col = _resolve_column_name(stage_df, "position_y")
+    pos_z_col = _resolve_column_name(stage_df, "position_z")
+    if pos_x_col is None or pos_y_col is None or pos_z_col is None:
+        return None
+
+    order_col = _resolve_column_name(stage_df, "step")
+    if order_col is None:
+        order_col = _resolve_column_name(stage_df, "timestamp")
+
+    if order_col is not None:
+        data = stage_df.sort_values(order_col)
+    else:
+        data = stage_df
+
+    x_entries, y_entries, z_entries = [], [], []
+    for _, row in data[[pos_x_col, pos_y_col, pos_z_col]].dropna().iterrows():
+        x = np.asarray(row[pos_x_col]).reshape(-1)
+        y = np.asarray(row[pos_y_col]).reshape(-1)
+        z = np.asarray(row[pos_z_col]).reshape(-1)
+        if x.size == 0 or y.size == 0 or z.size == 0:
+            continue
+        if not (x.size == y.size == z.size):
+            continue
+        x_entries.append(x)
+        y_entries.append(y)
+        z_entries.append(z)
+
+    if not x_entries:
+        return None
+
+    num_envs = min(arr.size for arr in x_entries)
+    if num_envs < 1:
+        return None
+
+    x_mat = np.stack([arr[:num_envs] for arr in x_entries], axis=0)
+    y_mat = np.stack([arr[:num_envs] for arr in y_entries], axis=0)
+    z_mat = np.stack([arr[:num_envs] for arr in z_entries], axis=0)
+    return np.stack([x_mat, y_mat, z_mat], axis=2)
+
+
+def _plot_3d_trajectories(
+    trajectories: np.ndarray,
+    output_path: Path,
+    title: str,
+    color: str | None,
+    label_prefix: str,
+) -> None:
+    """
+    Plot a 3D trajectory figure from a ``[T, N, 3]`` trajectory tensor.
+    """
+    if trajectories.ndim != 3 or trajectories.shape[2] != 3:
+        return
+
+    timesteps, num_envs, _ = trajectories.shape
+    if timesteps < 1 or num_envs < 1:
+        return
+
+    env_indices = _downsample_trace_indices(num_envs, TRAJECTORY_MAX_TRACES)
+
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection="3d")
+
+    for env_idx in env_indices:
+        x = trajectories[:, env_idx, 0]
+        y = trajectories[:, env_idx, 1]
+        z = trajectories[:, env_idx, 2]
+        line_kwargs = {"alpha": 0.35, "linewidth": 1.0}
+        if color is not None:
+            line_kwargs["color"] = color
+        ax.plot(x, y, z, **line_kwargs)
+        ax.scatter(x[0], y[0], z[0], s=8, color=line_kwargs.get("color", "tab:blue"))
+
+    # Mark the final point of the first plotted satellite for orientation.
+    first_idx = int(env_indices[0])
+    ax.scatter(
+        trajectories[-1, first_idx, 0],
+        trajectories[-1, first_idx, 1],
+        trajectories[-1, first_idx, 2],
+        s=40,
+        marker="x",
+        color="black",
+        label=f"{label_prefix} end",
+    )
+
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
+    ax.set_title(
+        f"{title}\nshowing {len(env_indices)} of {num_envs} trajectories"
+    )
+    ax.legend(loc="upper right")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(f"{output_path}.svg", format="svg")
+    fig.savefig(f"{output_path}.pdf", format="pdf")
+    plt.close(fig)
+
+
+def _plot_3d_trajectories_all_stages(
+    stage_trajectories: dict[str, np.ndarray],
+    output_path: Path,
+) -> None:
+    """
+    Plot all deployment stages in a single 3D figure.
+    """
+    if not stage_trajectories:
+        return
+
+    fig = plt.figure(figsize=(11, 9))
+    ax = fig.add_subplot(111, projection="3d")
+    cmap = plt.get_cmap("tab10")
+    color_idx = 0
+
+    for stage_name in DEPLOYMENT_STAGES:
+        if stage_name not in stage_trajectories:
+            continue
+        trajectories = stage_trajectories[stage_name]
+        _, num_envs, _ = trajectories.shape
+        env_indices = _downsample_trace_indices(num_envs, TRAJECTORY_MAX_TRACES // 2)
+        stage_color = cmap(color_idx % 10)
+        color_idx += 1
+        label = stage_name.replace("_", " ")
+
+        for env_idx in env_indices:
+            ax.plot(
+                trajectories[:, env_idx, 0],
+                trajectories[:, env_idx, 1],
+                trajectories[:, env_idx, 2],
+                color=stage_color,
+                alpha=0.2,
+                linewidth=0.8,
+            )
+
+        first_idx = int(env_indices[0])
+        ax.plot(
+            [trajectories[0, first_idx, 0]],
+            [trajectories[0, first_idx, 1]],
+            [trajectories[0, first_idx, 2]],
+            marker="o",
+            markersize=4,
+            color=stage_color,
+            linestyle="None",
+            label=label,
+        )
+
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
+    ax.set_title("3D Trajectories Across Deployment Stages")
+    ax.legend(loc="upper right")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(f"{output_path}.svg", format="svg")
+    fig.savefig(f"{output_path}.pdf", format="pdf")
+    plt.close(fig)
+
+
+def _downsample_trace_indices(num_envs: int, max_traces: int) -> np.ndarray:
+    """
+    Return evenly-spaced trajectory indices capped by ``max_traces``.
+    """
+    if num_envs <= max_traces:
+        return np.arange(num_envs, dtype=int)
+    return np.linspace(0, num_envs - 1, num=max_traces, dtype=int)
 
 
 def _resolve_column_name(df: pd.DataFrame, column: str | None) -> str | None:
@@ -342,11 +661,17 @@ def main():
     """
     Main function to run the plotting script.
     """
+    global RUN_ID_FILTER
+    args = _parse_args()
+    RUN_ID_FILTER = args.run_id
+
     # Create logger
     logger = Logger()
 
     for run_name in [
         "pd_controller",
+        "nominal_mpc",
+        "lqr",
         "nn_controller",
         "nn_controller_adaptive",
         "ppo_nominal",

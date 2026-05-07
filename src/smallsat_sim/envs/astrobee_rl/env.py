@@ -2,6 +2,7 @@ import jax.numpy as jnp
 
 from smallsat_sim.envs.vec_env import VecEnv
 from smallsat_sim.envs.perturbations_rl import (
+    Perturbation,
     PerturbationList,
     StuckOffThrusters,
     StuckOnThrusters,
@@ -46,14 +47,24 @@ class AstrobeeEnvVectorized(VecEnv):
         super().__init__(args=args)
 
         # Instantiate perturbations
+        # Ensure a clean shared mask when constructing a new vectorized env.
+        Perturbation.thruster_mask = None
         perturbation_keys = self.next_rng_keys(5)
         self.perturbations = PerturbationList(
             [
-                StuckOffThrusters(self.env_cfg, self.model_cfg, perturbation_keys[0]),  # 0
-                StuckOnThrusters(self.env_cfg, self.model_cfg, perturbation_keys[1]),  # 1
+                StuckOffThrusters(
+                    self.env_cfg, self.model_cfg, perturbation_keys[0]
+                ),  # 0
+                StuckOnThrusters(
+                    self.env_cfg, self.model_cfg, perturbation_keys[1]
+                ),  # 1
                 FaultyValve(self.env_cfg, self.model_cfg, perturbation_keys[2]),  # 2
-                SaturatedThrust(self.env_cfg, self.model_cfg, perturbation_keys[3]),  # 3
-                ThrustInstability(self.env_cfg, self.model_cfg, perturbation_keys[4]),  # 4
+                SaturatedThrust(
+                    self.env_cfg, self.model_cfg, perturbation_keys[3]
+                ),  # 3
+                ThrustInstability(
+                    self.env_cfg, self.model_cfg, perturbation_keys[4]
+                ),  # 4
             ]
         )
 
@@ -62,18 +73,52 @@ class AstrobeeEnvVectorized(VecEnv):
         self.disturbances = DisturbanceList(
             [ConstantForceDisturbance(self.env_cfg, disturbance_key)]
         )
+        self._refresh_effect_states()
 
     def reset_perturbations(self) -> None:
         """
         Resets the perturbations.
         """
+        # Clear the shared class-level thruster mask so failures do not
+        # persist across epochs/evaluations when perturbation objects are rebuilt.
+        Perturbation.thruster_mask = None
+
         perturbation_keys = self.next_rng_keys(5)
         self.perturbations = PerturbationList(
             [
-                StuckOffThrusters(self.env_cfg, self.model_cfg, perturbation_keys[0]),  # 0
-                StuckOnThrusters(self.env_cfg, self.model_cfg, perturbation_keys[1]),  # 1
+                StuckOffThrusters(
+                    self.env_cfg, self.model_cfg, perturbation_keys[0]
+                ),  # 0
+                StuckOnThrusters(
+                    self.env_cfg, self.model_cfg, perturbation_keys[1]
+                ),  # 1
                 FaultyValve(self.env_cfg, self.model_cfg, perturbation_keys[2]),  # 2
-                SaturatedThrust(self.env_cfg, self.model_cfg, perturbation_keys[3]),  # 3
-                ThrustInstability(self.env_cfg, self.model_cfg, perturbation_keys[4]),  # 4
+                SaturatedThrust(
+                    self.env_cfg, self.model_cfg, perturbation_keys[3]
+                ),  # 3
+                ThrustInstability(
+                    self.env_cfg, self.model_cfg, perturbation_keys[4]
+                ),  # 4
             ]
         )
+        self._refresh_effect_states()
+        if hasattr(self, "_state"):
+            self._state = self._state.replace(
+                rng=self._rng,
+                perturbation_states=self.perturbation_states
+            )
+
+    def reset_disturbances(self) -> None:
+        """
+        Resets external disturbances so curriculum fractions stay fixed per epoch.
+        """
+        disturbance_key = self.next_rng_keys(1)[0]
+        self.disturbances = DisturbanceList(
+            [ConstantForceDisturbance(self.env_cfg, disturbance_key)]
+        )
+        self._refresh_effect_states()
+        if hasattr(self, "_state"):
+            self._state = self._state.replace(
+                rng=self._rng,
+                disturbance_states=self.disturbance_states,
+            )

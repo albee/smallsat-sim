@@ -67,13 +67,14 @@ class VPG(BaseAgent):
         """
         Update the policy gradient.
         """
+        actor_loss = jnp.array(0.0, dtype=tdres.dtype)
+        for _ in range(self.actor_training_epochs):
+            # Compute the actor loss
+            actor_loss, grads = self.jit_actor_loss_and_grad(self.actor, tdres)
+            print(f"{actor_loss = }")
 
-        # Compute the actor loss
-        actor_loss, grads = self.jit_actor_loss_and_grad(self.actor, tdres)
-        print(f"{actor_loss = }")
-
-        # Update the gradients
-        self.actor_optimizer.update(grads)
+            # Update the gradients
+            self.actor_optimizer.update(grads)
 
         return actor_loss
 
@@ -87,8 +88,8 @@ class VPG(BaseAgent):
         """
         Update the value function.
         """
-
-        for _ in range(100):
+        critic_loss = jnp.array(0.0, dtype=returns.dtype)
+        for _ in range(self.critic_training_epochs):
             # Compute the critic loss
             critic_loss, grads = self.jit_critic_loss_and_grad(self.critic, returns)
             print(f"{critic_loss = }")
@@ -109,6 +110,12 @@ class VPG(BaseAgent):
         self.lam = self.env.env_cfg.control.RL.VPG.lam
         self.actor_lr = self.env.env_cfg.control.RL.VPG.actor_lr
         self.critic_lr = self.env.env_cfg.control.RL.VPG.critic_lr
+        self.actor_training_epochs = int(
+            self.env.env_cfg.control.RL.VPG.actor_training_epochs
+        )
+        self.critic_training_epochs = int(
+            self.env.env_cfg.control.RL.VPG.critic_training_epochs
+        )
 
     def _log(self, run_id: int, timestamp: float, env: BaseEnv) -> None:
         """

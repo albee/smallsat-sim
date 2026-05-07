@@ -36,11 +36,17 @@ class Logger(object):
         If the same run_id and timestamp already exist, it will add the new values
         to the same entry.
         """
-        if (run_id, timestamp) not in self.logs:
-            self.logs[(run_id, timestamp)] = {"RunID": run_id, "Timestamp": timestamp}
+        # Include stage/step in the key so different phases (training/eval/etc.)
+        # do not overwrite each other when they share the same timestamp.
+        stage = kwargs.get("stage")
+        step = kwargs.get("step")
+        key = (run_id, stage, step, timestamp)
+
+        if key not in self.logs:
+            self.logs[key] = {"RunID": run_id, "Timestamp": timestamp}
 
         # Update the log entry for this run_id and timestamp with the new values
-        self.logs[(run_id, timestamp)].update(kwargs)
+        self.logs[key].update(kwargs)
 
     def save_log(self) -> None:
         """
@@ -92,10 +98,8 @@ class Logger(object):
         elif folder is None:
             folder = self._get_most_recent_log_dir()
 
-
         if folder is None:
             return []
-
 
         print(f"Loading log files from directory: {folder}")
 
@@ -131,7 +135,7 @@ class Logger(object):
 
     def load_all_logs(self, run_id: int | None = None) -> pd.DataFrame:
         """
-        Load all saved log data from every log directory in the base log directory, concatenating them 
+        Load all saved log data from every log directory in the base log directory, concatenating them
         into a single DataFrame. If run_id is specified, filter the DataFrame by that run_id.
         """
         df_list = []

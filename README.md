@@ -194,6 +194,7 @@ The `experiments` folder contains various examples, see [above](### Example expe
 
 The RL controller uses the MJX backend, and follows the same structure as the other controllers in SmallSatSim, with a few exceptions. Notably: 
 - a training script is provided in `experiments/rl_training/train_astrobee.py`, 
+- multiple benchmarking scripts and plotting utilities are provided in `experiments/rl_benchmarking/`,
 - the RL training must happen in a vectorized environment defined in `envs/vec_env.py`,
 - the environment and config files are in a seperate directory, `astrobee_rl`,
 - the RL implementation uses different JAX-based helper functions that can also be found in `utils`,
@@ -229,6 +230,8 @@ The vectorized environment in `envs/vec_env.py` is crucial training the RL agent
 The easiest way to get a good overview is to step through one iteration of the training loop using the debugger. The object that coordinates all RL activities is the `OnPolicyRunner` in `on_policy_runner.py`. In between pretraining, training and evaluation, the neural network weights of the actor and critic are saved as [pickle](https://docs.python.org/3/library/pickle.html) files.
 
 To achieve adaptive policies, the residual wrench (actual - desired) commanded by the smallsat's actuator's is fed to the base policy during training and depolyment. During the latter, the actual wrench (called extrinsics) is estimated by the `CNNAdaptationModule` or `TransformerAdaptationModule`. This is turn is trained with supervised learning, using the state-action history and the ground extrinsics from simulation. The active adaptation architecture can be selected through `EnvConfig.control.RL.am_architecture` (default `"transformer"`).
+
+When failures are enabled, policy training now uses a sequential curriculum: nominal epochs, then shorter phases that add failures one at a time with a fixed nominal/failure mixture, followed by a final disturbance phase.
 
 To deploy the trained RL controller, run `experiments/astrobee_RL.py`.
 
@@ -277,6 +280,26 @@ python experiments/astrobee_CL_2d_udp_external.py
 
 View the simulation under http://localhost:8080/vnc.html.
 Note that the simulation will not update the planned trajectory of the MPC controller, since the simulation thread only receives data regarding the current control input.
+
+
+## Testing
+
+Pytest is included as a project dependency in `pyproject.toml`.
+
+Run all tests (from the repo root):
+
+```bash
+PYTHONPATH=src pytest -q src/tests
+```
+
+Run a single test file:
+
+```bash
+PYTHONPATH=src pytest -q src/tests/test_functional_rollout.py
+```
+
+If you see missing-module errors, make sure your environment has the full
+project dependencies installed.
 
 
 ## Python Debugger 

@@ -44,6 +44,22 @@ def critic_loss_fn(
     return jnp.mean((values - returns) ** 2)  # MSE loss
 
 
+def _diag_gaussian_kl(
+    mu_old: jnp.ndarray,
+    std_old: jnp.ndarray,
+    mu_new: jnp.ndarray,
+    std_new: jnp.ndarray,
+) -> jnp.ndarray:
+    """
+    Compute KL(N_old || N_new) for diagonal Gaussians. Returns per-sample KL.
+    """
+    log_std_ratio = jnp.log(std_new) - jnp.log(std_old)
+    numerator = std_old**2 + (mu_old - mu_new) ** 2
+    denom = 2.0 * (std_new**2)
+    kl_per_dim = log_std_ratio + numerator / denom - 0.5
+    return jnp.sum(kl_per_dim, axis=-1)
+
+
 class PPO(BaseAgent):
     """
     Proximal Policy Optimization (PPO) agent.
@@ -61,16 +77,11 @@ class PPO(BaseAgent):
         # Load hyperparams
         self._load_ppo_hyperparams()
 
-        # Set the number of training epochs
-        self.actor_training_epochs = 100
-        self.critic_training_epochs = 100
-        self.actor_critic_training_epochs = 100
-
         # Total batch size
         self.batch_size = self.env.num_envs * self.steps_per_epoch
 
-        # Define the size of each mini-batch
-        self.num_minibatches = min(16, self.batch_size)
+        # Define the size of each mini-batch based on config, capped by batch size.
+        self.num_minibatches = max(1, min(self.num_minibatches, self.batch_size))
 
         # Ensure fixed-size minibatches to avoid recompilation and enable JIT friendliness
         desired_minibatches = self.num_minibatches
@@ -113,9 +124,7 @@ class PPO(BaseAgent):
             ),
         )
 
-        # Set the clip ratio and the target kl divergence
-        self.clip_ratio = 0.2
-        self.target_kl = 0.01
+        self._jit_warmup_done = False
 
     def update_policy_gradient(
         self,
@@ -129,12 +138,25 @@ class PPO(BaseAgent):
         """
         Update the policy gradient.
         """
+        tdres_mean = jnp.mean(tdres)
+        tdres_std = jnp.std(tdres)
+        tdres = (tdres - tdres_mean) / (tdres_std + 1e-8)
+
+        old_actor_state = nnx.state(self.actor)
         if minibatch:
             epoch_keys = jax.random.split(key, self.actor_training_epochs)
             actor_graphdef, actor_state = nnx.split((self.actor, self.actor_optimizer))
-            actor_loss, actor_state = _actor_epochs_jit(
+            (
+                actor_loss,
+                _,
+                _,
+                _,
+                actor_state,
+            ) = _actor_epochs_jit(
                 actor_graphdef,
                 actor_state,
+                self._actor_graphdef,
+                old_actor_state,
                 epoch_keys,
                 obs_residuals,
                 actions,
@@ -167,8 +189,17 @@ class PPO(BaseAgent):
 
                 optimizer.update(grads)
 
-                _, logp_a = self.actor.forward(obs_residuals, actions)
-                kl = (logp - logp_a).mean()
+                actor_old = nnx.merge(self._actor_graphdef, old_actor_state)
+                pi_old, _ = actor_old.forward(obs_residuals, actions)
+                pi_new, _ = self.actor.forward(obs_residuals, actions)
+                kl = jnp.mean(
+                    _diag_gaussian_kl(
+                        pi_old.mean(),
+                        pi_old.stddev(),
+                        pi_new.mean(),
+                        pi_new.stddev(),
+                    )
+                )
                 if kl > 1.5 * self.target_kl:
                     break
 
@@ -192,12 +223,22 @@ class PPO(BaseAgent):
             critic_graphdef, critic_state = nnx.split(
                 (self.critic, self.critic_optimizer)
             )
+            # Use the live critic instance to compute current predictions as
+            # the "old" values for clipping fallback. We avoid merging graphdef
+            # + state here which may return different structures depending on
+            # how nnx.split was called.
+            values_old_arg = self.critic.forward(obs_residuals)
+
             critic_loss, critic_state = _critic_epochs_jit(
                 critic_graphdef,
                 critic_state,
                 epoch_keys,
                 obs_residuals,
                 returns,
+                values_old_arg,
+                self.use_value_clip,
+                self.value_clip_coef,
+                self.debug_prints,
                 self.num_minibatches,
                 self.minibatch_size,
             )
@@ -210,7 +251,6 @@ class PPO(BaseAgent):
                     return critic_loss_fn(model, returns, obs_residuals)
 
                 critic_loss, grads = nnx.value_and_grad(loss_fn)(critic)
-
                 optimizer.update(grads)
 
         return critic_loss
@@ -223,10 +263,17 @@ class PPO(BaseAgent):
         tdres: jnp.ndarray,
         logp: jnp.ndarray,
         returns: jnp.ndarray,
+        values_old: jnp.ndarray | None = None,
+        critic_grad_scale: float = 1.0,
     ) -> tuple:
         """
         Update the policy gradient and the value function (both at each minibatch, as opposed to doing it sequentially).
         """
+        tdres_mean = jnp.mean(tdres)
+        tdres_std = jnp.std(tdres)
+        tdres = (tdres - tdres_mean) / (tdres_std + 1e-8)
+
+        old_actor_state = nnx.state(self.actor)
         epoch_keys = jax.random.split(key, self.actor_critic_training_epochs)
         joint_graphdef, joint_state = nnx.split(
             (
@@ -236,24 +283,45 @@ class PPO(BaseAgent):
                 self.critic_optimizer,
             )
         )
+
+        # Use provided stored (old) values if available, otherwise compute
+        # predictions from the current critic. Using the stored rollout-time
+        # values is preferred for PPO value clipping.
+        if values_old is None:
+            values_old_arg = self.critic.forward(obs_residuals)
+        else:
+            values_old_arg = values_old
+
         (
-            actor_loss,
-            critic_loss,
+            last_actor_loss,
+            last_critic_loss,
+            mean_actor_loss,
+            mean_critic_loss,
+            last_kl,
+            mean_kl,
+            mean_clip_frac,
             joint_state,
         ) = _actor_critic_epochs_jit(
             joint_graphdef,
             joint_state,
+            self._actor_graphdef,
+            old_actor_state,
             epoch_keys,
             obs_residuals,
             actions,
             tdres,
             logp,
             returns,
+            values_old_arg,
             self.clip_ratio,
             self.entropy_coef,
             self.target_kl,
+            self.use_value_clip,
+            self.value_clip_coef,
+            self.debug_prints,
             self.num_minibatches,
             self.minibatch_size,
+            critic_grad_scale,
         )
 
         nnx.update(
@@ -266,20 +334,91 @@ class PPO(BaseAgent):
             joint_state,
         )
 
-        return actor_loss, critic_loss
+        return (
+            last_actor_loss,
+            last_critic_loss,
+            mean_actor_loss,
+            mean_critic_loss,
+            last_kl,
+            mean_kl,
+            mean_clip_frac,
+        )
+
+    def warmup_jit(self) -> None:
+        """
+        Trigger compilation of the jitted PPO update without mutating live parameters.
+        """
+        if getattr(self, "_jit_warmup_done", False):
+            return
+
+        obs_dim_total = self.env.obs_dim + self.env.res_dim
+        batch = self.batch_size
+        dummy_obs = jnp.zeros((batch, obs_dim_total), dtype=jnp.float32)
+        dummy_actions = jnp.zeros((batch, self.env.act_dim), dtype=jnp.float32)
+        dummy_tdres = jnp.zeros((batch,), dtype=jnp.float32)
+        dummy_logp = jnp.zeros((batch,), dtype=jnp.float32)
+        dummy_returns = jnp.zeros((batch,), dtype=jnp.float32)
+
+        joint_graphdef, joint_state = nnx.split(
+            (
+                self.actor,
+                self.actor_optimizer,
+                self.critic,
+                self.critic_optimizer,
+            )
+        )
+        old_actor_state = nnx.state(self.actor)
+        warmup_keys = jax.random.split(
+            jax.random.PRNGKey(0), self.actor_critic_training_epochs
+        )
+        dummy_old_values = jnp.zeros((batch,), dtype=jnp.float32)
+        warmup_result = _actor_critic_epochs_jit(
+            joint_graphdef,
+            joint_state,
+            self._actor_graphdef,
+            old_actor_state,
+            warmup_keys,
+            dummy_obs,
+            dummy_actions,
+            dummy_tdres,
+            dummy_logp,
+            dummy_returns,
+            dummy_old_values,
+            self.clip_ratio,
+            self.entropy_coef,
+            self.target_kl,
+            self.use_value_clip,
+            self.value_clip_coef,
+            self.debug_prints,
+            self.num_minibatches,
+            self.minibatch_size,
+            1.0,
+        )
+        jax.block_until_ready(warmup_result[0])
+        self._jit_warmup_done = True
 
     def _load_ppo_hyperparams(self) -> None:
         """
         Load PPO-specific hyperparams.
         """
-        self.steps_per_epoch = self.env.env_cfg.control.RL.PPO.steps_per_epoch
-        self.epochs = self.env.env_cfg.control.RL.PPO.epochs
-        self.max_ep_len = self.env.env_cfg.control.RL.PPO.max_ep_len
-        self.gamma = self.env.env_cfg.control.RL.PPO.gamma
-        self.lam = self.env.env_cfg.control.RL.PPO.lam
-        self.actor_lr = self.env.env_cfg.control.RL.PPO.actor_lr
-        self.critic_lr = self.env.env_cfg.control.RL.PPO.critic_lr
-        self.entropy_coef = self.env.env_cfg.control.RL.PPO.entropy_coef
+        cfg = self.env.env_cfg.control.RL.PPO
+        self.steps_per_epoch = cfg.steps_per_epoch
+        self.epochs = cfg.epochs
+        self.max_ep_len = cfg.max_ep_len
+        self.gamma = cfg.gamma
+        self.lam = cfg.lam
+        self.actor_lr = cfg.actor_lr
+        self.critic_lr = cfg.critic_lr
+        self.entropy_coef = cfg.entropy_coef
+        self.actor_training_epochs = int(cfg.actor_training_epochs)
+        self.critic_training_epochs = int(cfg.critic_training_epochs)
+        self.actor_critic_training_epochs = int(cfg.actor_critic_training_epochs)
+        self.num_minibatches = int(cfg.num_minibatches)
+        self.clip_ratio = float(cfg.clip_ratio)
+        self.target_kl = float(cfg.target_kl)
+        self.use_value_clip = bool(cfg.use_value_clip)
+        self.value_clip_coef = float(cfg.value_clip_coef)
+        self.debug_prints = bool(getattr(cfg, "debug_prints", False))
 
     def _log(
         self,
@@ -306,7 +445,7 @@ class PPO(BaseAgent):
                 timestamp,
                 run_name=env.run_name,
                 stage=stage,
-                mean_tracking_error=tracking_error.mean(),
+                mean_lateral_error=tracking_error.mean(),
                 mean_angle_error=angle_error.mean(),
                 mean_extrinsic_error=extrinsic_error.mean(),
             )
@@ -324,10 +463,12 @@ def _shuffle_and_batch(
     return trimmed.reshape((num_minibatches, minibatch_size) + trimmed.shape[1:])
 
 
-@partial(jax.jit, static_argnums=(10, 11))
+@partial(jax.jit, static_argnums=(12, 13))
 def _actor_epochs_jit(
     graphdef,
     state,
+    actor_graphdef,
+    old_actor_state,
     epoch_keys: jnp.ndarray,
     obs: jnp.ndarray,
     actions: jnp.ndarray,
@@ -342,13 +483,34 @@ def _actor_epochs_jit(
     batch_size = obs.shape[0]
     zero_loss = jnp.zeros((), dtype=advantages.dtype)
     zero_kl = jnp.zeros((), dtype=logp.dtype)
+    zero_clip = jnp.zeros((), dtype=logp.dtype)
+    zero_steps = jnp.zeros((), dtype=jnp.int32)
 
     def epoch_body(i, carry):
-        state, stop, last_loss, last_kl = carry
+        (
+            state,
+            stop,
+            last_loss,
+            last_kl,
+            kl_sum,
+            clip_sum,
+            step_count,
+            last_clip,
+        ) = carry
         key = epoch_keys[i]
 
         def run_epoch(args):
-            state, stop, last_loss, last_kl, epoch_key = args
+            (
+                state,
+                stop,
+                last_loss,
+                last_kl,
+                kl_sum,
+                clip_sum,
+                step_count,
+                last_clip,
+                epoch_key,
+            ) = args
             permutation = jax.random.permutation(epoch_key, batch_size)
             obs_batches = _shuffle_and_batch(
                 obs, permutation, num_minibatches, minibatch_size
@@ -364,12 +526,25 @@ def _actor_epochs_jit(
             )
 
             def minibatch_body(mb, carry):
-                state_mb, stop_mb, last_loss_mb, last_kl_mb = carry
+                (
+                    state_mb,
+                    stop_mb,
+                    last_loss_mb,
+                    last_kl_mb,
+                    kl_sum_mb,
+                    clip_sum_mb,
+                    step_count_mb,
+                    last_clip_mb,
+                ) = carry
                 operand = (
                     state_mb,
                     stop_mb,
                     last_loss_mb,
                     last_kl_mb,
+                    kl_sum_mb,
+                    clip_sum_mb,
+                    step_count_mb,
+                    last_clip_mb,
                     obs_batches[mb],
                     act_batches[mb],
                     adv_batches[mb],
@@ -377,14 +552,27 @@ def _actor_epochs_jit(
                 )
 
                 def skip_fn(op):
-                    state_skip, stop_skip, loss_skip, kl_skip, *_ = op
-                    return state_skip, stop_skip, loss_skip, kl_skip
+                    state_skip, stop_skip, loss_skip, kl_skip, kl_sum_skip, clip_sum_skip, step_skip, clip_skip, *_ = op
+                    return (
+                        state_skip,
+                        stop_skip,
+                        loss_skip,
+                        kl_skip,
+                        kl_sum_skip,
+                        clip_sum_skip,
+                        step_skip,
+                        clip_skip,
+                    )
 
                 def update_fn(op):
                     (
                         state_upd,
                         stop_upd,
                         _,
+                        _,
+                        kl_sum_upd,
+                        clip_sum_upd,
+                        step_count_upd,
                         _,
                         obs_mb,
                         act_mb,
@@ -406,11 +594,36 @@ def _actor_epochs_jit(
 
                     loss, grads = nnx.value_and_grad(loss_fn)(actor)
                     optimizer.update(grads)
+                    pi_new = actor._distribution(obs_mb)
                     _, logp_a = actor.forward(obs_mb, act_mb)
-                    kl = jnp.mean(logp_mb - logp_a)
+                    ratio = jnp.exp(logp_a - logp_mb)
+                    clip_fraction = jnp.mean(
+                        jnp.logical_or(
+                            ratio > (1 + clip_ratio), ratio < (1 - clip_ratio)
+                        )
+                    )
+                    actor_old = nnx.merge(actor_graphdef, old_actor_state)
+                    pi_old = actor_old._distribution(obs_mb)
+                    kl = jnp.mean(
+                        _diag_gaussian_kl(
+                            pi_old.mean(),
+                            pi_old.stddev(),
+                            pi_new.mean(),
+                            pi_new.stddev(),
+                        )
+                    )
                     new_stop = jnp.logical_or(stop_upd, kl > 1.5 * target_kl)
                     new_state = nnx.state((actor, optimizer))
-                    return new_state, new_stop, loss, kl
+                    return (
+                        new_state,
+                        new_stop,
+                        loss,
+                        kl,
+                        kl_sum_upd + kl,
+                        clip_sum_upd + clip_fraction,
+                        step_count_upd + 1,
+                        clip_fraction,
+                    )
 
                 return jax.lax.cond(stop_mb, skip_fn, update_fn, operand)
 
@@ -418,33 +631,68 @@ def _actor_epochs_jit(
                 0,
                 num_minibatches,
                 minibatch_body,
-                (state, stop, last_loss, last_kl),
+                (
+                    state,
+                    stop,
+                    last_loss,
+                    last_kl,
+                    kl_sum,
+                    clip_sum,
+                    step_count,
+                    last_clip,
+                ),
             )
 
         return jax.lax.cond(
             stop,
-            lambda op: op[:4],
+            lambda op: op[:8],
             run_epoch,
-            (state, stop, last_loss, last_kl, key),
+            (
+                state,
+                stop,
+                last_loss,
+                last_kl,
+                kl_sum,
+                clip_sum,
+                step_count,
+                last_clip,
+                key,
+            ),
         )
 
-    state, stop, last_loss, last_kl = jax.lax.fori_loop(
+    (
+        state,
+        stop,
+        last_loss,
+        last_kl,
+        kl_sum,
+        clip_sum,
+        step_count,
+        last_clip,
+    ) = jax.lax.fori_loop(
         0,
         epoch_keys.shape[0],
         epoch_body,
-        (state, False, zero_loss, zero_kl),
+        (state, False, zero_loss, zero_kl, zero_kl, zero_clip, zero_steps, zero_clip),
     )
 
-    return last_loss, state
+    mean_kl = jnp.where(step_count > 0, kl_sum / step_count, 0.0)
+    mean_clip = jnp.where(step_count > 0, clip_sum / step_count, 0.0)
+
+    return last_loss, last_kl, mean_kl, mean_clip, state
 
 
-@partial(jax.jit, static_argnums=(5, 6))
+@partial(jax.jit, static_argnums=(6, 7, 8, 9))
 def _critic_epochs_jit(
     graphdef,
     state,
     epoch_keys: jnp.ndarray,
     obs: jnp.ndarray,
     returns: jnp.ndarray,
+    old_values: jnp.ndarray,
+    use_value_clip: bool,
+    value_clip_coef: float,
+    debug_prints: bool,
     num_minibatches: int,
     minibatch_size: int,
 ):
@@ -461,13 +709,40 @@ def _critic_epochs_jit(
         returns_batches = _shuffle_and_batch(
             returns, permutation, num_minibatches, minibatch_size
         )
+        old_values_batches = _shuffle_and_batch(
+            old_values, permutation, num_minibatches, minibatch_size
+        )
 
         def minibatch_body(mb, carry):
             state_mb, _ = carry
             critic, optimizer = nnx.merge(graphdef, state_mb)
 
             def loss_fn(model):
-                return critic_loss_fn(model, returns_batches[mb], obs_batches[mb])
+                vals = model.forward(obs_batches[mb])
+                if use_value_clip:
+                    v_old = old_values_batches[mb]
+                    v_clipped = v_old + jnp.clip(
+                        vals - v_old, -value_clip_coef, value_clip_coef
+                    )
+                    loss_unclipped = (vals - returns_batches[mb]) ** 2
+                    loss_clipped = (v_clipped - returns_batches[mb]) ** 2
+                    # Debug prints: report minibatch-level summaries so we can
+                    # verify that clipping is happening and inspect magnitudes.
+                    if debug_prints:
+                        jax.debug.print(
+                            "[PPO DEBUG] critic clip coef={} mean_delta={:.6f} mean_loss_unclipped={:.6f} mean_loss_clipped={:.6f} mean_return={:.6f} std_return={:.6f} mean_value={:.6f} std_value={:.6f}",
+                            value_clip_coef,
+                            jnp.mean(vals - v_old),
+                            jnp.mean(loss_unclipped),
+                            jnp.mean(loss_clipped),
+                            jnp.mean(returns_batches[mb]),
+                            jnp.std(returns_batches[mb]),
+                            jnp.mean(v_old),
+                            jnp.std(v_old),
+                        )
+                    return jnp.mean(jnp.maximum(loss_unclipped, loss_clipped))
+                else:
+                    return jnp.mean((vals - returns_batches[mb]) ** 2)
 
             loss, grads = nnx.value_and_grad(loss_fn)(critic)
             optimizer.update(grads)
@@ -483,33 +758,69 @@ def _critic_epochs_jit(
     return last_loss, state
 
 
-@partial(jax.jit, static_argnums=(11, 12))
+@partial(jax.jit, static_argnums=(14, 15, 16, 17, 18, 19))
 def _actor_critic_epochs_jit(
     graphdef,
     state,
+    actor_graphdef,
+    old_actor_state,
     epoch_keys: jnp.ndarray,
     obs: jnp.ndarray,
     actions: jnp.ndarray,
     advantages: jnp.ndarray,
     logp: jnp.ndarray,
     returns: jnp.ndarray,
+    old_values: jnp.ndarray,
     clip_ratio: float,
     entropy_coef: float,
     target_kl: float,
+    use_value_clip: bool,
+    value_clip_coef: float,
+    debug_prints: bool,
     num_minibatches: int,
     minibatch_size: int,
+    critic_grad_scale: float,
 ):
     batch_size = obs.shape[0]
     zero_actor_loss = jnp.zeros((), dtype=advantages.dtype)
     zero_critic_loss = jnp.zeros((), dtype=returns.dtype)
+    zero_actor_loss_sum = jnp.zeros((), dtype=advantages.dtype)
+    zero_critic_loss_sum = jnp.zeros((), dtype=returns.dtype)
+    zero_steps = jnp.zeros((), dtype=jnp.int32)
     zero_kl = jnp.zeros((), dtype=logp.dtype)
+    zero_clip = jnp.zeros((), dtype=logp.dtype)
 
     def epoch_body(i, carry):
-        state, stop, last_actor_loss, last_critic_loss, last_kl = carry
+        (
+            state,
+            stop,
+            last_actor_loss,
+            last_critic_loss,
+            last_actor_sum,
+            last_critic_sum,
+            last_steps,
+            last_kl,
+            last_kl_sum,
+            last_clip_sum,
+            last_clip,
+        ) = carry
         key = epoch_keys[i]
 
         def run_epoch(args):
-            state, stop, last_actor_loss, last_critic_loss, last_kl, epoch_key = args
+            (
+                state,
+                stop,
+                last_actor_loss,
+                last_critic_loss,
+                last_actor_sum,
+                last_critic_sum,
+                last_steps,
+                last_kl,
+                last_kl_sum,
+                last_clip_sum,
+                last_clip,
+                epoch_key,
+            ) = args
             permutation = jax.random.permutation(epoch_key, batch_size)
             obs_batches = _shuffle_and_batch(
                 obs, permutation, num_minibatches, minibatch_size
@@ -526,6 +837,9 @@ def _actor_critic_epochs_jit(
             returns_batches = _shuffle_and_batch(
                 returns, permutation, num_minibatches, minibatch_size
             )
+            old_values_batches = _shuffle_and_batch(
+                old_values, permutation, num_minibatches, minibatch_size
+            )
 
             def minibatch_body(mb, carry):
                 (
@@ -533,37 +847,37 @@ def _actor_critic_epochs_jit(
                     stop_mb,
                     last_actor_loss_mb,
                     last_critic_loss_mb,
+                    last_actor_sum_mb,
+                    last_critic_sum_mb,
+                    last_steps_mb,
                     last_kl_mb,
+                    last_kl_sum_mb,
+                    last_clip_sum_mb,
+                    last_clip_mb,
                 ) = carry
                 operand = (
                     state_mb,
                     stop_mb,
                     last_actor_loss_mb,
                     last_critic_loss_mb,
+                    last_actor_sum_mb,
+                    last_critic_sum_mb,
+                    last_steps_mb,
                     last_kl_mb,
+                    last_kl_sum_mb,
+                    last_clip_sum_mb,
+                    last_clip_mb,
                     obs_batches[mb],
                     act_batches[mb],
                     adv_batches[mb],
                     logp_batches[mb],
                     returns_batches[mb],
+                    old_values_batches[mb],
                 )
 
                 def skip_fn(op):
-                    (
-                        state_skip,
-                        stop_skip,
-                        actor_loss_skip,
-                        critic_loss_skip,
-                        kl_skip,
-                        *_,
-                    ) = op
-                    return (
-                        state_skip,
-                        stop_skip,
-                        actor_loss_skip,
-                        critic_loss_skip,
-                        kl_skip,
-                    )
+                    # Preserve the running statistics when we skip an update.
+                    return op[:11]
 
                 def update_fn(op):
                     (
@@ -571,12 +885,19 @@ def _actor_critic_epochs_jit(
                         stop_upd,
                         _,
                         _,
+                        actor_sum_upd,
+                        critic_sum_upd,
+                        steps_upd,
+                        _,
+                        kl_sum_upd,
+                        clip_sum_upd,
                         _,
                         obs_mb,
                         act_mb,
                         adv_mb,
                         logp_mb,
                         returns_mb,
+                        old_values_mb,
                     ) = op
                     actor, actor_opt, critic, critic_opt = nnx.merge(
                         graphdef, state_upd
@@ -599,40 +920,157 @@ def _actor_critic_epochs_jit(
                     actor_opt.update(actor_grads)
 
                     def critic_loss_local(model):
-                        return critic_loss_fn(model, returns_mb, obs_mb)
+                        vals = model.forward(obs_mb)
+                        if use_value_clip:
+                            v_old = old_values_mb
+                            v_clipped = v_old + jnp.clip(
+                                vals - v_old, -value_clip_coef, value_clip_coef
+                            )
+                            loss_unclipped = (vals - returns_mb) ** 2
+                            loss_clipped = (v_clipped - returns_mb) ** 2
+                            # Debug prints for actor-critic joint update minibatch
+                            if debug_prints:
+                                jax.debug.print(
+                                    "[PPO DEBUG] joint critic clip coef={} mean_delta={:.6f} mean_loss_unclipped={:.6f} mean_loss_clipped={:.6f} mean_return={:.6f} std_return={:.6f} mean_value={:.6f} std_value={:.6f}",
+                                    value_clip_coef,
+                                    jnp.mean(vals - v_old),
+                                    jnp.mean(loss_unclipped),
+                                    jnp.mean(loss_clipped),
+                                    jnp.mean(returns_mb),
+                                    jnp.std(returns_mb),
+                                    jnp.mean(v_old),
+                                    jnp.std(v_old),
+                                )
+                            return jnp.mean(jnp.maximum(loss_unclipped, loss_clipped))
+                        else:
+                            return jnp.mean((vals - returns_mb) ** 2)
 
-                    critic_loss, critic_grads = nnx.value_and_grad(critic_loss_local)(
-                        critic
-                    )
+                    critic_loss, critic_grads = nnx.value_and_grad(
+                        critic_loss_local
+                    )(critic)
+                    if critic_grad_scale != 1.0:
+                        critic_grads = jax.tree_util.tree_map(
+                            lambda g: g * critic_grad_scale, critic_grads
+                        )
                     critic_opt.update(critic_grads)
 
+                    pi_new = actor._distribution(obs_mb)
                     _, logp_a = actor.forward(obs_mb, act_mb)
-                    kl = jnp.mean(logp_mb - logp_a)
+                    ratio = jnp.exp(logp_a - logp_mb)
+                    clip_fraction = jnp.mean(
+                        jnp.logical_or(
+                            ratio > (1 + clip_ratio), ratio < (1 - clip_ratio)
+                        )
+                    )
+                    actor_old = nnx.merge(actor_graphdef, old_actor_state)
+                    pi_old = actor_old._distribution(obs_mb)
+                    kl = jnp.mean(
+                        _diag_gaussian_kl(
+                            pi_old.mean(),
+                            pi_old.stddev(),
+                            pi_new.mean(),
+                            pi_new.stddev(),
+                        )
+                    )
                     new_stop = jnp.logical_or(stop_upd, kl > 1.5 * target_kl)
                     new_state = nnx.state((actor, actor_opt, critic, critic_opt))
-                    return new_state, new_stop, actor_loss, critic_loss, kl
+                    return (
+                        new_state,
+                        new_stop,
+                        actor_loss,
+                        critic_loss,
+                        actor_sum_upd + actor_loss,
+                        critic_sum_upd + critic_loss,
+                        steps_upd + 1,
+                        kl,
+                        kl_sum_upd + kl,
+                        clip_sum_upd + clip_fraction,
+                        clip_fraction,
+                    )
 
                 return jax.lax.cond(stop_mb, skip_fn, update_fn, operand)
-
             return jax.lax.fori_loop(
                 0,
                 num_minibatches,
                 minibatch_body,
-                (state, stop, last_actor_loss, last_critic_loss, last_kl),
+                (
+                    state,
+                    stop,
+                    last_actor_loss,
+                    last_critic_loss,
+                    last_actor_sum,
+                    last_critic_sum,
+                    last_steps,
+                    last_kl,
+                    last_kl_sum,
+                    last_clip_sum,
+                    last_clip,
+                ),
             )
 
         return jax.lax.cond(
             stop,
-            lambda op: op[:5],
+            lambda op: op[:11],
             run_epoch,
-            (state, stop, last_actor_loss, last_critic_loss, last_kl, key),
+            (
+                state,
+                stop,
+                last_actor_loss,
+                last_critic_loss,
+                last_actor_sum,
+                last_critic_sum,
+                last_steps,
+                last_kl,
+                last_kl_sum,
+                last_clip_sum,
+                last_clip,
+                key,
+            ),
         )
 
-    state, stop, last_actor_loss, last_critic_loss, last_kl = jax.lax.fori_loop(
+    (
+        state,
+        stop,
+        last_actor_loss,
+        last_critic_loss,
+        actor_loss_sum,
+        critic_loss_sum,
+        step_count,
+        last_kl,
+        kl_sum,
+        clip_sum,
+        last_clip,
+    ) = jax.lax.fori_loop(
         0,
         epoch_keys.shape[0],
         epoch_body,
-        (state, False, zero_actor_loss, zero_critic_loss, zero_kl),
+        (
+            state,
+            False,
+            zero_actor_loss,
+            zero_critic_loss,
+            zero_actor_loss_sum,
+            zero_critic_loss_sum,
+            zero_steps,
+            zero_kl,
+            zero_kl,
+            zero_clip,
+            zero_clip,
+        ),
     )
 
-    return last_actor_loss, last_critic_loss, state
+    mean_actor_loss = jnp.where(step_count > 0, actor_loss_sum / step_count, 0.0)
+    mean_critic_loss = jnp.where(step_count > 0, critic_loss_sum / step_count, 0.0)
+    mean_kl = jnp.where(step_count > 0, kl_sum / step_count, 0.0)
+    mean_clip = jnp.where(step_count > 0, clip_sum / step_count, 0.0)
+
+    return (
+        last_actor_loss,
+        last_critic_loss,
+        mean_actor_loss,
+        mean_critic_loss,
+        last_kl,
+        mean_kl,
+        mean_clip,
+        state,
+    )
