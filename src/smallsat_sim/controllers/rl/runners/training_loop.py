@@ -36,11 +36,7 @@ from smallsat_sim.controllers.rl.runners.runner_utils import (
     save_trained_modules,
 )
 from smallsat_sim.controllers.rl.storage.replay_buffer import ReplayBuffer
-from smallsat_sim.envs.vec_env import _compute_state_features
-from smallsat_sim.utils.helpers_jax import (
-    calc_attitude_error,
-    calc_lateral_tracking_error,
-)
+from smallsat_sim.envs.vec_env import _compute_state_features, vecenv_step_training
 
 
 def learn_runner(self) -> None:
@@ -308,6 +304,7 @@ def learn_runner(self) -> None:
         for phase_epoch in range(phase_epochs):
             global_epoch += 1
             epoch_start_time = time.perf_counter()
+            setup_start_time = time.perf_counter()
             epoch_key = self._take_keys()
             (
                 perturb_key,
@@ -350,6 +347,7 @@ def learn_runner(self) -> None:
                     )
 
             # Accumulate rollout stats to emit once per epoch
+            setup_duration = time.perf_counter() - setup_start_time
             scan_start = time.perf_counter()
             step_config = self.env.build_step_config(
                 max_episode_len=self.max_ep_len
@@ -423,6 +421,7 @@ def learn_runner(self) -> None:
                 rng=self.agent.key,
                 num_steps=self.steps_per_epoch,
                 reference_waypoint=self.reference_point,
+                step_fn=vecenv_step_training,
                 callbacks=FunctionalRolloutCallbacks(
                     prepare_policy_input=_prepare_policy_input,
                     sample_policy=_sample_policy,
@@ -451,8 +450,19 @@ def learn_runner(self) -> None:
                 )
                 self._functional_check_ran = True
 
-            # Sync the imperative env state with the functional rollout result
-            self.env.apply_state_struct(rollout_result.final_state)
+            sync_start_time = time.perf_counter()
+            if self.agent.has_logger:
+                # Local per-episode logging reads the imperative env timestamp.
+                self.env.apply_state_struct(rollout_result.final_state)
+            else:
+                # The next operation is a full env reset, so avoid copying the
+                # full MJX batch back to the imperative env. Preserve only RNG
+                # progression so epoch-to-epoch randomization stays identical.
+                self.env._rng = rollout_result.final_state.rng
+                self.env._state = self.env._state.replace(
+                    rng=rollout_result.final_state.rng
+                )
+            sync_duration = time.perf_counter() - sync_start_time
 
             # Unpack rollout tensors for buffer storage and logging
             step_outputs = rollout_result.step_outputs
@@ -484,15 +494,12 @@ def learn_runner(self) -> None:
             )
 
             done_events = done_masks.astype(jnp.float32)
-            episode_return_sum = 0.0
-            episode_counter_epoch = 0
+            done_returns = episode_returns_traj * done_events
+            episode_return_sum_epoch = done_returns.sum()
+            episode_counter_epoch = done_events.sum()
 
-            if float(done_events.sum()) > 0.0:
-                done_returns = episode_returns_traj * done_events
-                episode_return_sum = float(done_returns.sum())
-                episode_counter_epoch = int(done_events.sum())
-
-                if self.agent.has_logger:
+            if self.agent.has_logger:
+                if float(episode_counter_epoch) > 0.0:
                     flat_done_returns = jax.device_get(done_returns).reshape(-1)
                     for mean_value in flat_done_returns.tolist():
                         if mean_value == 0.0:
@@ -509,17 +516,15 @@ def learn_runner(self) -> None:
 
             buffer_time = time.perf_counter() - buffer_start
 
-            epoch_reward_components = (
-                step_outputs.reward_components
-                if self.env.collect_reward_components
-                else {}
-            )
+            epoch_reward_components = {}
 
             # Reset the imperative environment for the next epoch
+            reset_start_time = time.perf_counter()
             self.env.reset()
             self.env.reset_perturbations()
             if hasattr(self.env, "reset_disturbances"):
                 self.env.reset_disturbances()
+            reset_duration = time.perf_counter() - reset_start_time
 
             rollout_duration = time.perf_counter() - epoch_start_time
 
@@ -542,35 +547,29 @@ def learn_runner(self) -> None:
             else:
                 residuals = jnp.empty((self.steps_per_epoch * self.env.num_envs, 0))
 
-            obs_abs = step_outputs.prev_obs.reshape(-1, step_outputs.prev_obs.shape[-1])
-            if obs_abs.size:
-                tracking_error_epoch = calc_lateral_tracking_error(
-                    obs_abs, self.planner
-                ).mean()
-                angle_error_epoch = jnp.degrees(calc_attitude_error(obs_abs)).mean()
-            else:
-                tracking_error_epoch = jnp.array(0.0)
-                angle_error_epoch = jnp.array(0.0)
+            tracking_error_epoch = jnp.linalg.norm(
+                step_outputs.prev_states[:, :, :3], axis=2
+            ).mean()
+            angle_error_epoch = jnp.degrees(
+                jnp.linalg.norm(step_outputs.prev_states[:, :, 3:6], axis=2)
+            ).mean()
 
-            ref_pos = jnp.atleast_2d(self.reference_point)[:, :3]
             done_events_bool = done_masks.astype(bool)
             done_count_by_env = done_events_bool.sum(axis=0)
-            done_final_pos = jnp.where(
+            done_final_pos_error = jnp.where(
                 done_events_bool[:, :, None],
-                step_outputs.next_obs[:, :, :3],
+                step_outputs.next_states[:, :, :3],
                 0.0,
             ).sum(axis=0)
             safe_counts = jnp.maximum(done_count_by_env, 1)[:, None]
-            mean_done_final_pos = done_final_pos / safe_counts
-            fallback_final_pos = step_outputs.next_obs[-1, :, :3]
-            final_positions = jnp.where(
+            mean_done_final_error = done_final_pos_error / safe_counts
+            fallback_final_error = step_outputs.next_states[-1, :, :3]
+            final_position_errors = jnp.where(
                 done_count_by_env[:, None] > 0,
-                mean_done_final_pos,
-                fallback_final_pos,
+                mean_done_final_error,
+                fallback_final_error,
             )
-            final_pos_error_epoch = jnp.linalg.norm(
-                final_positions - ref_pos, axis=1
-            ).mean()
+            final_pos_error_epoch = jnp.linalg.norm(final_position_errors, axis=1).mean()
 
             terminals_any_epoch = jnp.any(step_outputs.success_terminals, axis=0)
             success_env_count_epoch = jnp.asarray(
@@ -625,10 +624,10 @@ def learn_runner(self) -> None:
             terminal_env_rate_at_end_epoch = jnp.asarray(
                 step_outputs.terminals[-1].astype(jnp.float32).mean()
             )
-            mean_ep_return_epoch = (
-                jnp.asarray(episode_return_sum / episode_counter_epoch)
-                if episode_counter_epoch > 0
-                else jnp.array(0.0)
+            mean_ep_return_epoch = jnp.where(
+                episode_counter_epoch > 0.0,
+                episode_return_sum_epoch / jnp.maximum(episode_counter_epoch, 1.0),
+                0.0,
             )
 
             reward_component_means = {
@@ -904,6 +903,9 @@ def learn_runner(self) -> None:
                 eval=eval_duration,
                 save_ckpt=save_duration,
                 total=epoch_total_duration,
+                setup=setup_duration,
+                sync=sync_duration,
+                reset=reset_duration,
             )
             print(
                 format_epoch_timing_line(

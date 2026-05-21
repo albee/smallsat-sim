@@ -11,10 +11,14 @@ class EpochTiming:
     eval: float
     save_ckpt: float
     total: float
+    setup: float = 0.0
+    sync: float = 0.0
+    reset: float = 0.0
 
     @property
     def other_rollout(self) -> float:
-        return max(0.0, self.rollout - (self.scan + self.buffer))
+        accounted = self.setup + self.scan + self.sync + self.buffer + self.reset
+        return max(0.0, self.rollout - accounted)
 
 
 def format_epoch_timing_line(
@@ -30,11 +34,11 @@ def format_epoch_timing_line(
         f"[Timing] Epoch {global_epoch}/{total_epochs} "
         f"(phase={phase_name} {phase_epoch}/{phase_epochs}): "
         f"rollout {timing.rollout:.2f}s "
-        f"(scan {timing.scan:.2f}s, buffer {timing.buffer:.2f}s, other {timing.other_rollout:.2f}s) | "
+        f"(setup {timing.setup:.2f}s, scan {timing.scan:.2f}s, sync {timing.sync:.2f}s, "
+        f"buffer {timing.buffer:.2f}s, reset {timing.reset:.2f}s, other {timing.other_rollout:.2f}s) | "
         f"update {timing.update:.2f}s | "
         f"logging {timing.logging:.2f}s | "
         f"eval {timing.eval:.2f}s | "
         f"save_ckpt {timing.save_ckpt:.2f}s | "
         f"total {timing.total:.2f}s"
     )
-

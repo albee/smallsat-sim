@@ -132,6 +132,7 @@ class EnvConfig(BaseEnvConfig):
             authority_logging_interval = 10
             authority_logging_max_samples = 0
             training_checkpoint_interval = 10
+            collect_reward_components = False
 
             # Mission tolerances (tuned to current training scenario - do not change)
             sigma_pos = 1.6

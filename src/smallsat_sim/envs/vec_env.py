@@ -129,6 +129,27 @@ class VecEnvStepOutput:
     reward_components: Dict[str, jnp.ndarray]
 
 
+@dataclass
+class VecEnvTrainingStepOutput:
+    """
+    Lean transition record for PPO policy training.
+
+    It intentionally omits absolute observations and reward-component dictionaries
+    to reduce scan output size and device memory traffic in the hot training loop.
+    """
+
+    prev_states: jnp.ndarray
+    next_states: jnp.ndarray
+    rewards: jnp.ndarray
+    terminals: jnp.ndarray
+    commanded_ctrl: jnp.ndarray
+    applied_ctrl: jnp.ndarray
+    actual_wrench: jnp.ndarray
+    desired_wrench: jnp.ndarray
+    success_terminals: jnp.ndarray
+    failure_terminals: jnp.ndarray
+
+
 def _vecenv_step_output_flatten(output: VecEnvStepOutput):
     children = (
         output.prev_states,
@@ -185,6 +206,56 @@ jax.tree_util.register_pytree_node(
     VecEnvStepOutput,
     _vecenv_step_output_flatten,
     _vecenv_step_output_unflatten,
+)
+
+
+def _vecenv_training_step_output_flatten(output: VecEnvTrainingStepOutput):
+    children = (
+        output.prev_states,
+        output.next_states,
+        output.rewards,
+        output.terminals,
+        output.commanded_ctrl,
+        output.applied_ctrl,
+        output.actual_wrench,
+        output.desired_wrench,
+        output.success_terminals,
+        output.failure_terminals,
+    )
+    return children, None
+
+
+def _vecenv_training_step_output_unflatten(aux_data, children):
+    (
+        prev_states,
+        next_states,
+        rewards,
+        terminals,
+        commanded_ctrl,
+        applied_ctrl,
+        actual_wrench,
+        desired_wrench,
+        success_terminals,
+        failure_terminals,
+    ) = children
+    return VecEnvTrainingStepOutput(
+        prev_states=prev_states,
+        next_states=next_states,
+        rewards=rewards,
+        terminals=terminals,
+        commanded_ctrl=commanded_ctrl,
+        applied_ctrl=applied_ctrl,
+        actual_wrench=actual_wrench,
+        desired_wrench=desired_wrench,
+        success_terminals=success_terminals,
+        failure_terminals=failure_terminals,
+    )
+
+
+jax.tree_util.register_pytree_node(
+    VecEnvTrainingStepOutput,
+    _vecenv_training_step_output_flatten,
+    _vecenv_training_step_output_unflatten,
 )
 
 
@@ -923,6 +994,105 @@ def vecenv_step(
     return next_state, step_output
 
 
+def vecenv_step_training(
+    state: VecEnvState,
+    commanded_ctrl: jnp.ndarray,
+    next_waypoint: jnp.ndarray,
+    config: VecEnvStepConfig,
+    prev_residuals: Optional[jnp.ndarray] = None,
+) -> Tuple[VecEnvState, VecEnvTrainingStepOutput]:
+    """
+    Lean equivalent of ``vecenv_step`` for PPO policy training.
+
+    The full step helper returns absolute observations and reward-component
+    dictionaries for diagnostics/adaptation training. Policy training only needs
+    state features, rewards, terminal masks, and wrench information for adaptive
+    context updates, so this helper avoids producing unused scan outputs.
+    """
+    commanded_ctrl = jnp.asarray(commanded_ctrl)
+
+    prev_states = _compute_state_features(state.mjx_batch, next_waypoint)
+    prepared_state, applied_ctrl, qfrc_applied = prepare_step_functional(
+        state, commanded_ctrl
+    )
+
+    mjx_batch = prepared_state.mjx_batch.replace(
+        ctrl=applied_ctrl,
+        qfrc_applied=qfrc_applied,
+    )
+    mjx_batch = jax.lax.fori_loop(
+        0,
+        config.control_decimation,
+        lambda _i, batch: VMAP_MJX_STEP(config.mjx_model, batch),
+        mjx_batch,
+    )
+
+    next_state = prepared_state.replace(mjx_batch=mjx_batch)
+    next_states = _compute_state_features(mjx_batch, next_waypoint)
+
+    pos_curr, vel_curr, att_curr, ang_curr = _reward_components(prev_states, config)
+    pos_next, vel_next, att_next, ang_next = _reward_components(next_states, config)
+    phi_curr = pos_curr + vel_curr + att_curr + ang_curr
+    phi_next = pos_next + vel_next + att_next + ang_next
+
+    success_terminals, next_terminal_hold_counts = _compute_terminals(
+        next_states,
+        prepared_state.terminal_hold_counts,
+        config,
+    )
+    failure_terminals = _compute_failures(next_states, config)
+    terminals = jnp.logical_or(success_terminals, failure_terminals)
+
+    if config.use_adaptive_approach and config.res_dim > 0:
+        if prev_residuals is None or prev_residuals.shape[-1] == 0:
+            mixer_T = jnp.asarray(config.thruster_mixer_T, dtype=prev_states.dtype)
+            actuator_force_prev = jnp.asarray(
+                state.mjx_batch.actuator_force, dtype=prev_states.dtype
+            )
+            desired_ctrl_prev = jnp.asarray(
+                state.mjx_batch.ctrl, dtype=prev_states.dtype
+            )
+            prev_residuals = (
+                jnp.atleast_2d(actuator_force_prev) @ mixer_T
+                - jnp.atleast_2d(desired_ctrl_prev) @ mixer_T
+            )
+        else:
+            prev_residuals = jnp.asarray(prev_residuals, dtype=prev_states.dtype)
+    else:
+        prev_residuals = None
+
+    penalties, _ = _compute_penalties(
+        prev_states,
+        next_states,
+        success_terminals,
+        commanded_ctrl,
+        prev_residuals,
+        config,
+    )
+    rewards = phi_next - phi_curr - penalties
+    terminal_bonus = jnp.asarray(config.terminal_bonus, dtype=rewards.dtype)
+    rewards = rewards + terminal_bonus * success_terminals.astype(rewards.dtype)
+
+    actual_wrench = jnp.atleast_2d(mjx_batch.actuator_force) @ config.thruster_mixer_T
+    desired_wrench = commanded_ctrl @ config.thruster_mixer_T
+
+    step_output = VecEnvTrainingStepOutput(
+        prev_states=prev_states,
+        next_states=next_states,
+        rewards=rewards,
+        terminals=terminals,
+        commanded_ctrl=commanded_ctrl,
+        applied_ctrl=applied_ctrl,
+        actual_wrench=actual_wrench,
+        desired_wrench=desired_wrench,
+        success_terminals=success_terminals,
+        failure_terminals=failure_terminals,
+    )
+
+    next_state = next_state.replace(terminal_hold_counts=next_terminal_hold_counts)
+    return next_state, step_output
+
+
 def vecenv_reset_to_config(
     state: VecEnvState,
     config: VecEnvStepConfig,
@@ -1043,8 +1213,8 @@ class VecEnv(BaseEnv):
 
         # Cache for the reward breakdown after each transition (used for logging)
         self._last_reward_components: dict[str, jnp.ndarray] = {}
-        self.collect_reward_components = getattr(args, "wandb", False) or getattr(
-            args, "log", False
+        self.collect_reward_components = bool(
+            getattr(self.env_cfg.control.RL, "collect_reward_components", False)
         )
         self.disturbance_states: Tuple[DisturbanceState, ...] = ()
         self.perturbation_states: Tuple[PerturbationState, ...] = ()
