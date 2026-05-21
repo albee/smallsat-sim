@@ -436,7 +436,10 @@ class PPO(BaseAgent):
             tracking_error = calc_lateral_tracking_error(env.get_obs(), self.planner)
             angle_error = jnp.degrees(calc_attitude_error(env.get_obs()))
             if self.env.use_adaptive_approach:
-                extrinsic_error = calc_extrinsic_error(actual_ext, estimated_ext)
+                estimated_wrench = estimated_ext
+                if estimated_wrench.shape[-1] != actual_ext.shape[-1]:
+                    estimated_wrench = estimated_wrench[..., : actual_ext.shape[-1]]
+                extrinsic_error = calc_extrinsic_error(actual_ext, estimated_wrench)
             else:
                 extrinsic_error = jnp.zeros(env.num_envs)
 

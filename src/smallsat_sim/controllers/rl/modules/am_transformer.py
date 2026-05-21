@@ -148,6 +148,9 @@ class TransformerAdaptationModule(nnx.Module):
         mlp_dim: int = 256,
         n_layers: int = 3,
         dropout_rate: float = 0.05,
+        query_dim: int = 0,
+        predict_delta_dim: int = 0,
+        predict_tracking: bool = False,
         rngs: nnx.Rngs | None = None,
     ):
         super().__init__()
@@ -156,8 +159,16 @@ class TransformerAdaptationModule(nnx.Module):
         self.n_steps = n_steps
         self.state_action_dim = state_action_dim
         self.ext_dim = max(1, ext_dim)
+        self.query_dim = int(query_dim)
+        self.predict_delta_dim = int(predict_delta_dim)
+        self.predict_tracking = bool(predict_tracking)
         self.d_model = d_model
         self.input_proj = nnx.Linear(state_action_dim, d_model, rngs=rngs)
+        self.query_proj = (
+            nnx.Linear(self.query_dim, d_model, rngs=rngs)
+            if self.query_dim > 0
+            else None
+        )
         self.pos_embedding = nnx.Param(
             0.02 * jax.random.normal(rngs.params(), (n_steps, d_model))
         )
@@ -169,14 +180,24 @@ class TransformerAdaptationModule(nnx.Module):
         self.norm = LayerNorm(d_model)
         self.mu_head = nnx.Linear(d_model, self.ext_dim, rngs=rngs)
         self.log_sigma_head = nnx.Linear(d_model, self.ext_dim, rngs=rngs)
+        self.delta_head = (
+            nnx.Linear(d_model, self.predict_delta_dim, rngs=rngs)
+            if self.predict_delta_dim > 0
+            else None
+        )
+        self.tracking_head = (
+            nnx.Linear(d_model, 1, rngs=rngs) if self.predict_tracking else None
+        )
 
     def __call__(
         self,
         history: jnp.ndarray,
+        query: jnp.ndarray | None = None,
         *,
         return_stats: bool = False,
+        return_predictions: bool = False,
         training: bool = False,
-    ) -> jnp.ndarray | tuple[jnp.ndarray, jnp.ndarray]:
+    ) -> jnp.ndarray | tuple[jnp.ndarray, ...]:
         """
         Args:
             history: [T, state_action_dim] with T == n_steps and the most
@@ -208,10 +229,31 @@ class TransformerAdaptationModule(nnx.Module):
 
         x = self.norm(x)
         last_token = x[:, -1, :]  # [1, d_model]
+        if self.query_proj is not None:
+            if query is None:
+                query = jnp.zeros((self.query_dim,), dtype=last_token.dtype)
+            if query.shape[-1] != self.query_dim:
+                raise ValueError(
+                    f"expected query dim {self.query_dim}, got {query.shape[-1]}"
+                )
+            last_token = last_token + self.query_proj(jnp.expand_dims(query, axis=0))
         mu = self.mu_head(last_token)
         log_sigma = self.log_sigma_head(last_token)
         mu = jnp.squeeze(mu, axis=0)
         log_sigma = jnp.squeeze(log_sigma, axis=0)
+        outputs = [mu]
         if return_stats:
-            return mu, log_sigma
-        return mu
+            outputs.append(log_sigma)
+        if return_predictions:
+            if self.delta_head is not None:
+                delta = jnp.squeeze(self.delta_head(last_token), axis=0)
+            else:
+                delta = jnp.zeros((0,), dtype=mu.dtype)
+            if self.tracking_head is not None:
+                tracking = jnp.squeeze(self.tracking_head(last_token), axis=0)
+            else:
+                tracking = jnp.zeros((1,), dtype=mu.dtype)
+            outputs.extend([delta, tracking])
+        if len(outputs) == 1:
+            return outputs[0]
+        return tuple(outputs)

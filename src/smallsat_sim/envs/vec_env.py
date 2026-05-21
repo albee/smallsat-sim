@@ -533,7 +533,7 @@ def _compute_penalties(
         if prev_residuals is None or prev_residuals.shape[-1] == 0:
             residuals = jnp.zeros((prev_states.shape[0], config.res_dim), dtype=dtype)
         else:
-            residuals = prev_residuals
+            residuals = prev_residuals[:, :6]
         residual_norm = jnp.linalg.norm(residuals, axis=1)
         residual_excess = jnp.maximum(residual_norm - tolerance, 0.0)
         residual_clipped = jnp.minimum(residual_excess, clip_value)
@@ -974,6 +974,9 @@ class VecEnv(BaseEnv):
         # Adaptation module architecture
         self.am_architecture = self.env_cfg.control.RL.am_architecture
         self.history_len = self.env_cfg.control.RL.context_window_len
+        self.use_task_conditioned_am = bool(
+            getattr(self.env_cfg.control.RL, "use_task_conditioned_am", False)
+        )
 
         super().__init__(args)
 
@@ -994,8 +997,32 @@ class VecEnv(BaseEnv):
         # Observation and action spaces
         self.obs_dim = 12
         self.act_dim = int(self.model.nu)
+        self.am_query_dim = self.obs_dim + 6 if self.use_task_conditioned_am else 0
+        self.adaptive_context_mode = getattr(
+            self.env_cfg.control.RL,
+            "adaptive_context_mode",
+            "residual",
+        )
+        valid_context_modes = (
+            "residual",
+            "residual_effectiveness",
+            "residual_controllability",
+            "structured",
+        )
+        if self.adaptive_context_mode not in valid_context_modes:
+            raise ValueError(
+                "adaptive_context_mode must be one of: "
+                f"{', '.join(valid_context_modes)}."
+            )
         if self.use_adaptive_approach is True:
-            self.ext_dim = 6
+            if self.adaptive_context_mode == "residual":
+                self.ext_dim = 6
+            elif self.adaptive_context_mode == "residual_effectiveness":
+                self.ext_dim = 6 + self.act_dim
+            elif self.adaptive_context_mode == "residual_controllability":
+                self.ext_dim = 6 + 2
+            else:
+                self.ext_dim = 6 + self.act_dim + 2
         else:
             self.ext_dim = 0
         self.res_dim = self.ext_dim
@@ -1610,10 +1637,12 @@ class VecEnv(BaseEnv):
         perturbation_distribution: jnp.ndarray = jnp.array(
             [0.5, 0.05, 0.15, 0.15, 0.15]
         ),
+        start_time: float | None = None,
     ) -> None:
         """
         Apply a perturbation scenario to a subset of the environments (one per environment).
-        NOTE: the thrusters are picked at random and the default times are 0.0 for now.
+        The thrusters are picked at random. ``start_time`` controls when the
+        sampled failures become active in simulation time.
         """
         # Calculate number of environments to perturb
         clamped_fraction = max(0.0, min(1.0, fraction_perturbed_envs))
@@ -1653,25 +1682,30 @@ class VecEnv(BaseEnv):
 
         # Apply the perturbations with respective subkeys
         self.perturbations.perturbations[0].stuck_off_thruster(
-            subkeys[0], stuck_off_thruster_envs
+            subkeys[0], stuck_off_thruster_envs, start_time=start_time
         )
         self.perturbations.perturbations[1].stuck_on_thruster(
-            subkeys[1], stuck_on_thruster_envs
+            subkeys[1], stuck_on_thruster_envs, start_time=start_time
         )
         self.perturbations.perturbations[2].register_perturbation(
-            subkeys[2], faulty_valve_envs
+            subkeys[2], faulty_valve_envs, start_time=start_time
         )
         self.perturbations.perturbations[3].register_perturbation(
-            subkeys[3], saturated_thrust_envs
+            subkeys[3], saturated_thrust_envs, start_time=start_time
         )
         self.perturbations.perturbations[4].register_perturbation(
-            subkeys[4], thrust_instability_envs
+            subkeys[4], thrust_instability_envs, start_time=start_time
         )
 
         self._refresh_effect_states()
         self._state = self._state.replace(perturbation_states=self.perturbation_states)
 
-    def apply_random_disturbance(self, key, fraction_disturbed_envs: float) -> None:
+    def apply_random_disturbance(
+        self,
+        key,
+        fraction_disturbed_envs: float,
+        start_time: float | None = None,
+    ) -> None:
         """
         Apply the constant force disturbance to a subset of environments.
         """
@@ -1708,7 +1742,10 @@ class VecEnv(BaseEnv):
         if constant_force_disturbance is None:
             return
 
-        constant_force_disturbance.const_force_disturbance(selected_indices)
+        constant_force_disturbance.const_force_disturbance(
+            selected_indices,
+            start_time=0.0 if start_time is None else start_time,
+        )
         self._refresh_effect_states()
         self._state = self._state.replace(disturbance_states=self.disturbance_states)
 

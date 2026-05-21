@@ -2,6 +2,8 @@ from typing import Any, Callable
 
 import jax.numpy as jnp
 
+from smallsat_sim.controllers.rl.runners.adaptive_context import build_adaptive_context
+
 from .types import AdaptationRolloutExtra
 
 
@@ -22,10 +24,19 @@ def residuals_from_wrench_delta(
     step_output: Any,
     residuals: jnp.ndarray,
     use_adaptive_approach: bool,
+    adaptive_context_mode: str = "structured",
+    thruster_mixer_T: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
-    if use_adaptive_approach:
-        return step_output.actual_wrench - step_output.desired_wrench
-    return residuals
+    return build_adaptive_context(
+        commanded_ctrl=step_output.commanded_ctrl,
+        applied_ctrl=step_output.applied_ctrl,
+        actual_wrench=step_output.actual_wrench,
+        desired_wrench=step_output.desired_wrench,
+        previous_context=residuals,
+        use_adaptive_approach=use_adaptive_approach,
+        adaptive_context_mode=adaptive_context_mode,
+        thruster_mixer_T=thruster_mixer_T,
+    )
 
 
 def make_zero_bootstrap_value(

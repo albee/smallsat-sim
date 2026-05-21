@@ -26,6 +26,36 @@ def test_transformer_adaptation_module_output_shapes() -> None:
     assert log_sigma.shape == (3,)
 
 
+def test_transformer_task_query_and_prediction_heads() -> None:
+    module = TransformerAdaptationModule(
+        n_steps=8,
+        state_action_dim=6,
+        ext_dim=3,
+        query_dim=5,
+        predict_delta_dim=4,
+        predict_tracking=True,
+        d_model=32,
+        n_heads=4,
+        mlp_dim=64,
+        n_layers=2,
+        dropout_rate=0.1,
+    )
+    history = jnp.ones((8, 6), dtype=jnp.float32)
+    query = jnp.ones((5,), dtype=jnp.float32)
+
+    mu, log_sigma, delta, tracking = module(
+        history,
+        query,
+        return_stats=True,
+        return_predictions=True,
+    )
+
+    assert mu.shape == (3,)
+    assert log_sigma.shape == (3,)
+    assert delta.shape == (4,)
+    assert tracking.shape == (1,)
+
+
 def test_transformer_training_flag_controls_dropout() -> None:
     module = TransformerAdaptationModule(
         n_steps=8,
@@ -55,6 +85,25 @@ def test_cnn_adaptation_module_output_shape_and_min_dim() -> None:
     pred = module(history)
 
     assert pred.shape == (1,)
+
+
+def test_cnn_task_query_and_prediction_heads() -> None:
+    module = CNNAdaptationModule(
+        n_steps=16,
+        state_action_dim=6,
+        ext_dim=3,
+        query_dim=5,
+        predict_delta_dim=4,
+        predict_tracking=True,
+    )
+    history = jnp.ones((16, 6), dtype=jnp.float32)
+    query = jnp.ones((5,), dtype=jnp.float32)
+
+    context, delta, tracking = module(history, query, return_predictions=True)
+
+    assert context.shape == (3,)
+    assert delta.shape == (4,)
+    assert tracking.shape == (1,)
 
 
 def test_transformer_rejects_non_2d_history() -> None:

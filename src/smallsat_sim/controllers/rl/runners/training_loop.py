@@ -17,6 +17,11 @@ from smallsat_sim.controllers.rl.runners.curriculum import (
     build_failure_curriculum,
     uniform_failure_distribution,
 )
+from smallsat_sim.controllers.rl.runners.adaptive_context import (
+    authority_bin_stats,
+    authority_metrics_from_wrench,
+    summarize_authority_metrics,
+)
 from smallsat_sim.controllers.rl.runners.runner_timing import (
     EpochTiming,
     format_epoch_timing_line,
@@ -99,6 +104,26 @@ def learn_runner(self) -> None:
     critic_warmup_epochs = int(cfg.curriculum_critic_warmup_epochs)
     critic_warmup_scale = float(cfg.curriculum_critic_warmup_scale)
     eval_interval = int(cfg.curriculum_eval_interval)
+    failure_start_time_min = float(
+        getattr(cfg, "curriculum_failure_start_time_min", 0.0)
+    )
+    failure_start_time_max = float(
+        getattr(cfg, "curriculum_failure_start_time_max", 0.0)
+    )
+    disturbance_start_time_min = float(
+        getattr(cfg, "curriculum_disturbance_start_time_min", 0.0)
+    )
+    disturbance_start_time_max = float(
+        getattr(cfg, "curriculum_disturbance_start_time_max", 0.0)
+    )
+    authority_logging_max_samples = int(
+        getattr(cfg, "authority_logging_max_samples", 8192)
+    )
+    authority_logging_interval = int(getattr(cfg, "authority_logging_interval", 10))
+    authority_logging_max_samples = max(0, authority_logging_max_samples)
+    authority_logging_interval = max(1, authority_logging_interval)
+    checkpoint_interval = int(getattr(cfg, "training_checkpoint_interval", 10))
+    checkpoint_interval = max(1, checkpoint_interval)
     # Keep evaluation lightweight relative to training rollouts.
     eval_episodes = max(1, min(self.n_evals, 3))
 
@@ -188,6 +213,8 @@ def learn_runner(self) -> None:
                     step_output=step_output,
                     residuals=residuals,
                     use_adaptive_approach=self.env.use_adaptive_approach,
+                    adaptive_context_mode=self.env.adaptive_context_mode,
+                    thruster_mixer_T=self.env._thruster_mixer_T,
                 )
                 return residuals_next, None, None
 
@@ -228,6 +255,41 @@ def learn_runner(self) -> None:
     # Convenience distribution for nominal-only evaluation.
     zeros_dist = jnp.zeros((5,), dtype=jnp.float32)
 
+    def _sample_start_time(key, low: float, high: float) -> float:
+        if high <= low:
+            return low
+        return float(jax.random.uniform(key, (), minval=low, maxval=high))
+
+    def _sample_flat_indices(total: int, max_samples: int) -> jnp.ndarray:
+        if total <= max_samples:
+            return jnp.arange(total, dtype=jnp.int32)
+        return jnp.linspace(0, total - 1, max_samples, dtype=jnp.int32)
+
+    def _rollout_authority_payload(step_outputs, success_by_env) -> dict[str, float]:
+        if authority_logging_max_samples <= 0:
+            return {}
+        flat_count = self.steps_per_epoch * self.env.num_envs
+        sample_idx = _sample_flat_indices(flat_count, authority_logging_max_samples)
+        flat_commanded = step_outputs.commanded_ctrl.reshape(-1, self.env.act_dim)
+        flat_applied = step_outputs.applied_ctrl.reshape(-1, self.env.act_dim)
+        flat_desired = step_outputs.desired_wrench.reshape(-1, 6)
+        sampled_metrics = authority_metrics_from_wrench(
+            commanded_ctrl=flat_commanded[sample_idx],
+            applied_ctrl=flat_applied[sample_idx],
+            desired_wrench=flat_desired[sample_idx],
+            thruster_mixer_T=self.env._thruster_mixer_T,
+        )
+        sampled_envs = sample_idx % self.env.num_envs
+        sampled_success = success_by_env[sampled_envs]
+        payload = summarize_authority_metrics(sampled_metrics)
+        payload.update(
+            authority_bin_stats(
+                sampled_metrics["normalized_wrench_feasibility_error"],
+                sampled_success,
+            )
+        )
+        return payload
+
     for phase_idx, phase in enumerate(phases):
         phase_name = phase["name"]
         phase_epochs = int(phase["epochs"])
@@ -247,8 +309,25 @@ def learn_runner(self) -> None:
             global_epoch += 1
             epoch_start_time = time.perf_counter()
             epoch_key = self._take_keys()
-            perturb_key, disturb_key, actor_key, eval_key = jax.random.split(
-                epoch_key, 4
+            (
+                perturb_key,
+                disturb_key,
+                actor_key,
+                eval_key,
+                failure_onset_key,
+                disturbance_onset_key,
+            ) = jax.random.split(
+                epoch_key, 6
+            )
+            failure_start_time = _sample_start_time(
+                failure_onset_key,
+                failure_start_time_min,
+                failure_start_time_max,
+            )
+            disturbance_start_time = _sample_start_time(
+                disturbance_onset_key,
+                disturbance_start_time_min,
+                disturbance_start_time_max,
             )
 
             # Apply failures/disturbances for this phase with fixed proportions
@@ -261,11 +340,13 @@ def learn_runner(self) -> None:
                         key=perturb_key,
                         fraction_perturbed_envs=phase_failure_fraction,
                         perturbation_distribution=phase_distribution,
+                        start_time=failure_start_time,
                     )
                 if phase_disturbance_fraction > 0.0:
                     self.env.apply_random_disturbance(
                         key=disturb_key,
                         fraction_disturbed_envs=phase_disturbance_fraction,
+                        start_time=disturbance_start_time,
                     )
 
             # Accumulate rollout stats to emit once per epoch
@@ -310,6 +391,8 @@ def learn_runner(self) -> None:
                     step_output=step_output,
                     residuals=residuals,
                     use_adaptive_approach=self.env.use_adaptive_approach,
+                    adaptive_context_mode=self.env.adaptive_context_mode,
+                    thruster_mixer_T=self.env._thruster_mixer_T,
                 )
                 return residuals_next, None, carry_extra
 
@@ -552,6 +635,19 @@ def learn_runner(self) -> None:
                 name: values.mean()
                 for name, values in epoch_reward_components.items()
             }
+            should_log_authority = (
+                (self.env.use_wandb or self.agent.has_logger)
+                and authority_logging_max_samples > 0
+                and (
+                    global_epoch % authority_logging_interval == 0
+                    or global_epoch == self.epochs
+                )
+            )
+            authority_payload = (
+                _rollout_authority_payload(step_outputs, terminals_any_epoch)
+                if should_log_authority
+                else {}
+            )
             reward_abs = jnp.abs(step_outputs.rewards)
             reward_scale_metrics = {
                 "mean_step_reward": float(step_outputs.rewards.mean()),
@@ -684,6 +780,7 @@ def learn_runner(self) -> None:
                     },
                     reward_scale_metrics=reward_scale_metrics,
                 )
+                wandb_payload.update(authority_payload)
                 wandb.log(
                     wandb_payload,
                     step=global_epoch,
@@ -729,6 +826,7 @@ def learn_runner(self) -> None:
                     train_mean_episodic_returns=float(mean_ep_return_epoch),
                     reward_scale_metrics=reward_scale_metrics,
                 )
+                logger_payload.update(authority_payload)
                 self.env.logger.log(
                     self.env.run_id,
                     float(self.env.mjx_batch.time[0]),
@@ -787,9 +885,14 @@ def learn_runner(self) -> None:
 
             # Save the trained actor and critic network weights
             save_start_time = time.perf_counter()
-            save_trained_modules(
-                self.agent, self.ckpt_dir, self.training_state_file_name
+            should_save_checkpoint = (
+                global_epoch % checkpoint_interval == 0
+                or global_epoch == self.epochs
             )
+            if should_save_checkpoint:
+                save_trained_modules(
+                    self.agent, self.ckpt_dir, self.training_state_file_name
+                )
             save_duration = time.perf_counter() - save_start_time
             epoch_total_duration = time.perf_counter() - epoch_start_time
             epoch_timing = EpochTiming(

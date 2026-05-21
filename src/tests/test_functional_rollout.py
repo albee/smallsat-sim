@@ -6,6 +6,10 @@ import jax.numpy as jnp
 import pytest
 
 from smallsat_sim.controllers.rl.runners import rollout as ru
+from smallsat_sim.controllers.rl.runners.adaptive_context import (
+    build_adaptive_context,
+    estimate_thruster_effectiveness,
+)
 from smallsat_sim.controllers.rl.storage.replay_buffer import ReplayBuffer
 
 
@@ -525,6 +529,45 @@ def test_update_history_buffer_reports_full_before_reset() -> None:
     assert jnp.allclose(history, jnp.zeros_like(history))
     assert jnp.allclose(counts, jnp.zeros_like(counts))
     assert jnp.allclose(new_extra.history, jnp.zeros_like(new_extra.history))
+
+
+def test_structured_adaptive_context_includes_effectiveness_and_authority() -> None:
+    commanded = jnp.array([[1.0, 1.0]], dtype=jnp.float32)
+    applied = jnp.array([[0.5, 0.0]], dtype=jnp.float32)
+    mixer_t = jnp.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ],
+        dtype=jnp.float32,
+    )
+    actual = applied @ mixer_t
+    desired = commanded @ mixer_t
+    previous = jnp.zeros((1, 7), dtype=jnp.float32)
+
+    context = build_adaptive_context(
+        commanded_ctrl=commanded,
+        applied_ctrl=applied,
+        actual_wrench=actual,
+        desired_wrench=desired,
+        previous_context=previous,
+        use_adaptive_approach=True,
+        adaptive_context_mode="structured",
+        thruster_mixer_T=mixer_t,
+    )
+
+    assert context.shape == previous.shape
+    assert jnp.allclose(context[:, :3], actual - desired)
+    assert jnp.allclose(context[:, 3:5], jnp.array([[0.5, 0.0]], dtype=jnp.float32))
+    assert jnp.isfinite(context[:, 5:]).all()
+
+
+def test_effectiveness_defaults_to_nominal_for_tiny_commands() -> None:
+    commanded = jnp.array([[0.0, 1e-5, 2.0]], dtype=jnp.float32)
+    applied = jnp.array([[0.4, 0.0, 1.0]], dtype=jnp.float32)
+    eta = estimate_thruster_effectiveness(commanded, applied)
+
+    assert jnp.allclose(eta, jnp.array([[1.0, 1.0, 0.5]], dtype=jnp.float32))
 
 
 def test_replay_buffer_terminated_vs_truncated_bootstrap_returns() -> None:

@@ -27,6 +27,7 @@ from smallsat_sim.controllers.rl.runners.training_loop import learn_runner
 from smallsat_sim.controllers.rl.runners.adaptation_training import (
     train_adaptation_module_on_policy_runner,
 )
+from smallsat_sim.controllers.rl.runners.adaptive_context import build_adaptive_context
 from smallsat_sim.utils.helpers_jax import (
     train_val_split,
     mae_loss_fn,
@@ -57,17 +58,22 @@ class OnPolicyRunner(object):
         self.pd_ctrl = VectorizedPDController(env, planner)
         self._load_rl_hyperparams()
 
+        self.rl_cfg = self.env.env_cfg.control.RL
+
         # Vectorize adaptation module
-        self.adaptation_module = jax.vmap(self.am)
+        self.adaptation_module = jax.vmap(self.am, in_axes=(0, 0))
         self.am_kl_weight = self.env.env_cfg.control.RL.am_kl_weight
         self.am_loss_fn = self._select_am_loss_fn()
+        self.am_loss_components_fn = self._select_am_loss_components_fn()
 
         # JIT-compile the adaptation module updates
         self.jitted_batched_am_loss_and_grad = nnx.jit(
             nnx.value_and_grad(self.am_loss_fn), static_argnums=()
         )
+        self.jitted_batched_am_loss_components = nnx.jit(
+            self.am_loss_components_fn, static_argnums=()
+        )
 
-        self.rl_cfg = self.env.env_cfg.control.RL
         # Optional regression check: compare one functional step against the
         # imperative legacy transition path. This is useful while refactoring
         # but should typically stay disabled during normal training
@@ -376,7 +382,16 @@ class OnPolicyRunner(object):
             if self.env.use_adaptive_approach is True:
                 actual_wrench = self.env.get_actual_wrench()
                 desired_wrench = self.env.get_desired_wrench(a)
-                res = actual_wrench - desired_wrench
+                res = build_adaptive_context(
+                    commanded_ctrl=a,
+                    applied_ctrl=self.env.mjx_batch.ctrl,
+                    actual_wrench=actual_wrench,
+                    desired_wrench=desired_wrench,
+                    previous_context=res,
+                    use_adaptive_approach=True,
+                    adaptive_context_mode=self.env.adaptive_context_mode,
+                    thruster_mixer_T=self.env._thruster_mixer_T,
+                )
             else:
                 res = jnp.empty((self.env.num_envs, 0))
 
@@ -415,11 +430,22 @@ class OnPolicyRunner(object):
 
     def _build_adaptation_module(self):
         rngs = nnx.Rngs(params=self._take_keys(), dropout=self._take_keys())
+        predict_delta_dim = (
+            self.env.obs_dim
+            if float(self.env.env_cfg.control.RL.am_predict_delta_weight) > 0.0
+            else 0
+        )
+        predict_tracking = (
+            float(self.env.env_cfg.control.RL.am_predict_tracking_weight) > 0.0
+        )
         if self.env.am_architecture == "transformer":
             return TransformerAdaptationModule(
                 self.env.history_len,
                 self.state_action_dim,
                 self.env.ext_dim,
+                query_dim=self.env.am_query_dim,
+                predict_delta_dim=predict_delta_dim,
+                predict_tracking=predict_tracking,
                 rngs=rngs,
             )
         if self.env.am_architecture == "cnn":
@@ -427,42 +453,137 @@ class OnPolicyRunner(object):
                 self.env.history_len,
                 self.state_action_dim,
                 self.env.ext_dim,
+                query_dim=self.env.am_query_dim,
+                predict_delta_dim=predict_delta_dim,
+                predict_tracking=predict_tracking,
                 rngs=rngs,
             )
         raise ValueError(
             f"Unknown adaptation module architecture '{self.env.am_architecture}'."
         )
 
-    def _select_am_loss_fn(self):
+    def _select_am_loss_components_fn(self):
         if self.env.am_architecture == "transformer":
             kl_weight = float(self.am_kl_weight)
+            delta_weight = float(self.rl_cfg.am_predict_delta_weight)
+            tracking_weight = float(self.rl_cfg.am_predict_tracking_weight)
+            res_dim = int(self.env.res_dim)
+            query_dim = int(self.env.am_query_dim)
+            obs_dim = int(self.env.obs_dim)
 
-            def _loss(model, X: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
-                mu, log_sigma = jax.vmap(
-                    lambda hist: model(hist, return_stats=True, training=True)
-                )(X)
-                target = y[:, -1, :]
+            def _components(model, X: jnp.ndarray, y: jnp.ndarray):
+                target_all = y[:, -1, :]
+                target = target_all[:, :res_dim]
+                query = target_all[:, res_dim : res_dim + query_dim]
+                delta_target = target_all[
+                    :, res_dim + query_dim : res_dim + query_dim + obs_dim
+                ]
+                tracking_target = target_all[
+                    :, res_dim + query_dim + obs_dim : res_dim + query_dim + obs_dim + 1
+                ]
+                mu, log_sigma, delta_pred, tracking_pred = jax.vmap(
+                    lambda hist, query_i: model(
+                        hist,
+                        query_i,
+                        return_stats=True,
+                        return_predictions=True,
+                        training=True,
+                    )
+                )(X, query)
                 log_sigma = jnp.clip(log_sigma, -6.0, 2.0)
                 sigma_sq = jnp.exp(2.0 * log_sigma)
-                nll = 0.5 * jnp.sum(
-                    ((target - mu) ** 2) / sigma_sq + 2.0 * log_sigma, axis=-1
-                )
-                if kl_weight > 0.0:
-                    kl = 0.5 * jnp.sum(
-                        mu**2 + sigma_sq - 1.0 - jnp.log(sigma_sq + 1e-8), axis=-1
+                context_loss = jnp.mean(
+                    0.5
+                    * jnp.sum(
+                        ((target - mu) ** 2) / sigma_sq + 2.0 * log_sigma,
+                        axis=-1,
                     )
-                    return jnp.mean(nll + kl_weight * kl)
-                return jnp.mean(nll)
+                )
+                delta_loss = jnp.array(0.0, dtype=context_loss.dtype)
+                if delta_weight > 0.0:
+                    delta_scale = jnp.mean(jnp.square(delta_target)) + 1e-6
+                    delta_loss = (
+                        jnp.mean(jnp.square(delta_pred - delta_target)) / delta_scale
+                    )
+                tracking_loss = jnp.array(0.0, dtype=context_loss.dtype)
+                if tracking_weight > 0.0:
+                    tracking_scale = jnp.mean(jnp.square(tracking_target)) + 1e-6
+                    tracking_loss = jnp.mean(
+                        jnp.square(tracking_pred - tracking_target)
+                    ) / tracking_scale
+                kl_loss = jnp.array(0.0, dtype=context_loss.dtype)
+                if kl_weight > 0.0:
+                    kl_loss = jnp.mean(
+                        0.5
+                        * jnp.sum(
+                            mu**2 + sigma_sq - 1.0 - jnp.log(sigma_sq + 1e-8),
+                            axis=-1,
+                        )
+                    )
+                total = (
+                    context_loss
+                    + delta_weight * delta_loss
+                    + tracking_weight * tracking_loss
+                    + kl_weight * kl_loss
+                )
+                return context_loss, delta_loss, tracking_loss, kl_loss, total
 
-            return _loss
+            return _components
 
-        def _mse_loss(model, X: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
-            preds = jax.vmap(model)(X)
-            target = y[:, -1, :]
-            mse = jnp.square(preds - target)
-            return jnp.mean(jnp.sum(mse, axis=-1))
+        delta_weight = float(self.rl_cfg.am_predict_delta_weight)
+        tracking_weight = float(self.rl_cfg.am_predict_tracking_weight)
+        res_dim = int(self.env.res_dim)
+        query_dim = int(self.env.am_query_dim)
+        obs_dim = int(self.env.obs_dim)
 
-        return _mse_loss
+        def _mse_components(model, X: jnp.ndarray, y: jnp.ndarray):
+            target_all = y[:, -1, :]
+            target = target_all[:, :res_dim]
+            query = target_all[:, res_dim : res_dim + query_dim]
+            delta_target = target_all[
+                :, res_dim + query_dim : res_dim + query_dim + obs_dim
+            ]
+            tracking_target = target_all[
+                :, res_dim + query_dim + obs_dim : res_dim + query_dim + obs_dim + 1
+            ]
+            preds, delta_pred, tracking_pred = jax.vmap(
+                lambda hist, query_i: model(
+                    hist,
+                    query_i,
+                    return_predictions=True,
+                )
+            )(X, query)
+            context_loss = jnp.mean(jnp.sum(jnp.square(preds - target), axis=-1))
+            delta_loss = jnp.array(0.0, dtype=context_loss.dtype)
+            if delta_weight > 0.0:
+                delta_scale = jnp.mean(jnp.square(delta_target)) + 1e-6
+                delta_loss = (
+                    jnp.mean(jnp.square(delta_pred - delta_target)) / delta_scale
+                )
+            tracking_loss = jnp.array(0.0, dtype=context_loss.dtype)
+            if tracking_weight > 0.0:
+                tracking_scale = jnp.mean(jnp.square(tracking_target)) + 1e-6
+                tracking_loss = (
+                    jnp.mean(jnp.square(tracking_pred - tracking_target))
+                    / tracking_scale
+                )
+            kl_loss = jnp.array(0.0, dtype=context_loss.dtype)
+            total = (
+                context_loss
+                + delta_weight * delta_loss
+                + tracking_weight * tracking_loss
+            )
+            return context_loss, delta_loss, tracking_loss, kl_loss, total
+
+        return _mse_components
+
+    def _select_am_loss_fn(self):
+        components_fn = self._select_am_loss_components_fn()
+
+        def _loss(model, X: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
+            return components_fn(model, X, y)[-1]
+
+        return _loss
 
     def _build_sliding_windows(
         self,
@@ -544,7 +665,12 @@ class OnPolicyRunner(object):
             and actual_wrench is not None
             and ext is not None
         ):
-            extrinsic_error = calc_extrinsic_error(ext, actual_wrench)
+            estimated_wrench = ext[:, :6]
+            if estimated_wrench.shape == actual_wrench.shape:
+                estimated_wrench = estimated_wrench + self.env.get_desired_wrench(
+                    jnp.zeros((ext.shape[0], self.env.act_dim), dtype=ext.dtype)
+                )
+            extrinsic_error = calc_extrinsic_error(estimated_wrench, actual_wrench)
             if mask is not None:
                 mask_f = jnp.asarray(mask, dtype=extrinsic_error.dtype)
                 denom = jnp.maximum(mask_f.sum(), 1.0)
@@ -582,17 +708,29 @@ class OnPolicyRunner(object):
 
         # Build filename components
         adaptive = "adaptive" if self.env.use_adaptive_approach else None
+        context_mode = (
+            self.env.adaptive_context_mode
+            if self.env.use_adaptive_approach
+            else None
+        )
         pretrained = "pretrained" if self.env.use_pretrained else None
         nominal = None if self.env.train_with_failures else "nominal"
 
         def build_name(prefix: str) -> str:
-            parts = [prefix, adaptive, pretrained, nominal]
+            parts = [prefix, adaptive, context_mode, pretrained, nominal]
+            predictive_am = (
+                self.env.use_task_conditioned_am
+                or float(self.env.env_cfg.control.RL.am_predict_delta_weight) > 0.0
+                or float(self.env.env_cfg.control.RL.am_predict_tracking_weight) > 0.0
+            )
+            if prefix.startswith("adapt_module") and predictive_am:
+                parts.append("taskpred")
             return "_".join(p for p in parts if p) + ".pkl"
 
         # Pretraining filenames
         if adaptive:
-            self.pretraining_data_file_name = "pretraining_data_adaptive.pkl"
-            self.pretraining_state_file_name = "pretraining_state_adaptive.pkl"
+            self.pretraining_data_file_name = build_name("pretraining_data")
+            self.pretraining_state_file_name = build_name("pretraining_state")
         else:
             self.pretraining_data_file_name = "pretraining_data.pkl"
             self.pretraining_state_file_name = "pretraining_state.pkl"
@@ -600,6 +738,6 @@ class OnPolicyRunner(object):
         # Training filenames
         self.training_data_file_name = build_name("training_data")
         self.training_state_file_name = build_name("training_state")
-        self.adaptation_module_file_name = (
-            f"adapt_module_state_{self.env.am_architecture}.pkl"
+        self.adaptation_module_file_name = build_name(
+            f"adapt_module_state_{self.env.am_architecture}"
         )

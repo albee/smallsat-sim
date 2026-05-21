@@ -68,8 +68,22 @@ class EnvConfig(BaseEnvConfig):
             # Use adaptive approach? If False, the state is not being augmented
             use_adaptive_approach = True
 
+            # Adaptive context mode:
+            # "residual" keeps the original 6D wrench residual.
+            # "residual_effectiveness" appends per-thruster effectiveness.
+            # "residual_controllability" appends compact authority metrics.
+            # "structured" appends both effectiveness and controllability metrics.
+            adaptive_context_mode = "structured"
+
             # Adaptation module architecture ("cnn" or "transformer")
             am_architecture = "transformer"
+
+            # Optional task-conditioned predictive adaptation module. Keep this
+            # disabled for legacy RMA baselines and enable it in dedicated
+            # predictive-latent experiments.
+            use_task_conditioned_am = False
+            am_predict_delta_weight = 0.0
+            am_predict_tracking_weight = 0.0
 
             # Hyperparams for the learning loop
             class VPG:
@@ -92,10 +106,10 @@ class EnvConfig(BaseEnvConfig):
                 actor_lr = 3e-4  # Between 2 and 4e-4
                 critic_lr = 5e-4  # >= actor_lr
                 entropy_coef = 1e-4
-                actor_training_epochs = 3
-                critic_training_epochs = 3
+                actor_training_epochs = 2
+                critic_training_epochs = 2
                 actor_critic_training_epochs = 1
-                num_minibatches = 32
+                num_minibatches = 16
                 clip_ratio = 0.2
                 target_kl = 0.005
                 use_value_clip = True
@@ -110,7 +124,14 @@ class EnvConfig(BaseEnvConfig):
             curriculum_disturbance_fraction = 0.1
             curriculum_critic_warmup_epochs = 15
             curriculum_critic_warmup_scale = 1.0 / 3.0
-            curriculum_eval_interval = 5
+            curriculum_eval_interval = 20
+            curriculum_failure_start_time_min = 0.0
+            curriculum_failure_start_time_max = 25.0
+            curriculum_disturbance_start_time_min = 0.0
+            curriculum_disturbance_start_time_max = 25.0
+            authority_logging_interval = 10
+            authority_logging_max_samples = 0
+            training_checkpoint_interval = 10
 
             # Mission tolerances (tuned to current training scenario - do not change)
             sigma_pos = 1.6
@@ -149,11 +170,12 @@ class EnvConfig(BaseEnvConfig):
             context_window_len = 50
 
             # Hyperparams for the adaptation module training (NOTE: have not been tuned yet + CNN/transformer may require different sets)
-            am_epochs = 100
+            am_epochs = 10
             am_lr = 3e-4
             am_weight_decay = 0.05
             am_grad_clip_norm = 1.0
             am_kl_weight = 0.01
+            am_checkpoint_interval = 10
 
             # Hyperparams for the evaluation loop
             episode_len = 512

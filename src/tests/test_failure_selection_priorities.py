@@ -24,32 +24,36 @@ class _PerturbationRecorder:
         self.failure_value = int(failure_value)
         self.thruster_idx = int(thruster_idx)
         self.calls: list[jnp.ndarray] = []
+        self.start_times: list[float | None] = []
 
-    def _record(self, envs: jnp.ndarray) -> None:
+    def _record(self, envs: jnp.ndarray, start_time: float | None) -> None:
         envs = jnp.asarray(envs, dtype=jnp.int32)
         self.calls.append(envs)
+        self.start_times.append(start_time)
         if envs.size > 0:
             Perturbation.thruster_mask = Perturbation.thruster_mask.at[
                 envs, self.thruster_idx
             ].set(self.failure_value)
 
-    def stuck_off_thruster(self, _key, envs):
-        self._record(envs)
+    def stuck_off_thruster(self, _key, envs, start_time=None):
+        self._record(envs, start_time)
 
-    def stuck_on_thruster(self, _key, envs):
-        self._record(envs)
+    def stuck_on_thruster(self, _key, envs, start_time=None):
+        self._record(envs, start_time)
 
-    def register_perturbation(self, _key, envs):
-        self._record(envs)
+    def register_perturbation(self, _key, envs, start_time=None):
+        self._record(envs, start_time)
 
 
 class _DisturbanceRecorder:
     def __init__(self) -> None:
         self.failure_type = DisturbanceStatus.CONSTANT_FORCE
         self.calls: list[jnp.ndarray] = []
+        self.start_times: list[float] = []
 
-    def const_force_disturbance(self, envs):
+    def const_force_disturbance(self, envs, start_time=0.0):
         self.calls.append(jnp.asarray(envs, dtype=jnp.int32))
+        self.start_times.append(float(start_time))
 
 
 def _make_minimal_vec_env(num_envs: int, num_thrusters: int) -> VecEnv:
@@ -178,3 +182,36 @@ def test_random_perturbations_apply_at_most_one_perturbation_per_env() -> None:
     failed_envs = jnp.where(failed_counts > 0)[0]
     assert failed_envs.shape[0] == 10
     assert int(failed_counts.max()) <= 1
+
+
+def test_random_failures_forward_start_times() -> None:
+    env = _make_minimal_vec_env(num_envs=10, num_thrusters=2)
+    recorders = [
+        _PerturbationRecorder(PerturbationStatus.STUCK_OFF.value),
+        _PerturbationRecorder(PerturbationStatus.STUCK_ON.value),
+        _PerturbationRecorder(PerturbationStatus.FAULTY_VALVE.value),
+        _PerturbationRecorder(PerturbationStatus.SATURATED_THRUST.value),
+        _PerturbationRecorder(PerturbationStatus.THRUST_INSTABILITY.value),
+    ]
+    env.perturbations = type("P", (), {"perturbations": recorders})()
+
+    VecEnv.apply_random_perturbations(
+        env,
+        key=jax.random.PRNGKey(88),
+        fraction_perturbed_envs=0.4,
+        perturbation_distribution=jnp.array([1.0, 0.0, 0.0, 0.0, 0.0]),
+        start_time=12.5,
+    )
+
+    assert recorders[0].start_times[-1] == 12.5
+
+    disturbance_recorder = _DisturbanceRecorder()
+    env.disturbances = type("D", (), {"disturbances": [disturbance_recorder]})()
+    VecEnv.apply_random_disturbance(
+        env,
+        key=jax.random.PRNGKey(89),
+        fraction_disturbed_envs=0.2,
+        start_time=7.25,
+    )
+
+    assert disturbance_recorder.start_times[-1] == 7.25

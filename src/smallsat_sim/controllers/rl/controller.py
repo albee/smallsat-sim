@@ -13,6 +13,10 @@ from smallsat_sim.controllers.rl.modules.am_cnn import CNNAdaptationModule
 from smallsat_sim.controllers.rl.modules.am_transformer import (
     TransformerAdaptationModule,
 )
+from smallsat_sim.controllers.rl.runners.adaptive_context import (
+    build_adaptation_query,
+    build_adaptive_context,
+)
 from smallsat_sim.controllers.rl.runners.runner_utils import load_trained_modules
 
 _JITTED_VECENV_STEP = jax.jit(vecenv_step, static_argnames=("config",))
@@ -66,6 +70,7 @@ class RLController(object):
         phase: int = 2,
         test_pd: bool = False,
         perturbation_distribution: jnp.ndarray | None = None,
+        perturbation_distributions: tuple[jnp.ndarray, ...] | None = None,
         apply_disturbances: bool = False,
     ) -> None:
         """
@@ -101,7 +106,7 @@ class RLController(object):
                 raise Exception("Not all necessary modules have been trained yet.")
 
         # Vectorize adaptation module
-        self.adaptation_module = jax.vmap(self.am)
+        self.adaptation_module = jax.vmap(self.am, in_axes=(0, 0))
 
         self.env.reset()
         self.env.reset_perturbations()
@@ -146,16 +151,19 @@ class RLController(object):
                 and self.deployment_len >= 100
                 and step == 100
             ):
-                if perturbation_distribution is not None:
-                    self.env.apply_random_perturbations(
-                        key=self._take_keys(),
-                        fraction_perturbed_envs=1.0,
-                        perturbation_distribution=perturbation_distribution,
-                    )
-                elif apply_disturbances:
+                active_distributions = perturbation_distributions
+                if active_distributions is None and perturbation_distribution is not None:
+                    active_distributions = (perturbation_distribution,)
+                if active_distributions is not None:
+                    for distribution in active_distributions:
+                        self.env.apply_random_perturbations(
+                            key=self._take_keys(),
+                            fraction_perturbed_envs=1.0,
+                            perturbation_distribution=distribution,
+                        )
+                if apply_disturbances:
                     self.env.apply_random_disturbance(
-                        key=self._take_keys(),
-                        fraction_disturbed_envs=1.0,
+                        key=self._take_keys(), fraction_disturbed_envs=1.0
                     )
                 self.env._refresh_effect_states()
                 if use_functional:
@@ -235,12 +243,26 @@ class RLController(object):
             if self.env.use_adaptive_approach:
                 history_full = history_counts >= history_len
                 if phase == 1:
-                    ext = actual_wrench
-                    res = ext - desired_wrench
+                    ext = build_adaptive_context(
+                        commanded_ctrl=step_output.commanded_ctrl,
+                        applied_ctrl=step_output.applied_ctrl,
+                        actual_wrench=actual_wrench,
+                        desired_wrench=desired_wrench,
+                        previous_context=res,
+                        use_adaptive_approach=True,
+                        adaptive_context_mode=self.env.adaptive_context_mode,
+                        thruster_mixer_T=self.env._thruster_mixer_T,
+                    )
+                    res = ext
                 elif phase == 2:
-                    ext_pred = self.adaptation_module(state_action_history)
+                    query = build_adaptation_query(
+                        states=step_output.prev_states,
+                        desired_wrench=desired_wrench,
+                        use_task_conditioned_am=self.env.use_task_conditioned_am,
+                    )
+                    ext_pred = self.adaptation_module(state_action_history, query)
                     ext = jnp.where(history_full[:, None], ext_pred, ext)
-                    res = jnp.where(history_full[:, None], ext - desired_wrench, res)
+                    res = jnp.where(history_full[:, None], ext, res)
                 else:
                     raise Exception("There only exist two training phases.")
             else:
@@ -279,11 +301,22 @@ class RLController(object):
         Build the right adaptation module.
         """
         rngs = nnx.Rngs(params=self._take_keys(), dropout=self._take_keys())
+        predict_delta_dim = (
+            self.env.obs_dim
+            if float(self.env.env_cfg.control.RL.am_predict_delta_weight) > 0.0
+            else 0
+        )
+        predict_tracking = (
+            float(self.env.env_cfg.control.RL.am_predict_tracking_weight) > 0.0
+        )
         if self.env.am_architecture == "transformer":
             return TransformerAdaptationModule(
                 self.env.history_len,
                 self.state_action_dim,
                 self.env.ext_dim,
+                query_dim=self.env.am_query_dim,
+                predict_delta_dim=predict_delta_dim,
+                predict_tracking=predict_tracking,
                 rngs=rngs,
             )
         if self.env.am_architecture == "cnn":
@@ -291,6 +324,9 @@ class RLController(object):
                 self.env.history_len,
                 self.state_action_dim,
                 self.env.ext_dim,
+                query_dim=self.env.am_query_dim,
+                predict_delta_dim=predict_delta_dim,
+                predict_tracking=predict_tracking,
                 rngs=rngs,
             )
         raise ValueError(
@@ -301,7 +337,22 @@ class RLController(object):
         """
         Get the adaptation module checkpoint.
         """
-        return f"adapt_module_state_{self.env.am_architecture}.pkl"
+        parts = [f"adapt_module_state_{self.env.am_architecture}"]
+        if self.env.use_adaptive_approach:
+            parts.append("adaptive")
+            parts.append(self.env.adaptive_context_mode)
+        predictive_am = (
+            self.env.use_task_conditioned_am
+            or float(self.env.env_cfg.control.RL.am_predict_delta_weight) > 0.0
+            or float(self.env.env_cfg.control.RL.am_predict_tracking_weight) > 0.0
+        )
+        if predictive_am:
+            parts.append("taskpred")
+        if self.env.use_pretrained:
+            parts.append("pretrained")
+        if not self.env.train_with_failures:
+            parts.append("nominal")
+        return "_".join(parts) + ".pkl"
 
     def _get_training_state_file_name(self) -> None:
         """
@@ -311,6 +362,7 @@ class RLController(object):
 
         if self.env.use_adaptive_approach:
             parts.append("adaptive")
+            parts.append(self.env.adaptive_context_mode)
         if self.env.use_pretrained:
             parts.append("pretrained")
         if not self.env.train_with_failures:

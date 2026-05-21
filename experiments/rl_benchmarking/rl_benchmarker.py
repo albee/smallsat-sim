@@ -20,7 +20,6 @@ from smallsat_sim.envs.disturbances import DisturbanceList, ConstantForceDisturb
 from smallsat_sim.planners.oracle.oracle_rl import OraclePlannerRL
 from smallsat_sim.planners.oracle.oracle import OraclePlanner
 from smallsat_sim.controllers.rl.controller import RLController
-from smallsat_sim.controllers.nominal_mpc.controller import NominalMPCController
 from smallsat_sim.controllers.lqr.controller import LQRController
 from smallsat_sim.envs.astrobee_rl.cfg import config as rl_config
 
@@ -48,6 +47,10 @@ class Benchmarker(object):
         use_pretrained: bool,
         use_adaptive_approach: bool,
         am_architecture: str | None = None,
+        adaptive_context_mode: str | None = None,
+        use_task_conditioned_am: bool | None = None,
+        am_predict_delta_weight: float | None = None,
+        am_predict_tracking_weight: float | None = None,
         phase: int = 2,
         pretrain_only: bool = False,
     ) -> None:
@@ -62,6 +65,10 @@ class Benchmarker(object):
             use_pretrained=use_pretrained,
             use_adaptive_approach=use_adaptive_approach,
             am_architecture=am_architecture,
+            adaptive_context_mode=adaptive_context_mode,
+            use_task_conditioned_am=use_task_conditioned_am,
+            am_predict_delta_weight=am_predict_delta_weight,
+            am_predict_tracking_weight=am_predict_tracking_weight,
         )
 
         # Create planner
@@ -98,6 +105,10 @@ class Benchmarker(object):
         use_pretrained: bool,
         use_adaptive_approach: bool,
         am_architecture: str | None = None,
+        adaptive_context_mode: str | None = None,
+        use_task_conditioned_am: bool | None = None,
+        am_predict_delta_weight: float | None = None,
+        am_predict_tracking_weight: float | None = None,
         phase: int = 2,
         ckpt_name: str | None = None,
         test_pd: bool = False,
@@ -132,6 +143,10 @@ class Benchmarker(object):
             use_pretrained=use_pretrained,
             use_adaptive_approach=use_adaptive_approach,
             am_architecture=am_architecture,
+            adaptive_context_mode=adaptive_context_mode,
+            use_task_conditioned_am=use_task_conditioned_am,
+            am_predict_delta_weight=am_predict_delta_weight,
+            am_predict_tracking_weight=am_predict_tracking_weight,
         )
 
         # Create planner
@@ -201,6 +216,52 @@ class Benchmarker(object):
             apply_disturbances=True,
         )
         _save_video("constant_force_disturbances_deployment")
+
+        stuck_off_dist = jnp.array([1.0, 0.0, 0.0, 0.0, 0.0])
+        stuck_on_dist = jnp.array([0.0, 1.0, 0.0, 0.0, 0.0])
+
+        # Stress tests: compound/severity-shift failures not used as core training changes.
+        ctrl.control(
+            stage="two_stuck_off_deployment",
+            phase=phase,
+            test_pd=test_pd,
+            perturbation_distributions=(stuck_off_dist, stuck_off_dist),
+        )
+        _save_video("two_stuck_off_deployment")
+
+        ctrl.control(
+            stage="two_stuck_on_deployment",
+            phase=phase,
+            test_pd=test_pd,
+            perturbation_distributions=(stuck_on_dist, stuck_on_dist),
+        )
+        _save_video("two_stuck_on_deployment")
+
+        ctrl.control(
+            stage="stuck_off_plus_disturbance_deployment",
+            phase=phase,
+            test_pd=test_pd,
+            perturbation_distribution=stuck_off_dist,
+            apply_disturbances=True,
+        )
+        _save_video("stuck_off_plus_disturbance_deployment")
+
+        ctrl.control(
+            stage="stuck_on_plus_disturbance_deployment",
+            phase=phase,
+            test_pd=test_pd,
+            perturbation_distribution=stuck_on_dist,
+            apply_disturbances=True,
+        )
+        _save_video("stuck_on_plus_disturbance_deployment")
+
+        ctrl.control(
+            stage="mixed_stuck_off_stuck_on_deployment",
+            phase=phase,
+            test_pd=test_pd,
+            perturbation_distributions=(stuck_off_dist, stuck_on_dist),
+        )
+        _save_video("mixed_stuck_off_stuck_on_deployment")
 
         # Save log if logging is enabled
         if self.args.log:
@@ -311,6 +372,10 @@ class Benchmarker(object):
 
         # Create controller
         if controller_type == "nominal_mpc":
+            from smallsat_sim.controllers.nominal_mpc.controller import (
+                NominalMPCController,
+            )
+
             ctrl = NominalMPCController(env, planner)
         else:
             # Benchmark override: use MPC-style costs so LQR actually tracks in nominal runs.

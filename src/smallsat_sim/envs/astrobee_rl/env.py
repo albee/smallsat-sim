@@ -24,6 +24,10 @@ class AstrobeeEnvVectorized(VecEnv):
         use_pretrained: bool | None = None,
         use_adaptive_approach: bool | None = None,
         am_architecture: str | None = None,
+        adaptive_context_mode: str | None = None,
+        use_task_conditioned_am: bool | None = None,
+        am_predict_delta_weight: float | None = None,
+        am_predict_tracking_weight: float | None = None,
     ) -> None:
         # Run name for logging
         self.run_name = run_name
@@ -44,6 +48,16 @@ class AstrobeeEnvVectorized(VecEnv):
             self.env_cfg.control.RL.use_adaptive_approach = use_adaptive_approach
         if am_architecture is not None:
             self.env_cfg.control.RL.am_architecture = am_architecture
+        if adaptive_context_mode is not None:
+            self.env_cfg.control.RL.adaptive_context_mode = adaptive_context_mode
+        if use_task_conditioned_am is not None:
+            self.env_cfg.control.RL.use_task_conditioned_am = use_task_conditioned_am
+        if am_predict_delta_weight is not None:
+            self.env_cfg.control.RL.am_predict_delta_weight = am_predict_delta_weight
+        if am_predict_tracking_weight is not None:
+            self.env_cfg.control.RL.am_predict_tracking_weight = (
+                am_predict_tracking_weight
+            )
         super().__init__(args=args)
 
         # Instantiate perturbations

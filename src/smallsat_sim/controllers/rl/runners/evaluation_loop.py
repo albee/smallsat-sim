@@ -13,6 +13,13 @@ from smallsat_sim.controllers.rl.runners.rollout import (
     run_functional_rollout,
     update_history_buffer,
 )
+from smallsat_sim.controllers.rl.runners.adaptive_context import (
+    authority_bin_stats,
+    authority_metrics_from_wrench,
+    build_adaptation_query,
+    build_adaptive_context,
+    summarize_authority_metrics,
+)
 from smallsat_sim.controllers.rl.runners.runner_utils import load_trained_modules
 from smallsat_sim.utils.helpers_jax import (
     calc_attitude_error,
@@ -65,6 +72,33 @@ def evaluate_runner(runner: Any, phase: int = 2) -> None:
     history_len = runner.env.history_len
     state_action_dim = runner.state_action_dim
     returns = jnp.zeros((num_envs, runner.n_evals), dtype=jnp.float32)
+    cfg = runner.env.env_cfg.control.RL
+    failure_start_time_min = float(
+        getattr(cfg, "curriculum_failure_start_time_min", 0.0)
+    )
+    failure_start_time_max = float(
+        getattr(cfg, "curriculum_failure_start_time_max", 0.0)
+    )
+    disturbance_start_time_min = float(
+        getattr(cfg, "curriculum_disturbance_start_time_min", 0.0)
+    )
+    disturbance_start_time_max = float(
+        getattr(cfg, "curriculum_disturbance_start_time_max", 0.0)
+    )
+    authority_logging_max_samples = int(
+        getattr(cfg, "authority_logging_max_samples", 8192)
+    )
+    authority_logging_max_samples = max(0, authority_logging_max_samples)
+
+    def _sample_start_time(key, low: float, high: float) -> float:
+        if high <= low:
+            return low
+        return float(jax.random.uniform(key, (), minval=low, maxval=high))
+
+    def _sample_flat_indices(total: int, max_samples: int) -> jnp.ndarray:
+        if total <= max_samples:
+            return jnp.arange(total, dtype=jnp.int32)
+        return jnp.linspace(0, total - 1, max_samples, dtype=jnp.int32)
 
     for eval_idx in range(runner.n_evals):
         print(f"Testing policy: episode {eval_idx + 1}/{runner.n_evals}")
@@ -75,14 +109,32 @@ def evaluate_runner(runner: Any, phase: int = 2) -> None:
 
         if runner.env.train_with_failures and eval_idx >= runner.n_evals // 2:
             eval_key = subkeys_eval[eval_idx]
+            (
+                perturb_key,
+                disturb_key,
+                failure_onset_key,
+                disturbance_onset_key,
+            ) = jax.random.split(eval_key, 4)
+            failure_start_time = _sample_start_time(
+                failure_onset_key,
+                failure_start_time_min,
+                failure_start_time_max,
+            )
+            disturbance_start_time = _sample_start_time(
+                disturbance_onset_key,
+                disturbance_start_time_min,
+                disturbance_start_time_max,
+            )
             runner.env.apply_random_perturbations(
-                key=eval_key,
+                key=perturb_key,
                 fraction_perturbed_envs=0.4,
                 perturbation_distribution=jnp.array([0.2, 0.2, 0.2, 0.2, 0.2]),
+                start_time=failure_start_time,
             )
             runner.env.apply_random_disturbance(
-                key=eval_key,
+                key=disturb_key,
                 fraction_disturbed_envs=0.1,
+                start_time=disturbance_start_time,
             )
 
         step_config = runner.env.build_step_config(
@@ -122,12 +174,29 @@ def evaluate_runner(runner: Any, phase: int = 2) -> None:
             )
 
             if runner.env.use_adaptive_approach:
-                desired = step_output.desired_wrench
                 if phase == 1:
-                    extrinsic = step_output.actual_wrench
+                    residuals_next = build_adaptive_context(
+                        commanded_ctrl=step_output.commanded_ctrl,
+                        applied_ctrl=step_output.applied_ctrl,
+                        actual_wrench=step_output.actual_wrench,
+                        desired_wrench=step_output.desired_wrench,
+                        previous_context=residuals,
+                        use_adaptive_approach=True,
+                        adaptive_context_mode=runner.env.adaptive_context_mode,
+                        thruster_mixer_T=runner.env._thruster_mixer_T,
+                    )
                 else:
-                    extrinsic = runner.adaptation_module(history)
-                residuals_next = extrinsic - desired
+                    query = build_adaptation_query(
+                        states=step_output.prev_states,
+                        desired_wrench=step_output.desired_wrench,
+                        use_task_conditioned_am=runner.env.use_task_conditioned_am,
+                    )
+                    context_pred = runner.adaptation_module(history, query)
+                    residuals_next = jnp.where(
+                        history_full[:, None],
+                        context_pred,
+                        residuals,
+                    )
             else:
                 residuals_next = jnp.zeros(
                     (num_envs, 0), dtype=step_output.actual_wrench.dtype
@@ -210,7 +279,7 @@ def evaluate_runner(runner: Any, phase: int = 2) -> None:
             if phase == 1:
                 extr_seq = actual_seq
             else:
-                extr_seq = residuals_traj + step_outputs.desired_wrench
+                extr_seq = residuals_traj[..., :6] + step_outputs.desired_wrench
             extrinsic_seq = calc_extrinsic_error(extr_seq, actual_seq)
             mean_extrinsic_error = float((extrinsic_seq * mask_f).sum() / denom)
         else:
@@ -283,6 +352,31 @@ def evaluate_runner(runner: Any, phase: int = 2) -> None:
         ref_pos = jnp.atleast_2d(runner.reference_point)[:, :3]
         final_pos_error = float(jnp.linalg.norm(final_positions - ref_pos, axis=1).mean())
 
+        authority_payload = {}
+        if runner.agent.has_logger and authority_logging_max_samples > 0:
+            flat_count = runner.episode_len * num_envs
+            sample_idx = _sample_flat_indices(
+                flat_count, authority_logging_max_samples
+            )
+            authority_metrics = authority_metrics_from_wrench(
+                commanded_ctrl=step_outputs.commanded_ctrl.reshape(
+                    -1, runner.env.act_dim
+                )[sample_idx],
+                applied_ctrl=step_outputs.applied_ctrl.reshape(-1, runner.env.act_dim)[
+                    sample_idx
+                ],
+                desired_wrench=step_outputs.desired_wrench.reshape(-1, 6)[sample_idx],
+                thruster_mixer_T=runner.env._thruster_mixer_T,
+            )
+            sampled_envs = sample_idx % num_envs
+            authority_payload = summarize_authority_metrics(authority_metrics)
+            authority_payload.update(
+                authority_bin_stats(
+                    authority_metrics["normalized_wrench_feasibility_error"],
+                    terminals_any_eval[sampled_envs],
+                )
+            )
+
         if runner.agent.has_logger:
             runner.env.logger.log(
                 runner.env.run_id,
@@ -305,6 +399,7 @@ def evaluate_runner(runner: Any, phase: int = 2) -> None:
                 mean_angle_error=angle_mean,
                 mean_extrinsic_error=mean_extrinsic_error,
                 mean_final_position_error=final_pos_error,
+                **authority_payload,
             )
 
     print(
