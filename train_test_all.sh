@@ -1,13 +1,7 @@
 #!/bin/bash
 
-# Practical tuning suite:
-# 1. ppo_plain checks the non-adaptive failure-trained baseline.
-# 2. sim_residual checks the privileged residual upper bound.
-# 3. transformer_residual vs transformer_structured checks supervised target design.
-# 4. transformer_task_predictive adds the scoped new method: state/task query
-#    conditioning plus one-step predictive auxiliary losses.
-#
 core_scripts=(
+  "experiments/rl_benchmarking/ppo_nominal.py"
   "experiments/rl_benchmarking/ppo_plain.py"
   "experiments/rl_benchmarking/ppo_adaptive_sim_residual.py"
   "experiments/rl_benchmarking/ppo_adaptive_transformer_residual.py"
