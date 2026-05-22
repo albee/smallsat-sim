@@ -38,7 +38,10 @@ from smallsat_sim.controllers.rl.runners.runner_utils import (
 from smallsat_sim.controllers.rl.storage.replay_buffer import ReplayBuffer
 from smallsat_sim.envs.vec_env import (
     _compute_state_features,
+    _compute_freeflyer_state_features,
+    freeflyer_reset_masked,
     vecenv_step_training,
+    vecenv_step_training_freeflyer,
     vecenv_step_training_no_physics,
     vecenv_step_training_physics_only,
 )
@@ -370,7 +373,20 @@ def learn_runner(self) -> None:
                 max_episode_len=self.max_ep_len,
                 effects_enabled=phase_uses_effects,
             )
-            initial_state = self.env.state_struct
+            rollout_backend = os.environ.get(
+                "SMALLSAT_ROLLOUT_BACKEND",
+                getattr(self.env.env_cfg.control.RL, "rollout_backend", "mjx"),
+            )
+            if rollout_backend == "freeflyer":
+                initial_state = self.env.freeflyer_state_struct()
+                rollout_step_fn = vecenv_step_training_freeflyer
+                rollout_reset_fn = freeflyer_reset_masked
+                rollout_state_features_fn = _compute_freeflyer_state_features
+            else:
+                initial_state = self.env.state_struct
+                rollout_step_fn = vecenv_step_training
+                rollout_reset_fn = None
+                rollout_state_features_fn = _compute_state_features
             actor_state, critic_state = self.agent.actor_critic_state()
 
             # Residuals are the adaptation signal; keep shape consistent even when disabled
@@ -424,9 +440,14 @@ def learn_runner(self) -> None:
             ):
                 rng_key, value_key = jax.random.split(rng_key)
                 # Bootstrap with the critic on the next observation
-                next_states = _compute_state_features(
-                    env_state.mjx_batch, self.reference_point
-                )
+                if rollout_backend == "freeflyer":
+                    next_states = _compute_freeflyer_state_features(
+                        env_state, self.reference_point
+                    )
+                else:
+                    next_states = _compute_state_features(
+                        env_state.mjx_batch, self.reference_point
+                    )
                 policy_input, carry_extra = _prepare_policy_input(
                     step_idx, next_states, residuals, carry_extra
                 )
@@ -454,29 +475,44 @@ def learn_runner(self) -> None:
                 return residuals, None, carry_extra
 
             def _profile_rollout_case(name, step_fn, sample_policy, post_step):
-                case_start = time.perf_counter()
-                result = run_functional_rollout(
-                    step_config=step_config,
-                    initial_state=initial_state,
-                    initial_residuals=residual_init,
-                    rng=self.agent.key,
-                    num_steps=profile_rollout_steps,
-                    reference_waypoint=self.reference_point,
-                    step_fn=step_fn,
-                    callbacks=FunctionalRolloutCallbacks(
-                        prepare_policy_input=_prepare_policy_input,
-                        sample_policy=sample_policy,
-                        post_step=post_step,
-                        bootstrap_value=make_zero_bootstrap_value(self.env.num_envs),
-                    ),
+                callbacks = FunctionalRolloutCallbacks(
+                    prepare_policy_input=_prepare_policy_input,
+                    sample_policy=sample_policy,
+                    post_step=post_step,
+                    bootstrap_value=make_zero_bootstrap_value(self.env.num_envs),
                 )
-                jax.block_until_ready(result.final_state.mjx_batch.qpos)
-                jax.block_until_ready(result.step_outputs.rewards)
-                jax.block_until_ready(result.actions)
-                duration = time.perf_counter() - case_start
+
+                def _run_once(rng_key):
+                    result = run_functional_rollout(
+                        step_config=step_config,
+                        initial_state=initial_state,
+                        initial_residuals=residual_init,
+                        rng=rng_key,
+                        num_steps=profile_rollout_steps,
+                        reference_waypoint=self.reference_point,
+                        step_fn=step_fn,
+                        reset_fn=rollout_reset_fn,
+                        state_features_fn=rollout_state_features_fn,
+                        callbacks=callbacks,
+                    )
+                    if hasattr(result.final_state, "mjx_batch"):
+                        jax.block_until_ready(result.final_state.mjx_batch.qpos)
+                    else:
+                        jax.block_until_ready(result.final_state.qpos)
+                    jax.block_until_ready(result.step_outputs.rewards)
+                    jax.block_until_ready(result.actions)
+
+                compile_start = time.perf_counter()
+                _run_once(self.agent.key)
+                compile_duration = time.perf_counter() - compile_start
+
+                timed_start = time.perf_counter()
+                _run_once(self.agent.key)
+                duration = time.perf_counter() - timed_start
                 print(
-                    f"[Rollout Profile] {name}: {duration:.2f}s "
-                    f"({profile_rollout_steps} steps, {self.env.num_envs} envs)"
+                    f"[Rollout Profile] {name}: warm {duration:.2f}s "
+                    f"(compile+first {compile_duration:.2f}s, "
+                    f"{profile_rollout_steps} steps, {self.env.num_envs} envs)"
                 )
 
             if (
@@ -490,28 +526,29 @@ def learn_runner(self) -> None:
                 )
                 _profile_rollout_case(
                     "scan_full",
-                    vecenv_step_training,
+                    rollout_step_fn,
                     _sample_policy,
                     _post_step,
                 )
-                _profile_rollout_case(
-                    "scan_no_policy",
-                    vecenv_step_training,
-                    _profile_zero_policy,
-                    _profile_keep_residuals,
-                )
-                _profile_rollout_case(
-                    "scan_no_physics",
-                    vecenv_step_training_no_physics,
-                    _sample_policy,
-                    _profile_keep_residuals,
-                )
-                _profile_rollout_case(
-                    "scan_physics_only",
-                    vecenv_step_training_physics_only,
-                    _profile_zero_policy,
-                    _profile_keep_residuals,
-                )
+                if rollout_backend == "mjx":
+                    _profile_rollout_case(
+                        "scan_no_policy",
+                        vecenv_step_training,
+                        _profile_zero_policy,
+                        _profile_keep_residuals,
+                    )
+                    _profile_rollout_case(
+                        "scan_no_physics",
+                        vecenv_step_training_no_physics,
+                        _sample_policy,
+                        _profile_keep_residuals,
+                    )
+                    _profile_rollout_case(
+                        "scan_physics_only",
+                        vecenv_step_training_physics_only,
+                        _profile_zero_policy,
+                        _profile_keep_residuals,
+                    )
                 profile_rollout_done = True
 
             # Run a full epoch rollout in one compiled scan
@@ -522,7 +559,9 @@ def learn_runner(self) -> None:
                 rng=self.agent.key,
                 num_steps=self.steps_per_epoch,
                 reference_waypoint=self.reference_point,
-                step_fn=vecenv_step_training,
+                step_fn=rollout_step_fn,
+                reset_fn=rollout_reset_fn,
+                state_features_fn=rollout_state_features_fn,
                 callbacks=FunctionalRolloutCallbacks(
                     prepare_policy_input=_prepare_policy_input,
                     sample_policy=_sample_policy,
@@ -538,6 +577,7 @@ def learn_runner(self) -> None:
 
             if (
                 self._functional_check_enabled
+                and rollout_backend == "mjx"
                 and not self._functional_check_ran
                 and rollout_result.actions.shape[0] > 0
             ):
@@ -552,7 +592,7 @@ def learn_runner(self) -> None:
                 self._functional_check_ran = True
 
             sync_start_time = time.perf_counter()
-            if self.agent.has_logger:
+            if self.agent.has_logger and rollout_backend == "mjx":
                 # Local per-episode logging reads the imperative env timestamp.
                 self.env.apply_state_struct(rollout_result.final_state)
             else:
@@ -560,6 +600,10 @@ def learn_runner(self) -> None:
                 # full MJX batch back to the imperative env. Preserve only RNG
                 # progression so epoch-to-epoch randomization stays identical.
                 self.env._rng = rollout_result.final_state.rng
+                if hasattr(rollout_result.final_state, "time"):
+                    self.env.mjx_batch = self.env.mjx_batch.replace(
+                        time=rollout_result.final_state.time
+                    )
                 self.env._state = self.env._state.replace(
                     rng=rollout_result.final_state.rng
                 )

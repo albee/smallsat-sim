@@ -133,9 +133,11 @@ class EnvConfig(BaseEnvConfig):
             authority_logging_max_samples = 0
             training_checkpoint_interval = 10
             collect_reward_components = False
-            profile_rollout = True
+            profile_rollout = False
             profile_rollout_epoch = 2  # Epoch 1 includes more one-time compilation noise
             profile_rollout_steps = 512
+            use_minimal_mjx_model = True
+            rollout_backend = "mjx"  # "mjx" or experimental "freeflyer"
 
             # Mission tolerances (tuned to current training scenario - do not change)
             sigma_pos = 1.6

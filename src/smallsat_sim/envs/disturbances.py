@@ -280,11 +280,10 @@ class ConstantForceDisturbance(Disturbance):
             z = jax.random.uniform(dir_keys[2], (self.num_envs,), minval=0, maxval=1)
             direction = jnp.array([x, y, z]).transpose()
 
-        # Normalize the force direction
-        for i in range(direction.shape[0]):
-            direction = direction.at[i, :].set(
-                direction[i, :] / jnp.linalg.norm(direction[i, :])
-            )
+        # Normalize all force directions in one vectorized operation. A Python
+        # loop here is very expensive when thousands of RL envs are created.
+        direction_norm = jnp.linalg.norm(direction, axis=1, keepdims=True)
+        direction = direction / jnp.maximum(direction_norm, 1e-8)
 
         self.magnitude = magnitude
         self.direction = direction

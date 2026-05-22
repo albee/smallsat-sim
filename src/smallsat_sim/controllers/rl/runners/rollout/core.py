@@ -57,15 +57,31 @@ def run_functional_rollout(
     assert step_fn is not None
     assert reset_fn is not None
 
-    num_envs = initial_state.mjx_batch.qpos.shape[0]
+    def _state_batch_size(env_state: Any) -> int:
+        if hasattr(env_state, "mjx_batch"):
+            return env_state.mjx_batch.qpos.shape[0]
+        if hasattr(env_state, "qpos"):
+            return env_state.qpos.shape[0]
+        raise AttributeError("Rollout state must expose either mjx_batch.qpos or qpos")
+
+    def _state_features(env_state: Any) -> jnp.ndarray:
+        feature_source = env_state.mjx_batch if hasattr(env_state, "mjx_batch") else env_state
+        return state_features_fn(feature_source, reference_waypoint)
+
+    num_envs = _state_batch_size(initial_state)
     reset_fn_accepts_mask = len(inspect.signature(reset_fn).parameters) >= 3
     step_fn_accepts_prev_states = (
         "prev_states" in inspect.signature(step_fn).parameters
     )
+    step_fn_can_return_next_states = (
+        "return_next_states" in inspect.signature(step_fn).parameters
+    )
 
     def _initial_episode_state():
+        initial_states = _state_features(initial_state)
         return (
             initial_state,
+            initial_states,
             initial_residuals,
             rng,
             extra,
@@ -110,9 +126,8 @@ def run_functional_rollout(
         )
 
     def _scan_body(carry, step_idx: int):
-        env_state, residuals, rng_key, carry_extra, ep_ret, ep_len = carry
+        env_state, states_curr, residuals, rng_key, carry_extra, ep_ret, ep_len = carry
 
-        states_curr = state_features_fn(env_state.mjx_batch, reference_waypoint)
         policy_input, carry_extra = _prepare_policy_input(
             step_idx, states_curr, residuals, carry_extra
         )
@@ -121,22 +136,28 @@ def run_functional_rollout(
         )
 
         if step_fn_accepts_prev_states:
-            next_env_state, step_output = step_fn(
+            step_result = step_fn(
                 env_state,
                 actions,
                 reference_waypoint,
                 step_config,
                 residuals,
                 prev_states=states_curr,
+                return_next_states=step_fn_can_return_next_states,
             )
         else:
-            next_env_state, step_output = step_fn(
+            step_result = step_fn(
                 env_state,
                 actions,
                 reference_waypoint,
                 step_config,
                 residuals,
             )
+        if step_fn_can_return_next_states:
+            next_env_state, step_output, states_next = step_result
+        else:
+            next_env_state, step_output = step_result
+            states_next = _state_features(next_env_state)
 
         ep_ret_next = ep_ret + step_output.rewards
         ep_len_next = ep_len + 1
@@ -180,6 +201,8 @@ def run_functional_rollout(
                 reset_state = reset_fn(next_env_state, step_config, mask)
             else:
                 reset_state = reset_fn(next_env_state, step_config)
+            reset_states = _state_features(reset_state)
+            states_after_reset = jnp.where(mask[:, None], reset_states, states_next)
             residual_mask = mask[:, None]
             reset_residuals = jnp.where(
                 residual_mask,
@@ -188,12 +211,30 @@ def run_functional_rollout(
             )
             reset_returns = jnp.where(mask, jnp.zeros_like(ep_ret_next), ep_ret_next)
             reset_lengths = jnp.where(mask, jnp.zeros_like(ep_len_next), ep_len_next)
-            return reset_state, reset_residuals, reset_returns, reset_lengths
+            return (
+                reset_state,
+                states_after_reset,
+                reset_residuals,
+                reset_returns,
+                reset_lengths,
+            )
 
-        next_env_state, next_residuals, ep_ret_final, ep_len_final = jax.lax.cond(
+        (
+            next_env_state,
+            states_final,
+            next_residuals,
+            ep_ret_final,
+            ep_len_final,
+        ) = jax.lax.cond(
             jnp.any(reset_mask),
             _reset_after_done,
-            lambda _: (next_env_state, next_residuals, ep_ret_next, ep_len_next),
+            lambda _: (
+                next_env_state,
+                states_next,
+                next_residuals,
+                ep_ret_next,
+                ep_len_next,
+            ),
             operand=reset_mask,
         )
 
@@ -214,6 +255,7 @@ def run_functional_rollout(
 
         new_carry = (
             next_env_state,
+            states_final,
             next_residuals,
             rng_key,
             carry_extra,
@@ -223,7 +265,15 @@ def run_functional_rollout(
         return new_carry, step_record
 
     initial_carry = _initial_episode_state()
-    (final_state, final_residuals, final_rng, final_extra, _, _), steps = jax.lax.scan(
+    (
+        final_state,
+        _final_states,
+        final_residuals,
+        final_rng,
+        final_extra,
+        _,
+        _,
+    ), steps = jax.lax.scan(
         _scan_body,
         initial_carry,
         jnp.arange(num_steps, dtype=jnp.int32),

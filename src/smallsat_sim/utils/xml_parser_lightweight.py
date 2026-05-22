@@ -27,6 +27,10 @@ def generate_mujoco_xml(env_config, model_config):
     bodies = env_config.Bodies
     thrusters = model_config.Thrusters
     props = model_config.pp
+    rl_cfg = getattr(getattr(env_config, "control", None), "RL", None)
+    use_minimal_mjx_model = bool(
+        getattr(rl_cfg, "use_minimal_mjx_model", False)
+    )
 
     # Beginning of xml file
     # Defines general options for the environment
@@ -74,7 +78,7 @@ def generate_mujoco_xml(env_config, model_config):
 
     # Check whether astrobee or cubesat is used.
     # This code defines the materials and meshes.
-    if model_config.name == "astrobee":
+    if model_config.name == "astrobee" and not use_minimal_mjx_model:
         xml_content += f"""        <!--Load astrobee model components-->
             <texture type="2d" name="black" file="astrobee/meshes/black.png"/>
             <material name="Material_001" texture="black" specular="0.5" shininess="0.25"/>
@@ -153,7 +157,8 @@ def generate_mujoco_xml(env_config, model_config):
 
     <worldbody>
 """
-    xml_content += """
+    if not use_minimal_mjx_model:
+        xml_content += """
         <!-- Define the floor (visual-only: no collisions) -->
         <geom name="floor" type="plane" pos="0 0 9" size="10 10 0.1" material="grid" condim="1" contype="0" conaffinity="0"/>
 """
@@ -164,7 +169,9 @@ def generate_mujoco_xml(env_config, model_config):
             <freejoint/>
             <!Inertial properties are have been taken from Astrobee repo>
             <!(https://github.com/nasa/astrobee/blob/master/astrobee/config/worlds/iss.config)>
-            <inertial pos="{xmlify(props.com_offset)}" mass="{props.mass}" diaginertia="{xmlify(props.diag_inertia)}"/>
+            <inertial pos="{xmlify(props.com_offset)}" mass="{props.mass}" diaginertia="{xmlify(props.diag_inertia)}"/>\n"""
+            if not use_minimal_mjx_model:
+                xml_content += """
             <geom mesh="astrobee_0" material="Material_003.002" class="visual"/>
             <geom mesh="astrobee_1" material="Material_001.002" class="visual"/>
             <geom mesh="astrobee_2" material="Material_002.002" class="visual"/>

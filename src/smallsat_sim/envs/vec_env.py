@@ -52,6 +52,31 @@ class VecEnvState:
         return replace(self, **updates)
 
 
+@dataclass
+class FreeFlyerVecEnvState:
+    """
+    Compact free-flyer rollout state for fast policy-training scans.
+
+    This intentionally carries only the dynamic state needed by the RL reward,
+    terminal logic, perturbations, and residual update. MJX remains available for
+    reset/evaluation/deployment; this state is only an optional rollout backend.
+    """
+
+    rng: jnp.ndarray
+    qpos: jnp.ndarray
+    vel_body: jnp.ndarray
+    omega: jnp.ndarray
+    time: jnp.ndarray
+    ctrl: jnp.ndarray
+    actuator_force: jnp.ndarray
+    terminal_hold_counts: jnp.ndarray
+    disturbance_states: Tuple[Optional[DisturbanceState], ...] = ()
+    perturbation_states: Tuple[Optional[PerturbationState], ...] = ()
+
+    def replace(self, **updates) -> "FreeFlyerVecEnvState":
+        return replace(self, **updates)
+
+
 @dataclass(eq=False)
 class VecEnvStepConfig:
     """
@@ -104,6 +129,9 @@ class VecEnvStepConfig:
     use_adaptive_approach: bool
     collect_reward_components: bool
     thruster_mixer_T: jnp.ndarray
+    mass: float
+    inertia_diag: jnp.ndarray
+    model_dt: float
     base_disturbance_states: Tuple[Optional[DisturbanceState], ...]
     base_perturbation_states: Tuple[Optional[PerturbationState], ...]
     effects_enabled: bool = True
@@ -282,6 +310,56 @@ jax.tree_util.register_pytree_node(
 )
 
 
+def _freeflyer_state_flatten(state: "FreeFlyerVecEnvState"):
+    children = (
+        state.rng,
+        state.qpos,
+        state.vel_body,
+        state.omega,
+        state.time,
+        state.ctrl,
+        state.actuator_force,
+        state.terminal_hold_counts,
+        state.disturbance_states,
+        state.perturbation_states,
+    )
+    return children, None
+
+
+def _freeflyer_state_unflatten(aux_data, children):
+    (
+        rng,
+        qpos,
+        vel_body,
+        omega,
+        time_arr,
+        ctrl,
+        actuator_force,
+        terminal_hold_counts,
+        disturbance_states,
+        perturbation_states,
+    ) = children
+    return FreeFlyerVecEnvState(
+        rng=rng,
+        qpos=qpos,
+        vel_body=vel_body,
+        omega=omega,
+        time=time_arr,
+        ctrl=ctrl,
+        actuator_force=actuator_force,
+        terminal_hold_counts=terminal_hold_counts,
+        disturbance_states=tuple(disturbance_states),
+        perturbation_states=tuple(perturbation_states),
+    )
+
+
+jax.tree_util.register_pytree_node(
+    FreeFlyerVecEnvState,
+    _freeflyer_state_flatten,
+    _freeflyer_state_unflatten,
+)
+
+
 def vecenv_state_to_serializable(state: "VecEnvState") -> dict:
     """
     Convert a VecEnvState into host-serializable numpy-backed payload.
@@ -453,6 +531,131 @@ def _compute_state_features(
         axis=1,
     )
     return states
+
+
+def _quat_to_rot_batch(q: jnp.ndarray) -> jnp.ndarray:
+    q = q / (jnp.linalg.norm(q, axis=1, keepdims=True) + 1e-9)
+    w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+    return jnp.stack(
+        [
+            jnp.stack(
+                [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+                axis=1,
+            ),
+            jnp.stack(
+                [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+                axis=1,
+            ),
+            jnp.stack(
+                [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+                axis=1,
+            ),
+        ],
+        axis=1,
+    )
+
+
+def _quat_t_batch(q: jnp.ndarray) -> jnp.ndarray:
+    q = q / (jnp.linalg.norm(q, axis=1, keepdims=True) + 1e-9)
+    w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+    return 0.5 * jnp.stack(
+        [
+            jnp.stack([-x, -y, -z], axis=1),
+            jnp.stack([w, -z, y], axis=1),
+            jnp.stack([z, w, -x], axis=1),
+            jnp.stack([-y, x, w], axis=1),
+        ],
+        axis=1,
+    )
+
+
+def _compute_freeflyer_state_features(
+    state: FreeFlyerVecEnvState,
+    next_waypoint: jnp.ndarray,
+) -> jnp.ndarray:
+    num_envs = state.qpos.shape[0]
+    reference = jnp.asarray(next_waypoint)
+    if reference.ndim == 1:
+        reference = jnp.broadcast_to(reference, (num_envs, reference.shape[0]))
+
+    delta_pos = state.qpos[:, :3] - reference[:, :3]
+    attitude_error = jax.vmap(_quat_log_error)(state.qpos[:, 3:7], reference[:, 3:7])
+    return jnp.concatenate(
+        (delta_pos, attitude_error, state.vel_body, state.omega),
+        axis=1,
+    )
+
+
+def _freeflyer_from_mjx_state(state: VecEnvState) -> FreeFlyerVecEnvState:
+    rot_world_to_body = jnp.swapaxes(state.mjx_batch.xmat[:, 1, :, :], 1, 2)
+    vel_body = jnp.einsum("bij,bj->bi", rot_world_to_body, state.mjx_batch.qvel[:, :3])
+    return FreeFlyerVecEnvState(
+        rng=state.rng,
+        qpos=state.mjx_batch.qpos,
+        vel_body=vel_body,
+        omega=state.mjx_batch.qvel[:, 3:6],
+        time=state.mjx_batch.time,
+        ctrl=state.mjx_batch.ctrl,
+        actuator_force=state.mjx_batch.actuator_force,
+        terminal_hold_counts=state.terminal_hold_counts,
+        disturbance_states=state.disturbance_states,
+        perturbation_states=state.perturbation_states,
+    )
+
+
+def _freeflyer_reset(
+    state: FreeFlyerVecEnvState,
+    config: VecEnvStepConfig,
+) -> FreeFlyerVecEnvState:
+    mjx_reset_state = vecenv_reset(
+        state.rng,
+        mjx_model=config.mjx_model,
+        mjx_data_template=config.mjx_data_template,
+        mjx_batch_template=config.mjx_batch_template,
+        init_qpos=config.init_qpos,
+        init_qvel=config.init_qvel,
+        num_envs=config.num_envs,
+        max_start_offset=config.max_start_offset,
+    )
+    return _freeflyer_from_mjx_state(
+        mjx_reset_state.replace(
+            disturbance_states=config.base_disturbance_states,
+            perturbation_states=config.base_perturbation_states,
+        )
+    )
+
+
+def freeflyer_reset_masked(
+    state: FreeFlyerVecEnvState,
+    config: VecEnvStepConfig,
+    reset_mask: jnp.ndarray,
+) -> FreeFlyerVecEnvState:
+    reset_state = _freeflyer_reset(state, config)
+
+    def merge(reset_leaf, current_leaf):
+        if not hasattr(reset_leaf, "shape") or len(reset_leaf.shape) == 0:
+            return current_leaf
+        if reset_leaf.shape[0] != config.num_envs:
+            return current_leaf
+        mask_shape = (config.num_envs,) + (1,) * (len(reset_leaf.shape) - 1)
+        return jnp.where(reset_mask.reshape(mask_shape), reset_leaf, current_leaf)
+
+    return FreeFlyerVecEnvState(
+        rng=reset_state.rng,
+        qpos=merge(reset_state.qpos, state.qpos),
+        vel_body=merge(reset_state.vel_body, state.vel_body),
+        omega=merge(reset_state.omega, state.omega),
+        time=merge(reset_state.time, state.time),
+        ctrl=merge(reset_state.ctrl, state.ctrl),
+        actuator_force=merge(reset_state.actuator_force, state.actuator_force),
+        terminal_hold_counts=jnp.where(
+            reset_mask,
+            jnp.zeros_like(state.terminal_hold_counts),
+            state.terminal_hold_counts,
+        ),
+        disturbance_states=state.disturbance_states,
+        perturbation_states=state.perturbation_states,
+    )
 
 
 def _compute_observations_from_batch(mjx_batch: mjx.Data) -> jnp.ndarray:
@@ -1000,6 +1203,7 @@ def vecenv_step_training(
     config: VecEnvStepConfig,
     prev_residuals: Optional[jnp.ndarray] = None,
     prev_states: Optional[jnp.ndarray] = None,
+    return_next_states: bool = False,
 ) -> Tuple[VecEnvState, VecEnvTrainingStepOutput]:
     """
     Lean equivalent of ``vecenv_step`` for PPO policy training.
@@ -1099,6 +1303,246 @@ def vecenv_step_training(
     )
 
     next_state = next_state.replace(terminal_hold_counts=next_terminal_hold_counts)
+    if return_next_states:
+        return next_state, step_output, next_states
+    return next_state, step_output
+
+
+def _prepare_freeflyer_step(
+    state: FreeFlyerVecEnvState,
+    base_ctrl: jnp.ndarray,
+) -> Tuple[FreeFlyerVecEnvState, jnp.ndarray, jnp.ndarray]:
+    ctrl = base_ctrl
+    qfrc_applied = jnp.zeros((state.qpos.shape[0], 6), dtype=base_ctrl.dtype)
+    updated_disturbances: list[Optional[DisturbanceState]] = []
+    for dist_state in state.disturbance_states:
+        if dist_state is None:
+            updated_disturbances.append(None)
+            continue
+        const_force = dist_state.params.get("const_force") if dist_state.params else None
+        if const_force is not None:
+            force_contrib, new_state = constant_force_apply_from_state(
+                dist_state,
+                state.time,
+                const_force,
+            )
+            qfrc_applied = qfrc_applied + force_contrib[:, :6]
+            updated_disturbances.append(new_state)
+        else:
+            updated_disturbances.append(dist_state)
+
+    updated_perturbations: list[Optional[PerturbationState]] = []
+    for pert_state in state.perturbation_states:
+        if pert_state is None:
+            updated_perturbations.append(None)
+            continue
+
+        new_state = pert_state
+        failure_value = getattr(new_state, "failure_value", None)
+        if failure_value is None:
+            failure_value_arr = jnp.asarray(-1, dtype=jnp.int32)
+        else:
+            failure_value_arr = jnp.asarray(failure_value)
+
+        is_stuck_off = failure_value_arr == PerturbationStatus.STUCK_OFF.value
+        is_stuck_on = failure_value_arr == PerturbationStatus.STUCK_ON.value
+        is_gp = jnp.logical_or(
+            failure_value_arr == PerturbationStatus.FAULTY_VALVE.value,
+            jnp.logical_or(
+                failure_value_arr == PerturbationStatus.SATURATED_THRUST.value,
+                failure_value_arr == PerturbationStatus.THRUST_INSTABILITY.value,
+            ),
+        )
+        mode = jnp.where(
+            is_stuck_off,
+            jnp.array(0, dtype=jnp.int32),
+            jnp.where(
+                is_stuck_on,
+                jnp.array(1, dtype=jnp.int32),
+                jnp.where(is_gp, jnp.array(2, dtype=jnp.int32), jnp.array(3, dtype=jnp.int32)),
+            ),
+        )
+
+        def _branch_stuck_off(operand):
+            state_in, ctrl_in, time_in, _ = operand
+            ctrl_out, state_out = stuck_off_apply_from_state(state_in, ctrl_in, time_in)
+            return state_out, ctrl_out
+
+        def _branch_stuck_on(operand):
+            state_in, ctrl_in, time_in, _ = operand
+            ctrl_out, state_out = stuck_on_apply_from_state(state_in, ctrl_in, time_in)
+            return state_out, ctrl_out
+
+        def _branch_gp(operand):
+            state_in, ctrl_in, time_in, failure_in = operand
+            ctrl_out, state_out = gp_apply_from_state(
+                state_in,
+                ctrl_in,
+                time_in,
+                failure_in,
+            )
+            return state_out, ctrl_out
+
+        def _branch_fallback(operand):
+            state_in, ctrl_in, time_in, _ = operand
+            ctrl_mid, state_mid = stuck_off_apply_from_state(state_in, ctrl_in, time_in)
+            ctrl_out, state_out = stuck_on_apply_from_state(state_mid, ctrl_mid, time_in)
+            return state_out, ctrl_out
+
+        new_state, ctrl = jax.lax.switch(
+            mode,
+            (_branch_stuck_off, _branch_stuck_on, _branch_gp, _branch_fallback),
+            (new_state, ctrl, state.time, failure_value_arr),
+        )
+        updated_perturbations.append(new_state)
+
+    return (
+        state.replace(
+            disturbance_states=tuple(updated_disturbances),
+            perturbation_states=tuple(updated_perturbations),
+        ),
+        ctrl,
+        qfrc_applied,
+    )
+
+
+def _freeflyer_step_dynamics(
+    state: FreeFlyerVecEnvState,
+    ctrl: jnp.ndarray,
+    qfrc_applied: jnp.ndarray,
+    config: VecEnvStepConfig,
+) -> FreeFlyerVecEnvState:
+    wrench = ctrl @ config.thruster_mixer_T
+    rot_body_to_world = _quat_to_rot_batch(state.qpos[:, 3:7])
+    rot_world_to_body = jnp.swapaxes(rot_body_to_world, 1, 2)
+    force_body = wrench[:, :3] + jnp.einsum(
+        "bij,bj->bi", rot_world_to_body, qfrc_applied[:, :3]
+    )
+    torque_body = wrench[:, 3:6] + jnp.einsum(
+        "bij,bj->bi", rot_world_to_body, qfrc_applied[:, 3:6]
+    )
+    quat_t = _quat_t_batch(state.qpos[:, 3:7])
+    dt = jnp.asarray(config.model_dt, dtype=state.qpos.dtype)
+    mass = jnp.asarray(config.mass, dtype=state.qpos.dtype)
+    inertia = jnp.asarray(config.inertia_diag, dtype=state.qpos.dtype)
+
+    pos_dot = jnp.einsum("bij,bj->bi", rot_body_to_world, state.vel_body)
+    quat_dot = jnp.einsum("bij,bj->bi", quat_t, state.omega)
+    vel_dot = force_body / mass - jnp.cross(state.omega, state.vel_body)
+    inertia_omega = state.omega * inertia
+    omega_dot = (torque_body - jnp.cross(state.omega, inertia_omega)) / inertia
+
+    qpos_next = jnp.concatenate(
+        (
+            state.qpos[:, :3] + dt * pos_dot,
+            state.qpos[:, 3:7] + dt * quat_dot,
+        ),
+        axis=1,
+    )
+    quat_next = qpos_next[:, 3:7]
+    quat_next = quat_next / (jnp.linalg.norm(quat_next, axis=1, keepdims=True) + 1e-9)
+    qpos_next = qpos_next.at[:, 3:7].set(quat_next)
+    return state.replace(
+        qpos=qpos_next,
+        vel_body=state.vel_body + dt * vel_dot,
+        omega=state.omega + dt * omega_dot,
+        time=state.time + dt,
+        ctrl=ctrl,
+        actuator_force=ctrl,
+    )
+
+
+def vecenv_step_training_freeflyer(
+    state: FreeFlyerVecEnvState,
+    commanded_ctrl: jnp.ndarray,
+    next_waypoint: jnp.ndarray,
+    config: VecEnvStepConfig,
+    prev_residuals: Optional[jnp.ndarray] = None,
+    prev_states: Optional[jnp.ndarray] = None,
+    return_next_states: bool = False,
+) -> Tuple[FreeFlyerVecEnvState, VecEnvTrainingStepOutput]:
+    commanded_ctrl = jnp.asarray(commanded_ctrl)
+
+    if prev_states is None:
+        prev_states = _compute_freeflyer_state_features(state, next_waypoint)
+    if config.effects_enabled:
+        prepared_state, applied_ctrl, qfrc_applied = _prepare_freeflyer_step(
+            state, commanded_ctrl
+        )
+    else:
+        prepared_state = state
+        applied_ctrl = commanded_ctrl
+        qfrc_applied = jnp.zeros((state.qpos.shape[0], 6), dtype=commanded_ctrl.dtype)
+
+    next_state = jax.lax.fori_loop(
+        0,
+        config.control_decimation,
+        lambda _i, sub_state: _freeflyer_step_dynamics(
+            sub_state,
+            applied_ctrl,
+            qfrc_applied,
+            config,
+        ),
+        prepared_state,
+    )
+    next_states = _compute_freeflyer_state_features(next_state, next_waypoint)
+
+    pos_curr, vel_curr, att_curr, ang_curr = _reward_components(prev_states, config)
+    pos_next, vel_next, att_next, ang_next = _reward_components(next_states, config)
+    rewards = (pos_next + vel_next + att_next + ang_next) - (
+        pos_curr + vel_curr + att_curr + ang_curr
+    )
+
+    success_terminals, next_terminal_hold_counts = _compute_terminals(
+        next_states,
+        prepared_state.terminal_hold_counts,
+        config,
+    )
+    failure_terminals = _compute_failures(next_states, config)
+    terminals = jnp.logical_or(success_terminals, failure_terminals)
+
+    if config.use_adaptive_approach and config.res_dim > 0:
+        if prev_residuals is None or prev_residuals.shape[-1] == 0:
+            prev_residuals = (
+                jnp.atleast_2d(state.actuator_force) @ config.thruster_mixer_T
+                - jnp.atleast_2d(state.ctrl) @ config.thruster_mixer_T
+            )
+        else:
+            prev_residuals = jnp.asarray(prev_residuals, dtype=prev_states.dtype)
+    else:
+        prev_residuals = None
+
+    penalties, _ = _compute_penalties(
+        prev_states,
+        next_states,
+        success_terminals,
+        commanded_ctrl,
+        prev_residuals,
+        config,
+    )
+    terminal_bonus = jnp.asarray(config.terminal_bonus, dtype=rewards.dtype)
+    rewards = rewards - penalties + terminal_bonus * success_terminals.astype(rewards.dtype)
+
+    if config.use_adaptive_approach and config.res_dim > 0:
+        actual_wrench = jnp.atleast_2d(applied_ctrl) @ config.thruster_mixer_T
+    else:
+        wrench_shape = (commanded_ctrl.shape[0], config.thruster_mixer_T.shape[1])
+        actual_wrench = jnp.zeros(wrench_shape, dtype=commanded_ctrl.dtype)
+
+    step_output = VecEnvTrainingStepOutput(
+        prev_states=prev_states,
+        next_position_error=next_states[:, :3],
+        rewards=rewards,
+        terminals=terminals,
+        applied_ctrl=applied_ctrl,
+        actual_wrench=actual_wrench,
+        success_terminals=success_terminals,
+        failure_terminals=failure_terminals,
+    )
+
+    next_state = next_state.replace(terminal_hold_counts=next_terminal_hold_counts)
+    if return_next_states:
+        return next_state, step_output, next_states
     return next_state, step_output
 
 
@@ -1109,6 +1553,7 @@ def vecenv_step_training_no_physics(
     config: VecEnvStepConfig,
     prev_residuals: Optional[jnp.ndarray] = None,
     prev_states: Optional[jnp.ndarray] = None,
+    return_next_states: bool = False,
 ) -> Tuple[VecEnvState, VecEnvTrainingStepOutput]:
     """
     Profiling-only training step that bypasses MJX stepping.
@@ -1134,6 +1579,8 @@ def vecenv_step_training_no_physics(
         success_terminals=false_env,
         failure_terminals=false_env,
     )
+    if return_next_states:
+        return state, step_output, prev_states
     return state, step_output
 
 
@@ -1144,6 +1591,7 @@ def vecenv_step_training_physics_only(
     config: VecEnvStepConfig,
     prev_residuals: Optional[jnp.ndarray] = None,
     prev_states: Optional[jnp.ndarray] = None,
+    return_next_states: bool = False,
 ) -> Tuple[VecEnvState, VecEnvTrainingStepOutput]:
     """
     Profiling-only training step that keeps MJX stepping but skips reward and
@@ -1188,6 +1636,8 @@ def vecenv_step_training_physics_only(
         success_terminals=false_env,
         failure_terminals=false_env,
     )
+    if return_next_states:
+        return next_state, step_output, prev_states
     return next_state, step_output
 
 
@@ -1801,7 +2251,7 @@ class VecEnv(BaseEnv):
             init_qvel=self.init_qvel,
             num_envs=self.num_envs,
             max_start_offset=self.max_start_offset,
-            control_decimation=int(self.env_cfg.control.control_decimation),
+            control_decimation=int(self.env_cfg.control.RL.control_decimation),
             sigma_pos=float(self.sigma_pos),
             sigma_vel=float(self.sigma_vel),
             sigma_att=float(self.sigma_att),
@@ -1834,9 +2284,15 @@ class VecEnv(BaseEnv):
             collect_reward_components=bool(self.collect_reward_components),
             effects_enabled=bool(effects_enabled),
             thruster_mixer_T=self._thruster_mixer_T,
+            mass=float(self.model_cfg.pp.mass),
+            inertia_diag=jnp.asarray(self.model_cfg.pp.diag_inertia, dtype=jnp.float32),
+            model_dt=float(self.model.opt.timestep),
             base_disturbance_states=self.disturbance_states,
             base_perturbation_states=self.perturbation_states,
         )
+
+    def freeflyer_state_struct(self) -> FreeFlyerVecEnvState:
+        return _freeflyer_from_mjx_state(self.state_struct)
 
     def _get_active_failure_masks(self) -> tuple[jnp.ndarray, jnp.ndarray]:
         """
@@ -2133,13 +2589,18 @@ class VecEnv(BaseEnv):
         jax.block_until_ready(self.mjx_batch.qpos)
         print(f"[Startup Timing] MJX initial batch ({num_envs} envs): {time.perf_counter() - batch_start:.2f}s")
 
-        host_data_start = time.perf_counter()
-        self.data_vec = mjx.get_data(self.model, self.mjx_batch)
-        mjx.get_data_into(self.data_vec, self.model, self.mjx_batch)
-        print(f"[Startup Timing] MJX host data mirror: {time.perf_counter() - host_data_start:.2f}s")
-
         # Launch the viewer
         viewer_start = time.perf_counter()
+        needs_host_data = (not args.headless) or bool(args.video)
+        if needs_host_data:
+            host_data_start = time.perf_counter()
+            self.data_vec = mjx.get_data(self.model, self.mjx_batch)
+            mjx.get_data_into(self.data_vec, self.model, self.mjx_batch)
+            print(f"[Startup Timing] MJX host data mirror: {time.perf_counter() - host_data_start:.2f}s")
+        else:
+            self.data_vec = None
+            print("[Startup Timing] MJX host data mirror: skipped")
+
         if not args.headless:
             self._create_viewer(args)
         else:
