@@ -294,6 +294,9 @@ def learn_runner(self) -> None:
         phase_disturbance_fraction = float(phase["disturbance_fraction"])
         phase_distribution = uniform_failure_distribution(active_failures)
         new_failure_idx = phase["new_failure"]
+        phase_uses_perturbations = bool(active_failures) and phase_failure_fraction > 0.0
+        phase_uses_disturbances = phase_disturbance_fraction > 0.0
+        phase_uses_effects = phase_uses_perturbations or phase_uses_disturbances
 
         print(
             f"[Curriculum] Phase {phase_idx + 1}/{len(phases)}: {phase_name} "
@@ -328,18 +331,18 @@ def learn_runner(self) -> None:
             )
 
             # Apply failures/disturbances for this phase with fixed proportions
-            if self.env.train_with_failures:
-                self.env.reset_perturbations()  # avoid accumulating failures across epochs
-                if hasattr(self.env, "reset_disturbances"):
-                    self.env.reset_disturbances()
-                if phase_failure_fraction > 0.0:
+            if self.env.train_with_failures and phase_uses_effects:
+                if phase_uses_perturbations:
+                    self.env.reset_perturbations()  # avoid accumulating failures across epochs
                     self.env.apply_random_perturbations(
                         key=perturb_key,
                         fraction_perturbed_envs=phase_failure_fraction,
                         perturbation_distribution=phase_distribution,
                         start_time=failure_start_time,
                     )
-                if phase_disturbance_fraction > 0.0:
+                if phase_uses_disturbances:
+                    if hasattr(self.env, "reset_disturbances"):
+                        self.env.reset_disturbances()
                     self.env.apply_random_disturbance(
                         key=disturb_key,
                         fraction_disturbed_envs=phase_disturbance_fraction,
@@ -521,9 +524,11 @@ def learn_runner(self) -> None:
             # Reset the imperative environment for the next epoch
             reset_start_time = time.perf_counter()
             self.env.reset()
-            self.env.reset_perturbations()
-            if hasattr(self.env, "reset_disturbances"):
-                self.env.reset_disturbances()
+            if self.env.train_with_failures and phase_uses_effects:
+                if phase_uses_perturbations:
+                    self.env.reset_perturbations()
+                if phase_uses_disturbances and hasattr(self.env, "reset_disturbances"):
+                    self.env.reset_disturbances()
             reset_duration = time.perf_counter() - reset_start_time
 
             rollout_duration = time.perf_counter() - epoch_start_time

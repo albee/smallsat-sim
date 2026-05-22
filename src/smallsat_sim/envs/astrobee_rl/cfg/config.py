@@ -49,7 +49,7 @@ class EnvConfig(BaseEnvConfig):
 
         # RL controller params
         class RL:
-            control_decimation = 25
+            control_decimation = 5  # 20Hz control with BaseEnvConfig.sim.dt = 0.01s
 
             # Run ID
             rl_run_id = 0

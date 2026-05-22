@@ -38,12 +38,36 @@ from smallsat_sim.utils.helpers_jax import (
 from smallsat_sim.utils.wandb_config import setup_wandb
 
 
+def _configure_jax_compilation_cache() -> None:
+    """
+    Enable persistent JAX compilation cache to avoid recompiling long-running
+    XLA modules (e.g. vectorized env step scans) after process restarts.
+
+    Opt-out with:
+    - SMALLSAT_DISABLE_JAX_CACHE=1
+    """
+    if os.environ.get("SMALLSAT_DISABLE_JAX_CACHE", "0") == "1":
+        return
+
+    cache_dir = os.environ.get(
+        "SMALLSAT_JAX_CACHE_DIR",
+        os.path.join(os.path.expanduser("~"), ".cache", "smallsat-sim", "jax"),
+    )
+    os.makedirs(cache_dir, exist_ok=True)
+    try:
+        jax.config.update("jax_compilation_cache_dir", cache_dir)
+    except Exception:
+        # Keep training functional on older JAX versions without this config.
+        pass
+
+
 class OnPolicyRunner(object):
     """
     On-policy runner for training and evaluation. Inspired from https://spinningup.openai.com/en/latest/algorithms/vpg.html.
     """
 
     def __init__(self, env: VecEnv, planner: OraclePlannerRL) -> None:
+        _configure_jax_compilation_cache()
         # Initialize the environment and agent
         self.env = env
         self.planner = planner

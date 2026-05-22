@@ -26,11 +26,11 @@ class BaseEnvConfig:
 
     # Viewer options
     class viewer:
-        # Standard viewer rendering @50Hz
+        # Standard viewer rendering @10Hz with the default 100Hz sim step.
         viewer_decimation = 10
 
     class sim:
-        dt = 1 / 500  # simulation runs @500Hz
+        dt = 1 / 100  # simulation runs @100Hz
         max_sim_time = 200  # max. simulation time in seconds
         seed = 42  # Base seed used for JAX PRNGs unless overridden
         verbose = False

@@ -126,11 +126,11 @@ def run_functional_rollout(
         )
 
         def _log_nan(_):
-            jax.debug.print("NaN in next_obs at step {s}", s=step_idx)
+            jax.debug.print("NaN in next_states at step {s}", s=step_idx)
             return jnp.array(0, dtype=jnp.int32)
 
         _ = jax.lax.cond(
-            jnp.isnan(step_output.next_obs).any(),
+            jnp.isnan(step_output.next_states).any(),
             _log_nan,
             lambda _: jnp.array(0, dtype=jnp.int32),
             operand=None,
