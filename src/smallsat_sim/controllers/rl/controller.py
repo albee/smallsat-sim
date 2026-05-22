@@ -4,7 +4,13 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from smallsat_sim.envs.vec_env import VecEnv, VecEnvStepOutput, vecenv_step
+from smallsat_sim.envs.vec_env import (
+    VecEnv,
+    VecEnvStepOutput,
+    freeflyer_to_mjx_state,
+    vecenv_step,
+    vecenv_step_freeflyer,
+)
 from smallsat_sim.planners.base_planner import BasePlanner
 from smallsat_sim.controllers.pd.vectorized_controller import VectorizedPDController
 from smallsat_sim.controllers.rl.algorithms.vpg import VPG
@@ -20,6 +26,7 @@ from smallsat_sim.controllers.rl.runners.adaptive_context import (
 from smallsat_sim.controllers.rl.runners.runner_utils import load_trained_modules
 
 _JITTED_VECENV_STEP = jax.jit(vecenv_step, static_argnames=("config",))
+_JITTED_FREEFLYER_STEP = jax.jit(vecenv_step_freeflyer, static_argnames=("config",))
 MAX_LOGGED_TRAJECTORY_ENVS = 10
 
 
@@ -114,7 +121,14 @@ class RLController(object):
             self.env.reset_disturbances()
         self.env._refresh_effect_states()
 
-        vec_state = self.env.state_struct
+        rollout_backend = os.environ.get(
+            "SMALLSAT_ROLLOUT_BACKEND",
+            getattr(self.env.env_cfg.control.RL, "rollout_backend", "mjx"),
+        )
+        if rollout_backend == "freeflyer":
+            vec_state = self.env.freeflyer_state_struct()
+        else:
+            vec_state = self.env.state_struct
         max_steps = (
             int(self.deployment_len)
             if self.deployment_len is not None
@@ -167,7 +181,13 @@ class RLController(object):
                     )
                 self.env._refresh_effect_states()
                 if use_functional:
-                    vec_state = self.env.state_struct
+                    if rollout_backend == "freeflyer":
+                        vec_state = vec_state.replace(
+                            disturbance_states=self.env.disturbance_states,
+                            perturbation_states=self.env.perturbation_states,
+                        )
+                    else:
+                        vec_state = self.env.state_struct
 
             if use_functional:
                 policy_input = (
@@ -178,10 +198,21 @@ class RLController(object):
                     policy_input,
                 )
                 step_config = self.env.build_step_config(max_episode_len=max_steps)
-                vec_state, step_output = _JITTED_VECENV_STEP(
-                    vec_state, actions, next_waypoint, config=step_config
-                )
-                self.env.apply_state_struct(vec_state)
+                if rollout_backend == "freeflyer":
+                    vec_state, step_output = _JITTED_FREEFLYER_STEP(
+                        vec_state, actions, next_waypoint, config=step_config
+                    )
+                    synced_state = freeflyer_to_mjx_state(
+                        vec_state,
+                        self.env.state_struct,
+                        step_config,
+                    )
+                    self.env.apply_state_struct(synced_state)
+                else:
+                    vec_state, step_output = _JITTED_VECENV_STEP(
+                        vec_state, actions, next_waypoint, config=step_config
+                    )
+                    self.env.apply_state_struct(vec_state)
             else:
                 if res.shape[-1]:
                     policy_input = jnp.concatenate([states, res], axis=1)

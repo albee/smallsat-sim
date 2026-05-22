@@ -39,6 +39,10 @@ fi
 # Ensure repository root is on PYTHONPATH so `experiments` can be imported
 export PYTHONPATH="$(pwd):${PYTHONPATH}"
 
+# Fast tuning default
+export SMALLSAT_ROLLOUT_BACKEND="${SMALLSAT_ROLLOUT_BACKEND:-freeflyer}"
+echo "Using RL rollout backend: ${SMALLSAT_ROLLOUT_BACKEND}"
+
 # W&B is enabled by default so benchmark runs are recorded.
 # Use RUN_WANDB=0 only for local smoke tests where W&B overhead is unwanted.
 #   RUN_LOG=1 RUN_VIDEO=1 ./train_test_all.sh

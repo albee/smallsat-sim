@@ -39,6 +39,7 @@ from smallsat_sim.controllers.rl.storage.replay_buffer import ReplayBuffer
 from smallsat_sim.envs.vec_env import (
     _compute_state_features,
     _compute_freeflyer_state_features,
+    freeflyer_reset,
     freeflyer_reset_masked,
     vecenv_step_training,
     vecenv_step_training_freeflyer,
@@ -665,8 +666,17 @@ def learn_runner(self) -> None:
 
             # Reset the imperative environment for the next epoch
             reset_start_time = time.perf_counter()
-            self.env.reset()
-            jax.block_until_ready(self.env.mjx_batch.qpos)
+            if rollout_backend == "freeflyer":
+                reset_freeflyer_state = freeflyer_reset(
+                    self.env._rng,
+                    config=step_config,
+                )
+                jax.block_until_ready(reset_freeflyer_state.qpos)
+                self.env._rng = reset_freeflyer_state.rng
+                self.env._state = self.env._state.replace(rng=reset_freeflyer_state.rng)
+            else:
+                self.env.reset()
+                jax.block_until_ready(self.env.mjx_batch.qpos)
             if self.env.train_with_failures and phase_uses_effects:
                 if phase_uses_perturbations:
                     self.env.reset_perturbations()

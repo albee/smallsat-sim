@@ -21,6 +21,12 @@ from smallsat_sim.controllers.rl.runners.adaptive_context import (
     summarize_authority_metrics,
 )
 from smallsat_sim.controllers.rl.runners.runner_utils import load_trained_modules
+from smallsat_sim.envs.vec_env import (
+    _compute_freeflyer_state_features,
+    freeflyer_to_mjx_state,
+    vecenv_step_freeflyer,
+    freeflyer_reset_masked,
+)
 from smallsat_sim.utils.helpers_jax import (
     calc_attitude_error,
     calc_extrinsic_error,
@@ -140,7 +146,20 @@ def evaluate_runner(runner: Any, phase: int = 2) -> None:
         step_config = runner.env.build_step_config(
             max_episode_len=runner.episode_len,
         )
-        vec_state = runner.env.state_struct
+        rollout_backend = os.environ.get(
+            "SMALLSAT_ROLLOUT_BACKEND",
+            getattr(runner.env.env_cfg.control.RL, "rollout_backend", "mjx"),
+        )
+        if rollout_backend == "freeflyer":
+            vec_state = runner.env.freeflyer_state_struct()
+            rollout_step_fn = vecenv_step_freeflyer
+            rollout_reset_fn = freeflyer_reset_masked
+            rollout_state_features_fn = _compute_freeflyer_state_features
+        else:
+            vec_state = runner.env.state_struct
+            rollout_step_fn = None
+            rollout_reset_fn = None
+            rollout_state_features_fn = None
 
         if runner.env.use_adaptive_approach:
             residual_init = jnp.zeros((num_envs, runner.env.res_dim), dtype=jnp.float32)
@@ -219,27 +238,39 @@ def evaluate_runner(runner: Any, phase: int = 2) -> None:
                 bootstrap_value=_bootstrap_value,
             ),
             extra=extra,
+            step_fn=rollout_step_fn,
+            reset_fn=rollout_reset_fn,
+            state_features_fn=rollout_state_features_fn,
         )
 
         jax.block_until_ready(rollout_result.actions)
         runner.agent.key = rollout_result.final_rng
 
-        runner.env._state = rollout_result.final_state
-        runner.env._rng = rollout_result.final_state.rng
-        runner.env.mjx_batch = rollout_result.final_state.mjx_batch
-        runner.env.disturbance_states = rollout_result.final_state.disturbance_states
-        runner.env.perturbation_states = rollout_result.final_state.perturbation_states
+        if rollout_backend == "freeflyer":
+            synced_state = freeflyer_to_mjx_state(
+                rollout_result.final_state,
+                runner.env.state_struct,
+                step_config,
+            )
+        else:
+            synced_state = rollout_result.final_state
+
+        runner.env._state = synced_state
+        runner.env._rng = synced_state.rng
+        runner.env.mjx_batch = synced_state.mjx_batch
+        runner.env.disturbance_states = synced_state.disturbance_states
+        runner.env.perturbation_states = synced_state.perturbation_states
         if hasattr(runner.env, "disturbances") and runner.env.disturbances is not None:
             for obj, snapshot in zip(
                 runner.env.disturbances.disturbances,
-                rollout_result.final_state.disturbance_states,
+                synced_state.disturbance_states,
                 strict=True,
             ):
                 obj.state = snapshot
         if hasattr(runner.env, "perturbations") and runner.env.perturbations is not None:
             for obj, snapshot in zip(
                 runner.env.perturbations.perturbations,
-                rollout_result.final_state.perturbation_states,
+                synced_state.perturbation_states,
                 strict=True,
             ):
                 obj.state = snapshot
