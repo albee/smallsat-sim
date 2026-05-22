@@ -1,5 +1,4 @@
 import os
-import time
 import warnings
 
 import jax
@@ -68,17 +67,13 @@ class OnPolicyRunner(object):
     """
 
     def __init__(self, env: VecEnv, planner: OraclePlannerRL) -> None:
-        runner_start = time.perf_counter()
         _configure_jax_compilation_cache()
         # Initialize the environment and agent
         self.env = env
         self.planner = planner
         base_key = self.env.next_rng_keys(1)[0]
         self._rng, agent_key = jax.random.split(base_key)
-        agent_start = time.perf_counter()
         self.agent = PPO(self.env, planner, rng_key=agent_key)
-        print(f"[Startup Timing] PPO/BaseAgent init: {time.perf_counter() - agent_start:.2f}s")
-        runner_setup_start = time.perf_counter()
         self.state_action_dim = self.env.obs_dim + self.env.act_dim
         self.am = self._build_adaptation_module()
         self.reference_point = planner.get_reference(
@@ -102,7 +97,6 @@ class OnPolicyRunner(object):
         self.jitted_batched_am_loss_components = nnx.jit(
             self.am_loss_components_fn, static_argnums=()
         )
-        print(f"[Startup Timing] Runner modules/setup before checkpoints: {time.perf_counter() - runner_setup_start:.2f}s")
 
         # Optional regression check: compare one functional step against the
         # imperative legacy transition path. This is useful while refactoring
@@ -123,7 +117,6 @@ class OnPolicyRunner(object):
 
         # Checkpoint file names
         self._create_checkpoint_file_names()
-        print(f"[Startup Timing] OnPolicyRunner total init so far: {time.perf_counter() - runner_start:.2f}s")
 
         # Use Weights and Biases for logging
         if self.env.use_wandb:

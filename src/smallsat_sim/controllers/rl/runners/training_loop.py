@@ -43,8 +43,6 @@ from smallsat_sim.envs.vec_env import (
     freeflyer_reset_masked,
     vecenv_step_training,
     vecenv_step_training_freeflyer,
-    vecenv_step_training_no_physics,
-    vecenv_step_training_physics_only,
 )
 
 
@@ -129,13 +127,6 @@ def learn_runner(self) -> None:
     authority_logging_interval = max(1, authority_logging_interval)
     checkpoint_interval = int(getattr(cfg, "training_checkpoint_interval", 10))
     checkpoint_interval = max(1, checkpoint_interval)
-    profile_rollout = bool(getattr(cfg, "profile_rollout", False))
-    profile_rollout_epoch = int(getattr(cfg, "profile_rollout_epoch", 1))
-    profile_rollout_steps = int(
-        getattr(cfg, "profile_rollout_steps", self.steps_per_epoch)
-    )
-    profile_rollout_steps = max(1, min(profile_rollout_steps, self.steps_per_epoch))
-    profile_rollout_done = False
     # Keep evaluation lightweight relative to training rollouts.
     eval_episodes = max(1, min(self.n_evals, 3))
 
@@ -460,98 +451,6 @@ def learn_runner(self) -> None:
                 )
                 return values, rng_key, carry_extra
 
-            def _profile_zero_policy(_step, policy_input, rng_key, carry_extra):
-                del _step, policy_input
-                actions = jnp.zeros(
-                    (self.env.num_envs, self.env.act_dim), dtype=jnp.float32
-                )
-                values = jnp.zeros((self.env.num_envs,), dtype=jnp.float32)
-                logp = jnp.zeros((self.env.num_envs,), dtype=jnp.float32)
-                return actions, values, logp, rng_key, carry_extra
-
-            def _profile_keep_residuals(
-                _step, step_output, actions, residuals, reset_flag, carry_extra
-            ):
-                del _step, step_output, actions, reset_flag
-                return residuals, None, carry_extra
-
-            def _profile_rollout_case(name, step_fn, sample_policy, post_step):
-                callbacks = FunctionalRolloutCallbacks(
-                    prepare_policy_input=_prepare_policy_input,
-                    sample_policy=sample_policy,
-                    post_step=post_step,
-                    bootstrap_value=make_zero_bootstrap_value(self.env.num_envs),
-                )
-
-                def _run_once(rng_key):
-                    result = run_functional_rollout(
-                        step_config=step_config,
-                        initial_state=initial_state,
-                        initial_residuals=residual_init,
-                        rng=rng_key,
-                        num_steps=profile_rollout_steps,
-                        reference_waypoint=self.reference_point,
-                        step_fn=step_fn,
-                        reset_fn=rollout_reset_fn,
-                        state_features_fn=rollout_state_features_fn,
-                        callbacks=callbacks,
-                    )
-                    if hasattr(result.final_state, "mjx_batch"):
-                        jax.block_until_ready(result.final_state.mjx_batch.qpos)
-                    else:
-                        jax.block_until_ready(result.final_state.qpos)
-                    jax.block_until_ready(result.step_outputs.rewards)
-                    jax.block_until_ready(result.actions)
-
-                compile_start = time.perf_counter()
-                _run_once(self.agent.key)
-                compile_duration = time.perf_counter() - compile_start
-
-                timed_start = time.perf_counter()
-                _run_once(self.agent.key)
-                duration = time.perf_counter() - timed_start
-                print(
-                    f"[Rollout Profile] {name}: warm {duration:.2f}s "
-                    f"(compile+first {compile_duration:.2f}s, "
-                    f"{profile_rollout_steps} steps, {self.env.num_envs} envs)"
-                )
-
-            if (
-                profile_rollout
-                and not profile_rollout_done
-                and global_epoch >= profile_rollout_epoch
-            ):
-                print(
-                    f"[Rollout Profile] Starting scan ablations at epoch {global_epoch} "
-                    f"(phase={phase_name}, effects_enabled={phase_uses_effects})"
-                )
-                _profile_rollout_case(
-                    "scan_full",
-                    rollout_step_fn,
-                    _sample_policy,
-                    _post_step,
-                )
-                if rollout_backend == "mjx":
-                    _profile_rollout_case(
-                        "scan_no_policy",
-                        vecenv_step_training,
-                        _profile_zero_policy,
-                        _profile_keep_residuals,
-                    )
-                    _profile_rollout_case(
-                        "scan_no_physics",
-                        vecenv_step_training_no_physics,
-                        _sample_policy,
-                        _profile_keep_residuals,
-                    )
-                    _profile_rollout_case(
-                        "scan_physics_only",
-                        vecenv_step_training_physics_only,
-                        _profile_zero_policy,
-                        _profile_keep_residuals,
-                    )
-                profile_rollout_done = True
-
             # Run a full epoch rollout in one compiled scan
             rollout_result = run_functional_rollout(
                 step_config=step_config,
@@ -682,16 +581,6 @@ def learn_runner(self) -> None:
                     self.env.reset_perturbations()
                 if phase_uses_disturbances and hasattr(self.env, "reset_disturbances"):
                     self.env.reset_disturbances()
-            if (
-                profile_rollout
-                and profile_rollout_done
-                and global_epoch == profile_rollout_epoch
-            ):
-                print(
-                    f"[Rollout Profile] reset_full: "
-                    f"{time.perf_counter() - reset_start_time:.2f}s "
-                    f"({self.env.num_envs} envs)"
-                )
             reset_duration = time.perf_counter() - reset_start_time
 
             rollout_duration = time.perf_counter() - epoch_start_time

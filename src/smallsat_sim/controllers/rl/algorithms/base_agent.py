@@ -53,13 +53,6 @@ class BaseAgent(BaseController):
     ) -> None:
         self.ctrl_cfg = env.env_cfg.control.RL
         super().__init__(env, planner, self.ctrl_cfg)
-        print(
-            "[RL Timing Config] "
-            f"model_dt={env.model.opt.timestep:.6f}s, "
-            f"control_decimation={env.env_cfg.control.control_decimation}, "
-            f"control_dt={env.model.opt.timestep * env.env_cfg.control.control_decimation:.6f}s, "
-            f"control_frequency={1.0 / (env.model.opt.timestep * env.env_cfg.control.control_decimation):.2f}Hz"
-        )
 
         self.ctrl_cfg = env.env_cfg.control.RL
         self.env = env
