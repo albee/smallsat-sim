@@ -55,7 +55,7 @@ class EnvConfig(BaseEnvConfig):
             rl_run_id = 0
 
             # Number of environments
-            num_envs = 2048
+            num_envs = 4096
 
             # NOTE: the following four flags can be overwritten when initializing AstrobeeEnvVectorized
 
@@ -98,7 +98,7 @@ class EnvConfig(BaseEnvConfig):
                 critic_training_epochs = 3
 
             class PPO:
-                steps_per_epoch = 1024
+                steps_per_epoch = 512
                 epochs = 400  # Covers the nominal+curriculum phases when failures are enabled
                 max_ep_len = 512  # 25.6s at 20Hz; enough for 2m setpoint regulation without overlong episodes
                 gamma = 0.995
@@ -133,6 +133,9 @@ class EnvConfig(BaseEnvConfig):
             authority_logging_max_samples = 0
             training_checkpoint_interval = 10
             collect_reward_components = False
+            profile_rollout = True
+            profile_rollout_epoch = 2  # Epoch 1 includes more one-time compilation noise
+            profile_rollout_steps = 512
 
             # Mission tolerances (tuned to current training scenario - do not change)
             sigma_pos = 1.6
