@@ -418,7 +418,7 @@ def learn_runner(self) -> None:
 
             buffer_time = time.perf_counter() - buffer_start
 
-            epoch_reward_components = {}
+            epoch_reward_components = step_outputs.reward_components
 
             # Reset the imperative environment for the next epoch
             reset_start_time = time.perf_counter()

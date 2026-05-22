@@ -149,8 +149,9 @@ class VecEnvTrainingStepOutput:
     """
     Lean transition record for PPO policy training.
 
-    It intentionally omits absolute observations and reward-component dictionaries
-    to reduce scan output size and device memory traffic in the hot training loop.
+    It intentionally omits absolute observations to reduce scan output size and
+    device memory traffic in the hot training loop. Reward components are
+    populated only when `VecEnvStepConfig.collect_reward_components` is true.
     """
 
     prev_states: jnp.ndarray
@@ -161,6 +162,7 @@ class VecEnvTrainingStepOutput:
     actual_wrench: jnp.ndarray
     success_terminals: jnp.ndarray
     failure_terminals: jnp.ndarray
+    reward_components: Dict[str, jnp.ndarray]
 
 
 def _vecenv_step_output_flatten(output: VecEnvStepOutput):
@@ -232,6 +234,7 @@ def _vecenv_training_step_output_flatten(output: VecEnvTrainingStepOutput):
         output.actual_wrench,
         output.success_terminals,
         output.failure_terminals,
+        output.reward_components,
     )
     return children, None
 
@@ -246,6 +249,7 @@ def _vecenv_training_step_output_unflatten(aux_data, children):
         actual_wrench,
         success_terminals,
         failure_terminals,
+        reward_components,
     ) = children
     return VecEnvTrainingStepOutput(
         prev_states=prev_states,
@@ -256,6 +260,7 @@ def _vecenv_training_step_output_unflatten(aux_data, children):
         actual_wrench=actual_wrench,
         success_terminals=success_terminals,
         failure_terminals=failure_terminals,
+        reward_components=reward_components,
     )
 
 

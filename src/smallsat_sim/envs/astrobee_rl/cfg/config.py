@@ -130,9 +130,9 @@ class EnvConfig(BaseEnvConfig):
             curriculum_disturbance_start_time_min = 0.0
             curriculum_disturbance_start_time_max = 25.0
             authority_logging_interval = 10
-            authority_logging_max_samples = 0
+            authority_logging_max_samples = 8192
             training_checkpoint_interval = 10
-            collect_reward_components = False
+            collect_reward_components = True
             rollout_backend = "mjx"  # "mjx" or experimental "freeflyer"
 
             # Mission tolerances (tuned to current training scenario - do not change)

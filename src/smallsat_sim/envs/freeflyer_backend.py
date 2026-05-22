@@ -393,7 +393,7 @@ def vecenv_step_training_freeflyer(
     else:
         prev_residuals = None
 
-    penalties, _ = _compute_penalties(
+    penalties, penalty_components = _compute_penalties(
         prev_states,
         next_states,
         success_terminals,
@@ -410,6 +410,32 @@ def vecenv_step_training_freeflyer(
         wrench_shape = (commanded_ctrl.shape[0], config.thruster_mixer_T.shape[1])
         actual_wrench = jnp.zeros(wrench_shape, dtype=commanded_ctrl.dtype)
 
+    if config.collect_reward_components:
+        shaping_deltas = jnp.stack(
+            [
+                pos_next - pos_curr,
+                vel_next - vel_curr,
+                att_next - att_curr,
+                ang_next - ang_curr,
+            ],
+            axis=1,
+        )
+        reward_components = {
+            "shaping_pos": shaping_deltas[:, 0],
+            "shaping_vel": shaping_deltas[:, 1],
+            "shaping_att": shaping_deltas[:, 2],
+            "shaping_angvel": shaping_deltas[:, 3],
+            "shaping_total": shaping_deltas.sum(axis=1),
+            **penalty_components,
+            "bonus_terminal": terminal_bonus
+            * success_terminals.astype(rewards.dtype),
+            "terminated_success": success_terminals.astype(rewards.dtype),
+            "terminated_failure": failure_terminals.astype(rewards.dtype),
+            "reward_total": rewards,
+        }
+    else:
+        reward_components = {}
+
     step_output = VecEnvTrainingStepOutput(
         prev_states=prev_states,
         next_position_error=next_states[:, :3],
@@ -419,6 +445,7 @@ def vecenv_step_training_freeflyer(
         actual_wrench=actual_wrench,
         success_terminals=success_terminals,
         failure_terminals=failure_terminals,
+        reward_components=reward_components,
     )
 
     next_state = next_state.replace(terminal_hold_counts=next_terminal_hold_counts)
@@ -542,4 +569,3 @@ def vecenv_step_freeflyer(
     )
     next_state = next_state.replace(terminal_hold_counts=next_terminal_hold_counts)
     return next_state, step_output
-
