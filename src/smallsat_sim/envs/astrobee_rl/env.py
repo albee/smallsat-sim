@@ -1,3 +1,5 @@
+import time
+
 import jax.numpy as jnp
 
 from smallsat_sim.envs.vec_env import VecEnv
@@ -29,6 +31,7 @@ class AstrobeeEnvVectorized(VecEnv):
         am_predict_delta_weight: float | None = None,
         am_predict_tracking_weight: float | None = None,
     ) -> None:
+        init_start = time.perf_counter()
         # Run name for logging
         self.run_name = run_name
 
@@ -58,10 +61,13 @@ class AstrobeeEnvVectorized(VecEnv):
             self.env_cfg.control.RL.am_predict_tracking_weight = (
                 am_predict_tracking_weight
             )
+        super_start = time.perf_counter()
         super().__init__(args=args)
+        print(f"[Startup Timing] Astrobee VecEnv super init: {time.perf_counter() - super_start:.2f}s")
 
         # Instantiate perturbations
         # Ensure a clean shared mask when constructing a new vectorized env.
+        perturb_start = time.perf_counter()
         Perturbation.thruster_mask = None
         perturbation_keys = self.next_rng_keys(5)
         self.perturbations = PerturbationList(
@@ -81,13 +87,17 @@ class AstrobeeEnvVectorized(VecEnv):
                 ),  # 4
             ]
         )
+        print(f"[Startup Timing] Astrobee perturbation objects: {time.perf_counter() - perturb_start:.2f}s")
 
         # Instantiate disturbances
+        disturbance_start = time.perf_counter()
         disturbance_key = self.next_rng_keys(1)[0]
         self.disturbances = DisturbanceList(
             [ConstantForceDisturbance(self.env_cfg, disturbance_key)]
         )
         self._refresh_effect_states()
+        print(f"[Startup Timing] Astrobee disturbance/effect states: {time.perf_counter() - disturbance_start:.2f}s")
+        print(f"[Startup Timing] AstrobeeEnvVectorized total init: {time.perf_counter() - init_start:.2f}s")
 
     def reset_perturbations(self) -> None:
         """

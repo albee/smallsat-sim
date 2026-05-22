@@ -1,6 +1,7 @@
 from argparse import Namespace
 from dataclasses import dataclass, replace
 from typing import Optional, Tuple, Dict
+import time
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -1101,6 +1102,95 @@ def vecenv_step_training(
     return next_state, step_output
 
 
+def vecenv_step_training_no_physics(
+    state: VecEnvState,
+    commanded_ctrl: jnp.ndarray,
+    next_waypoint: jnp.ndarray,
+    config: VecEnvStepConfig,
+    prev_residuals: Optional[jnp.ndarray] = None,
+    prev_states: Optional[jnp.ndarray] = None,
+) -> Tuple[VecEnvState, VecEnvTrainingStepOutput]:
+    """
+    Profiling-only training step that bypasses MJX stepping.
+
+    This isolates policy sampling, rollout bookkeeping, and output materialization
+    from physics/reward dynamics.
+    """
+    del next_waypoint, prev_residuals
+    commanded_ctrl = jnp.asarray(commanded_ctrl)
+    if prev_states is None:
+        prev_states = _compute_state_features(state.mjx_batch, jnp.zeros((7,)))
+
+    zeros_env = jnp.zeros((commanded_ctrl.shape[0],), dtype=prev_states.dtype)
+    false_env = jnp.zeros((commanded_ctrl.shape[0],), dtype=bool)
+    wrench_shape = (commanded_ctrl.shape[0], config.thruster_mixer_T.shape[1])
+    step_output = VecEnvTrainingStepOutput(
+        prev_states=prev_states,
+        next_position_error=prev_states[:, :3],
+        rewards=zeros_env,
+        terminals=false_env,
+        applied_ctrl=commanded_ctrl,
+        actual_wrench=jnp.zeros(wrench_shape, dtype=commanded_ctrl.dtype),
+        success_terminals=false_env,
+        failure_terminals=false_env,
+    )
+    return state, step_output
+
+
+def vecenv_step_training_physics_only(
+    state: VecEnvState,
+    commanded_ctrl: jnp.ndarray,
+    next_waypoint: jnp.ndarray,
+    config: VecEnvStepConfig,
+    prev_residuals: Optional[jnp.ndarray] = None,
+    prev_states: Optional[jnp.ndarray] = None,
+) -> Tuple[VecEnvState, VecEnvTrainingStepOutput]:
+    """
+    Profiling-only training step that keeps MJX stepping but skips reward and
+    terminal math.
+    """
+    del next_waypoint, prev_residuals
+    commanded_ctrl = jnp.asarray(commanded_ctrl)
+    if prev_states is None:
+        prev_states = _compute_state_features(state.mjx_batch, jnp.zeros((7,)))
+
+    if config.effects_enabled:
+        prepared_state, applied_ctrl, qfrc_applied = prepare_step_functional(
+            state, commanded_ctrl
+        )
+    else:
+        prepared_state = state
+        applied_ctrl = commanded_ctrl
+        qfrc_applied = jnp.zeros_like(state.mjx_batch.qfrc_applied)
+
+    mjx_batch = prepared_state.mjx_batch.replace(
+        ctrl=applied_ctrl,
+        qfrc_applied=qfrc_applied,
+    )
+    mjx_batch = jax.lax.fori_loop(
+        0,
+        config.control_decimation,
+        lambda _i, batch: VMAP_MJX_STEP(config.mjx_model, batch),
+        mjx_batch,
+    )
+    next_state = prepared_state.replace(mjx_batch=mjx_batch)
+
+    zeros_env = jnp.zeros((commanded_ctrl.shape[0],), dtype=prev_states.dtype)
+    false_env = jnp.zeros((commanded_ctrl.shape[0],), dtype=bool)
+    wrench_shape = (commanded_ctrl.shape[0], config.thruster_mixer_T.shape[1])
+    step_output = VecEnvTrainingStepOutput(
+        prev_states=prev_states,
+        next_position_error=jnp.zeros_like(prev_states[:, :3]),
+        rewards=zeros_env,
+        terminals=false_env,
+        applied_ctrl=applied_ctrl,
+        actual_wrench=jnp.zeros(wrench_shape, dtype=commanded_ctrl.dtype),
+        success_terminals=false_env,
+        failure_terminals=false_env,
+    )
+    return next_state, step_output
+
+
 def vecenv_reset_to_config(
     state: VecEnvState,
     config: VecEnvStepConfig,
@@ -1137,6 +1227,7 @@ class VecEnv(BaseEnv):
     """
 
     def __init__(self, args) -> None:
+        vecenv_init_start = time.perf_counter()
         # Flag to know whether Weights & Biases should be used
         self.use_wandb = args.wandb
 
@@ -1156,7 +1247,9 @@ class VecEnv(BaseEnv):
             getattr(self.env_cfg.control.RL, "use_task_conditioned_am", False)
         )
 
+        super_start = time.perf_counter()
         super().__init__(args)
+        print(f"[Startup Timing] VecEnv BaseEnv/_setup_sim: {time.perf_counter() - super_start:.2f}s")
 
         # Run ID for logging
         self.run_id = self.env_cfg.control.RL.rl_run_id
@@ -1165,6 +1258,7 @@ class VecEnv(BaseEnv):
         self.num_envs = self.env_cfg.control.RL.num_envs
 
         # Mixer maps thruster commands to body-frame wrench
+        setup_start = time.perf_counter()
         mixer = jnp.asarray(self.symbolic_model.mixer, dtype=jnp.float32)
         self._thruster_mixer = jax.device_put(mixer)
         self._thruster_mixer_T = jax.device_put(mixer.T)
@@ -1214,10 +1308,13 @@ class VecEnv(BaseEnv):
 
         # Load mission tolerances, reward weights, and penalty weights
         self._load_vec_env_hyperparams()
+        print(f"[Startup Timing] VecEnv dimensions/hyperparams: {time.perf_counter() - setup_start:.2f}s")
 
         # Perform a Just In Time compilation of mjx.step() so that it runs efficiently on GPU
+        jit_start = time.perf_counter()
         self.jit_step = jax.jit(jax.vmap(mjx.step, in_axes=(None, 0)))
         self.jit_forward = jax.jit(jax.vmap(mjx.forward, in_axes=(None, 0)))
+        print(f"[Startup Timing] VecEnv create jit wrappers: {time.perf_counter() - jit_start:.2f}s")
 
         # Cache for the reward breakdown after each transition (used for logging)
         self._last_reward_components: dict[str, jnp.ndarray] = {}
@@ -1227,7 +1324,10 @@ class VecEnv(BaseEnv):
         self.disturbance_states: Tuple[DisturbanceState, ...] = ()
         self.perturbation_states: Tuple[PerturbationState, ...] = ()
         self._terminal_hold_counts = jnp.zeros((self.num_envs,), dtype=jnp.int32)
+        reset_start = time.perf_counter()
         self.reset()
+        print(f"[Startup Timing] VecEnv initial vectorized reset: {time.perf_counter() - reset_start:.2f}s")
+        state_start = time.perf_counter()
         self._refresh_effect_states()
         self._state = VecEnvState(
             rng=self._rng,
@@ -1237,6 +1337,8 @@ class VecEnv(BaseEnv):
             perturbation_states=self.perturbation_states,
         )
         self._refresh_effect_states()
+        print(f"[Startup Timing] VecEnv state/effect snapshot: {time.perf_counter() - state_start:.2f}s")
+        print(f"[Startup Timing] VecEnv total init: {time.perf_counter() - vecenv_init_start:.2f}s")
 
     def next_rng_keys(self, count: int = 1) -> jnp.ndarray:
         """
@@ -1991,38 +2093,53 @@ class VecEnv(BaseEnv):
         Prepares simulation according to args.
         Creates a viewer depending on headless flag.
         """
+        setup_start = time.perf_counter()
         # Some subclasses may call into BaseEnv before VecEnv.__init__ has assigned num_envs.
         # Fall back to the configured value so batching still works.
         num_envs = getattr(self, "num_envs", self.env_cfg.control.RL.num_envs)
         self.num_envs = num_envs
 
         # Generate xml using env and model config files
+        xml_start = time.perf_counter()
         xml = xml_parser_lightweight.generate_mujoco_xml(self.env_cfg, self.model_cfg)
+        print(f"[Startup Timing] XML generation: {time.perf_counter() - xml_start:.2f}s")
 
         # Create model and data instances
+        model_start = time.perf_counter()
         self.model = mujoco.MjModel.from_xml_string(xml)
         self.data = mujoco.MjData(self.model)
+        print(f"[Startup Timing] MuJoCo model/data: {time.perf_counter() - model_start:.2f}s")
 
+        mjx_start = time.perf_counter()
         self.mjx_model = mjx.put_model(
             self.model
         )  # impl='warp', warp requires a CUDA device & mujoco-mjx[warp]
         self.mjx_data = mjx.put_data(self.model, self.data)  # impl='warp'
+        jax.block_until_ready(self.mjx_data.qpos)
+        print(f"[Startup Timing] MJX put_model/put_data: {time.perf_counter() - mjx_start:.2f}s")
 
         # Check that MJX puts the JAX arrays on GPU (it should do so automatically)
         print("Devices available to JAX: ", jax.devices())
         print("Device used by JAX: ", self.mjx_data.qpos.devices(), "\n")
 
         # Batch the data and randomize the starting position
+        batch_start = time.perf_counter()
         rng = self.next_rng_keys(num_envs)
         self.mjx_batch = jax.vmap(  # The initial position is randomized when the env is reset (at init and after each epoch)
             lambda rng: self.mjx_data.replace(qpos=self.mjx_data.qpos)
         )(
             rng
         )
+        jax.block_until_ready(self.mjx_batch.qpos)
+        print(f"[Startup Timing] MJX initial batch ({num_envs} envs): {time.perf_counter() - batch_start:.2f}s")
+
+        host_data_start = time.perf_counter()
         self.data_vec = mjx.get_data(self.model, self.mjx_batch)
         mjx.get_data_into(self.data_vec, self.model, self.mjx_batch)
+        print(f"[Startup Timing] MJX host data mirror: {time.perf_counter() - host_data_start:.2f}s")
 
         # Launch the viewer
+        viewer_start = time.perf_counter()
         if not args.headless:
             self._create_viewer(args)
         else:
@@ -2038,6 +2155,8 @@ class VecEnv(BaseEnv):
             # Same logic as for the viewer
             self.renderer = None
             self._update_renderer = lambda *args, **kwargs: None
+        print(f"[Startup Timing] Viewer/renderer setup: {time.perf_counter() - viewer_start:.2f}s")
+        print(f"[Startup Timing] VecEnv _setup_sim total: {time.perf_counter() - setup_start:.2f}s")
 
     def _update_renderer(self):
         """
