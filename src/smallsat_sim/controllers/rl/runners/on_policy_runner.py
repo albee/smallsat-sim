@@ -27,6 +27,10 @@ from smallsat_sim.controllers.rl.runners.training_loop import learn_runner
 from smallsat_sim.controllers.rl.runners.adaptation_training import (
     train_adaptation_module_on_policy_runner,
 )
+from smallsat_sim.controllers.rl.runners.runner_setup import (
+    build_checkpoint_file_names,
+    configure_jax_compilation_cache,
+)
 from smallsat_sim.controllers.rl.runners.adaptive_context import build_adaptive_context
 from smallsat_sim.utils.helpers_jax import (
     train_val_split,
@@ -38,28 +42,6 @@ from smallsat_sim.utils.helpers_jax import (
 from smallsat_sim.utils.wandb_config import setup_wandb
 
 
-def _configure_jax_compilation_cache() -> None:
-    """
-    Enable persistent JAX compilation cache to avoid recompiling long-running
-    XLA modules (e.g. vectorized env step scans) after process restarts.
-
-    Opt-out with:
-    - SMALLSAT_DISABLE_JAX_CACHE=1
-    """
-    if os.environ.get("SMALLSAT_DISABLE_JAX_CACHE", "0") == "1":
-        return
-
-    cache_dir = os.environ.get(
-        "SMALLSAT_JAX_CACHE_DIR",
-        os.path.join(os.path.expanduser("~"), ".cache", "smallsat-sim", "jax"),
-    )
-    os.makedirs(cache_dir, exist_ok=True)
-    try:
-        jax.config.update("jax_compilation_cache_dir", cache_dir)
-    except Exception:
-        # Keep training functional on older JAX versions without this config.
-        pass
-
 
 class OnPolicyRunner(object):
     """
@@ -67,7 +49,7 @@ class OnPolicyRunner(object):
     """
 
     def __init__(self, env: VecEnv, planner: OraclePlannerRL) -> None:
-        _configure_jax_compilation_cache()
+        configure_jax_compilation_cache(jax)
         # Initialize the environment and agent
         self.env = env
         self.planner = planner
@@ -726,42 +708,6 @@ class OnPolicyRunner(object):
         self.n_evals = self.env.env_cfg.control.RL.n_evals
 
     def _create_checkpoint_file_names(self) -> None:
-        """
-        Create the checkpoint file names for the pretraining and training data and states.
-        """
-
-        # Build filename components
-        adaptive = "adaptive" if self.env.use_adaptive_approach else None
-        context_mode = (
-            self.env.adaptive_context_mode
-            if self.env.use_adaptive_approach
-            else None
-        )
-        pretrained = "pretrained" if self.env.use_pretrained else None
-        nominal = None if self.env.train_with_failures else "nominal"
-
-        def build_name(prefix: str) -> str:
-            parts = [prefix, adaptive, context_mode, pretrained, nominal]
-            predictive_am = (
-                self.env.use_task_conditioned_am
-                or float(self.env.env_cfg.control.RL.am_predict_delta_weight) > 0.0
-                or float(self.env.env_cfg.control.RL.am_predict_tracking_weight) > 0.0
-            )
-            if prefix.startswith("adapt_module") and predictive_am:
-                parts.append("taskpred")
-            return "_".join(p for p in parts if p) + ".pkl"
-
-        # Pretraining filenames
-        if adaptive:
-            self.pretraining_data_file_name = build_name("pretraining_data")
-            self.pretraining_state_file_name = build_name("pretraining_state")
-        else:
-            self.pretraining_data_file_name = "pretraining_data.pkl"
-            self.pretraining_state_file_name = "pretraining_state.pkl"
-
-        # Training filenames
-        self.training_data_file_name = build_name("training_data")
-        self.training_state_file_name = build_name("training_state")
-        self.adaptation_module_file_name = build_name(
-            f"adapt_module_state_{self.env.am_architecture}"
-        )
+        """Create checkpoint/data filenames from the active RL configuration."""
+        for attr, value in build_checkpoint_file_names(self.env).items():
+            setattr(self, attr, value)

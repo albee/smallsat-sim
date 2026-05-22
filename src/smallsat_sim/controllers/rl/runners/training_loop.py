@@ -8,7 +8,6 @@ import wandb
 
 from smallsat_sim.controllers.rl.runners.rollout import (
     FunctionalRolloutCallbacks,
-    make_zero_bootstrap_value,
     prepare_policy_input_with_residuals,
     residuals_from_wrench_delta,
     run_functional_rollout,
@@ -17,14 +16,14 @@ from smallsat_sim.controllers.rl.runners.curriculum import (
     build_failure_curriculum,
     uniform_failure_distribution,
 )
-from smallsat_sim.controllers.rl.runners.adaptive_context import (
-    authority_bin_stats,
-    authority_metrics_from_wrench,
-    summarize_authority_metrics,
-)
 from smallsat_sim.controllers.rl.runners.runner_timing import (
     EpochTiming,
     format_epoch_timing_line,
+)
+from smallsat_sim.controllers.rl.runners.training_helpers import (
+    evaluate_policy_checkpoint,
+    rollout_authority_payload,
+    sample_start_time,
 )
 from smallsat_sim.controllers.rl.runners.runner_metrics import (
     build_logger_policy_training_payload,
@@ -149,151 +148,9 @@ def learn_runner(self) -> None:
     best_actor_state = None
     best_critic_state = None
 
-    def _eval_policy(
-        *,
-        key: jnp.ndarray,
-        fraction_perturbed_envs: float,
-        perturbation_distribution: jnp.ndarray,
-        disturbance_fraction: float,
-    ) -> float:
-        """
-        Lightweight evaluation used to safeguard nominal performance.
-        We keep the training RNG state fixed across evals.
-        """
-        num_envs = self.env.num_envs
-        episode_keys = jax.random.split(key, eval_episodes)
-        rewards = []
-        # Snapshot the training RNG so evaluation does not consume it.
-        agent_key_before = self.agent.key
-
-        for ep_key in episode_keys:
-            self.env.reset()
-            self.env.reset_perturbations()
-            if hasattr(self.env, "reset_disturbances"):
-                self.env.reset_disturbances()
-
-            if fraction_perturbed_envs > 0.0:
-                self.env.apply_random_perturbations(
-                    key=ep_key,
-                    fraction_perturbed_envs=float(fraction_perturbed_envs),
-                    perturbation_distribution=perturbation_distribution,
-                )
-            if disturbance_fraction > 0.0:
-                self.env.apply_random_disturbance(
-                    key=ep_key,
-                    fraction_disturbed_envs=float(disturbance_fraction),
-                )
-
-            step_config = self.env.build_step_config(
-                max_episode_len=self.episode_len
-            )
-            initial_state = self.env.state_struct
-
-            if self.env.use_adaptive_approach:
-                residual_init = jnp.zeros(
-                    (num_envs, self.env.res_dim), dtype=jnp.float32
-                )
-            else:
-                residual_init = jnp.zeros((num_envs, 0), dtype=jnp.float32)
-
-            def _prepare_eval_input(_step, states, residuals, carry_extra):
-                del carry_extra
-                return prepare_policy_input_with_residuals(
-                    _step, states, residuals, None
-                )
-
-            def _sample_eval_policy(_step, policy_input, rng_key, carry_extra):
-                del _step, carry_extra  # unused
-                actions = self.agent.get_control_input("evaluation", policy_input)
-                zeros = jnp.zeros((num_envs,), dtype=jnp.float32)
-                return actions, zeros, zeros, rng_key, None
-
-            def _post_eval_step(
-                _step, step_output, actions, residuals, reset_flag, carry_extra
-            ):
-                del _step, actions, reset_flag, carry_extra  # unused
-                residuals_next = residuals_from_wrench_delta(
-                    step_output=step_output,
-                    residuals=residuals,
-                    use_adaptive_approach=self.env.use_adaptive_approach,
-                    adaptive_context_mode=self.env.adaptive_context_mode,
-                    thruster_mixer_T=self.env._thruster_mixer_T,
-                )
-                return residuals_next, None, None
-
-            _bootstrap_eval = make_zero_bootstrap_value(num_envs)
-
-            rollout_result = run_functional_rollout(
-                step_config=step_config,
-                initial_state=initial_state,
-                initial_residuals=residual_init,
-                rng=agent_key_before,
-                num_steps=self.episode_len,
-                reference_waypoint=self.reference_point,
-                callbacks=FunctionalRolloutCallbacks(
-                    prepare_policy_input=_prepare_eval_input,
-                    sample_policy=_sample_eval_policy,
-                    post_step=_post_eval_step,
-                    bootstrap_value=_bootstrap_eval,
-                ),
-            )
-            jax.block_until_ready(rollout_result.actions)
-            done_masks = rollout_result.done_masks
-            done_cum = jnp.cumsum(done_masks.astype(jnp.int32), axis=0)
-            first_episode_mask = jnp.logical_or(
-                done_cum == 0,
-                jnp.logical_and(done_masks, done_cum == 1),
-            )
-            episodic_returns = (
-                rollout_result.step_outputs.rewards
-                * first_episode_mask.astype(jnp.float32)
-            ).sum(axis=0)
-            rewards.append(float(episodic_returns.mean()))
-
-        # Restore the training RNG after evaluation.
-        self.agent.key = agent_key_before
-        return float(jnp.mean(jnp.asarray(rewards))) if rewards else 0.0
-
     global_epoch = 0
     # Convenience distribution for nominal-only evaluation.
     zeros_dist = jnp.zeros((5,), dtype=jnp.float32)
-
-    def _sample_start_time(key, low: float, high: float) -> float:
-        if high <= low:
-            return low
-        return float(jax.random.uniform(key, (), minval=low, maxval=high))
-
-    def _sample_flat_indices(total: int, max_samples: int) -> jnp.ndarray:
-        if total <= max_samples:
-            return jnp.arange(total, dtype=jnp.int32)
-        return jnp.linspace(0, total - 1, max_samples, dtype=jnp.int32)
-
-    def _rollout_authority_payload(
-        step_outputs, actions_traj, success_by_env
-    ) -> dict[str, float]:
-        if authority_logging_max_samples <= 0:
-            return {}
-        flat_count = self.steps_per_epoch * self.env.num_envs
-        sample_idx = _sample_flat_indices(flat_count, authority_logging_max_samples)
-        flat_commanded = actions_traj.reshape(-1, self.env.act_dim)
-        flat_applied = step_outputs.applied_ctrl.reshape(-1, self.env.act_dim)
-        flat_desired = flat_commanded @ self.env._thruster_mixer_T
-        sampled_metrics = authority_metrics_from_wrench(
-            commanded_ctrl=flat_commanded[sample_idx],
-            applied_ctrl=flat_applied[sample_idx],
-            desired_wrench=flat_desired[sample_idx],
-            thruster_mixer_T=self.env._thruster_mixer_T,
-        )
-        sampled_envs = sample_idx % self.env.num_envs
-        sampled_success = success_by_env[sampled_envs]
-        payload = summarize_authority_metrics(sampled_metrics)
-        payload.update(
-            authority_bin_stats(
-                sampled_metrics["normalized_wrench_feasibility_error"],
-                sampled_success,
-            )
-        )
-        return payload
 
     for phase_idx, phase in enumerate(phases):
         phase_name = phase["name"]
@@ -328,12 +185,12 @@ def learn_runner(self) -> None:
             ) = jax.random.split(
                 epoch_key, 6
             )
-            failure_start_time = _sample_start_time(
+            failure_start_time = sample_start_time(
                 failure_onset_key,
                 failure_start_time_min,
                 failure_start_time_max,
             )
-            disturbance_start_time = _sample_start_time(
+            disturbance_start_time = sample_start_time(
                 disturbance_onset_key,
                 disturbance_start_time_min,
                 disturbance_start_time_max,
@@ -700,10 +557,12 @@ def learn_runner(self) -> None:
                 )
             )
             authority_payload = (
-                _rollout_authority_payload(
-                    step_outputs,
-                    actions_traj,
-                    terminals_any_epoch,
+                rollout_authority_payload(
+                    self,
+                    step_outputs=step_outputs,
+                    actions_traj=actions_traj,
+                    success_by_env=terminals_any_epoch,
+                    max_samples=authority_logging_max_samples,
                 )
                 if should_log_authority
                 else {}
@@ -906,29 +765,35 @@ def learn_runner(self) -> None:
             if eval_due:
                 eval_start_time = time.perf_counter()
                 eval_keys = jax.random.split(eval_key, 3)
-                nominal_score = _eval_policy(
+                nominal_score = evaluate_policy_checkpoint(
+                    self,
                     key=eval_keys[0],
                     fraction_perturbed_envs=0.0,
                     perturbation_distribution=zeros_dist,
                     disturbance_fraction=0.0,
+                    eval_episodes=eval_episodes,
                 )
 
                 # Evaluate the newest failure in isolation
                 failure_dist = zeros_dist
                 if new_failure_idx is not None:
                     failure_dist = failure_dist.at[int(new_failure_idx)].set(1.0)
-                failure_score = _eval_policy(
+                failure_score = evaluate_policy_checkpoint(
+                    self,
                     key=eval_keys[1],
                     fraction_perturbed_envs=1.0,
                     perturbation_distribution=failure_dist,
                     disturbance_fraction=0.0,
+                    eval_episodes=eval_episodes,
                 )
 
-                mixture_score = _eval_policy(
+                mixture_score = evaluate_policy_checkpoint(
+                    self,
                     key=eval_keys[2],
                     fraction_perturbed_envs=phase_failure_fraction,
                     perturbation_distribution=phase_distribution,
                     disturbance_fraction=phase_disturbance_fraction,
+                    eval_episodes=eval_episodes,
                 )
 
                 if nominal_score > best_nominal_score:
