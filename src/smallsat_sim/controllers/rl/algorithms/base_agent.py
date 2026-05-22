@@ -16,12 +16,9 @@ def _sample_policy_from_modules(
     """
     Helper that samples actions, evaluates the critic, and computes log-probabilities.
     """
-    pi, _ = actor.forward(states_ext)
-    pre_actions = pi.sample(seed=key)
-    actions = actor.apply_action_bounds(pre_actions)
+    actions, logp = actor.sample_action_and_logp(states_ext, key)
     values = critic.forward(states_ext)
-    logp = jnp.asarray(actor._log_prob_from_dist(pi, actions))
-    return actions, values, logp
+    return actions, values, jnp.asarray(logp)
 
 
 def policy_sample_from_state(

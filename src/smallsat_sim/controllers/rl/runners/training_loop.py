@@ -261,14 +261,16 @@ def learn_runner(self) -> None:
             return jnp.arange(total, dtype=jnp.int32)
         return jnp.linspace(0, total - 1, max_samples, dtype=jnp.int32)
 
-    def _rollout_authority_payload(step_outputs, success_by_env) -> dict[str, float]:
+    def _rollout_authority_payload(
+        step_outputs, actions_traj, success_by_env
+    ) -> dict[str, float]:
         if authority_logging_max_samples <= 0:
             return {}
         flat_count = self.steps_per_epoch * self.env.num_envs
         sample_idx = _sample_flat_indices(flat_count, authority_logging_max_samples)
-        flat_commanded = step_outputs.commanded_ctrl.reshape(-1, self.env.act_dim)
+        flat_commanded = actions_traj.reshape(-1, self.env.act_dim)
         flat_applied = step_outputs.applied_ctrl.reshape(-1, self.env.act_dim)
-        flat_desired = step_outputs.desired_wrench.reshape(-1, 6)
+        flat_desired = flat_commanded @ self.env._thruster_mixer_T
         sampled_metrics = authority_metrics_from_wrench(
             commanded_ctrl=flat_commanded[sample_idx],
             applied_ctrl=flat_applied[sample_idx],
@@ -353,7 +355,8 @@ def learn_runner(self) -> None:
             setup_duration = time.perf_counter() - setup_start_time
             scan_start = time.perf_counter()
             step_config = self.env.build_step_config(
-                max_episode_len=self.max_ep_len
+                max_episode_len=self.max_ep_len,
+                effects_enabled=phase_uses_effects,
             )
             initial_state = self.env.state_struct
             actor_state, critic_state = self.agent.actor_critic_state()
@@ -387,13 +390,20 @@ def learn_runner(self) -> None:
             def _post_step(
                 _step, step_output, actions, residuals, reset_flag, carry_extra
             ):
-                del _step, actions, reset_flag  # unused
+                del _step, reset_flag  # unused
+                desired_wrench = (
+                    actions @ self.env._thruster_mixer_T
+                    if self.env.use_adaptive_approach
+                    else None
+                )
                 residuals_next = residuals_from_wrench_delta(
                     step_output=step_output,
                     residuals=residuals,
                     use_adaptive_approach=self.env.use_adaptive_approach,
                     adaptive_context_mode=self.env.adaptive_context_mode,
                     thruster_mixer_T=self.env._thruster_mixer_T,
+                    commanded_ctrl=actions,
+                    desired_wrench=desired_wrench,
                 )
                 return residuals_next, None, carry_extra
 
@@ -563,12 +573,12 @@ def learn_runner(self) -> None:
             done_count_by_env = done_events_bool.sum(axis=0)
             done_final_pos_error = jnp.where(
                 done_events_bool[:, :, None],
-                step_outputs.next_states[:, :, :3],
+                step_outputs.next_position_error,
                 0.0,
             ).sum(axis=0)
             safe_counts = jnp.maximum(done_count_by_env, 1)[:, None]
             mean_done_final_error = done_final_pos_error / safe_counts
-            fallback_final_error = step_outputs.next_states[-1, :, :3]
+            fallback_final_error = step_outputs.next_position_error[-1]
             final_position_errors = jnp.where(
                 done_count_by_env[:, None] > 0,
                 mean_done_final_error,
@@ -648,7 +658,11 @@ def learn_runner(self) -> None:
                 )
             )
             authority_payload = (
-                _rollout_authority_payload(step_outputs, terminals_any_epoch)
+                _rollout_authority_payload(
+                    step_outputs,
+                    actions_traj,
+                    terminals_any_epoch,
+                )
                 if should_log_authority
                 else {}
             )

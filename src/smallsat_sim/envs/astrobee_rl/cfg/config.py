@@ -100,9 +100,9 @@ class EnvConfig(BaseEnvConfig):
             class PPO:
                 steps_per_epoch = 1024
                 epochs = 400  # Covers the nominal+curriculum phases when failures are enabled
-                max_ep_len = 1024
-                gamma = 0.99
-                lam = 0.95
+                max_ep_len = 512  # 25.6s at 20Hz; enough for 2m setpoint regulation without overlong episodes
+                gamma = 0.995
+                lam = 0.97
                 actor_lr = 3e-4  # Between 2 and 4e-4
                 critic_lr = 5e-4  # >= actor_lr
                 entropy_coef = 1e-4
@@ -183,13 +183,13 @@ class EnvConfig(BaseEnvConfig):
             n_evals = 10
 
             # Hyperparams for the controller
-            deployment_len = 512  # Set to None to disable
+            deployment_len = 512  # Set to None to disable; matches the PPO training/eval horizon
 
             # Hyperparams for the deployment loop
-            deployment_radius = 5.0
+            deployment_radius = 2.0
             deployment_spacing = 1.0
-            deployment_init_pos = (5.0, 0.0, 10.17)
-            deployment_max_start_offset = 0.5
+            deployment_init_pos = (0.0, 0.0, 10.17)
+            deployment_max_start_offset = 2.0
 
             # Regression testing of functional rollout vs legacy rollout
             verify_functional_rollout = False

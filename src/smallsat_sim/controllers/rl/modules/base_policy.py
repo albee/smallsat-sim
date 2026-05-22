@@ -64,6 +64,26 @@ class Actor(nnx.Module):
         std = jnp.exp(log_std)
         return distrax.MultivariateNormalDiag(mu, std)
 
+    def sample_action_and_logp(
+        self, obs_residuals: jnp.ndarray, key: jnp.ndarray
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+        """
+        Fast rollout sampler for the diagonal Gaussian policy.
+
+        PPO rollouts call this for every environment at every step, so avoid
+        constructing a Distrax distribution object in the scan hot path.
+        """
+        mu = self.mu_net(obs_residuals)
+        log_std = self.log_std.value
+        if self.log_std_min is not None:
+            log_std = jnp.maximum(log_std, self.log_std_min)
+        std = jnp.exp(log_std)
+        noise = jax.random.normal(key, mu.shape, dtype=mu.dtype)
+        pre_actions = mu + std * noise
+        actions = self.apply_action_bounds(pre_actions)
+        logp = self._log_prob_diag_gaussian_pre_squash(mu, log_std, pre_actions)
+        return actions, logp
+
     def _log_prob_from_dist(
         self, pi: distrax.MultivariateNormalDiag, actions: jnp.ndarray
     ):
@@ -77,6 +97,58 @@ class Actor(nnx.Module):
         norm_actions = self._normalize_actions(actions)
         log_det = self._log_det_jacobian(norm_actions)
         return pi.log_prob(pre_actions) - log_det
+
+    def _log_prob_from_pre_squash(
+        self, pi: distrax.MultivariateNormalDiag, pre_actions: jnp.ndarray
+    ):
+        """
+        Log-probability for freshly sampled bounded actions.
+
+        This avoids inverting the sigmoid squash when the pre-squash sample is
+        already available in the PPO rollout hot path.
+        """
+        if self.act_dim == 0:
+            return pi.log_prob(pre_actions)
+
+        log_sigmoid = jax.nn.log_sigmoid(pre_actions)
+        log_one_minus_sigmoid = jax.nn.log_sigmoid(-pre_actions)
+        contrib = self._range_mask * (
+            self._log_range_safe + log_sigmoid + log_one_minus_sigmoid
+        )
+        log_det = jnp.sum(contrib, axis=-1)
+        return pi.log_prob(pre_actions) - log_det
+
+    def _log_prob_diag_gaussian_pre_squash(
+        self,
+        mu: jnp.ndarray,
+        log_std: jnp.ndarray,
+        pre_actions: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """
+        Corrected log-probability for a diagonal Gaussian followed by the
+        sigmoid/range action transform.
+        """
+        if self.act_dim == 0:
+            centered = pre_actions - mu
+            inv_std = jnp.exp(-log_std)
+            normal_terms = (centered * inv_std) ** 2 + 2.0 * log_std + jnp.log(
+                2.0 * jnp.pi
+            )
+            return -0.5 * jnp.sum(normal_terms, axis=-1)
+
+        centered = pre_actions - mu
+        inv_std = jnp.exp(-log_std)
+        normal_terms = (centered * inv_std) ** 2 + 2.0 * log_std + jnp.log(
+            2.0 * jnp.pi
+        )
+        logp_pre_squash = -0.5 * jnp.sum(normal_terms, axis=-1)
+
+        log_sigmoid = jax.nn.log_sigmoid(pre_actions)
+        log_one_minus_sigmoid = jax.nn.log_sigmoid(-pre_actions)
+        transform_terms = self._range_mask * (
+            self._log_range_safe + log_sigmoid + log_one_minus_sigmoid
+        )
+        return logp_pre_squash - jnp.sum(transform_terms, axis=-1)
 
     def forward(
         self, obs_residuals: jnp.ndarray, actions: jnp.ndarray | None = None

@@ -59,6 +59,9 @@ def run_functional_rollout(
 
     num_envs = initial_state.mjx_batch.qpos.shape[0]
     reset_fn_accepts_mask = len(inspect.signature(reset_fn).parameters) >= 3
+    step_fn_accepts_prev_states = (
+        "prev_states" in inspect.signature(step_fn).parameters
+    )
 
     def _initial_episode_state():
         return (
@@ -117,24 +120,23 @@ def run_functional_rollout(
             step_idx, policy_input, rng_key, carry_extra
         )
 
-        next_env_state, step_output = step_fn(
-            env_state,
-            actions,
-            reference_waypoint,
-            step_config,
-            residuals,
-        )
-
-        def _log_nan(_):
-            jax.debug.print("NaN in next_states at step {s}", s=step_idx)
-            return jnp.array(0, dtype=jnp.int32)
-
-        _ = jax.lax.cond(
-            jnp.isnan(step_output.next_states).any(),
-            _log_nan,
-            lambda _: jnp.array(0, dtype=jnp.int32),
-            operand=None,
-        )
+        if step_fn_accepts_prev_states:
+            next_env_state, step_output = step_fn(
+                env_state,
+                actions,
+                reference_waypoint,
+                step_config,
+                residuals,
+                prev_states=states_curr,
+            )
+        else:
+            next_env_state, step_output = step_fn(
+                env_state,
+                actions,
+                reference_waypoint,
+                step_config,
+                residuals,
+            )
 
         ep_ret_next = ep_ret + step_output.rewards
         ep_len_next = ep_len + 1

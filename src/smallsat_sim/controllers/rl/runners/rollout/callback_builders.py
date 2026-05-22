@@ -26,12 +26,20 @@ def residuals_from_wrench_delta(
     use_adaptive_approach: bool,
     adaptive_context_mode: str = "structured",
     thruster_mixer_T: jnp.ndarray | None = None,
+    commanded_ctrl: jnp.ndarray | None = None,
+    desired_wrench: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
+    if not use_adaptive_approach:
+        return residuals
+    if commanded_ctrl is None:
+        commanded_ctrl = step_output.commanded_ctrl
+    if desired_wrench is None:
+        desired_wrench = step_output.desired_wrench
     return build_adaptive_context(
-        commanded_ctrl=step_output.commanded_ctrl,
+        commanded_ctrl=commanded_ctrl,
         applied_ctrl=step_output.applied_ctrl,
         actual_wrench=step_output.actual_wrench,
-        desired_wrench=step_output.desired_wrench,
+        desired_wrench=desired_wrench,
         previous_context=residuals,
         use_adaptive_approach=use_adaptive_approach,
         adaptive_context_mode=adaptive_context_mode,

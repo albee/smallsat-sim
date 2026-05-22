@@ -105,6 +105,7 @@ class VecEnvStepConfig:
     thruster_mixer_T: jnp.ndarray
     base_disturbance_states: Tuple[Optional[DisturbanceState], ...]
     base_perturbation_states: Tuple[Optional[PerturbationState], ...]
+    effects_enabled: bool = True
 
 
 @dataclass
@@ -139,13 +140,11 @@ class VecEnvTrainingStepOutput:
     """
 
     prev_states: jnp.ndarray
-    next_states: jnp.ndarray
+    next_position_error: jnp.ndarray
     rewards: jnp.ndarray
     terminals: jnp.ndarray
-    commanded_ctrl: jnp.ndarray
     applied_ctrl: jnp.ndarray
     actual_wrench: jnp.ndarray
-    desired_wrench: jnp.ndarray
     success_terminals: jnp.ndarray
     failure_terminals: jnp.ndarray
 
@@ -212,13 +211,11 @@ jax.tree_util.register_pytree_node(
 def _vecenv_training_step_output_flatten(output: VecEnvTrainingStepOutput):
     children = (
         output.prev_states,
-        output.next_states,
+        output.next_position_error,
         output.rewards,
         output.terminals,
-        output.commanded_ctrl,
         output.applied_ctrl,
         output.actual_wrench,
-        output.desired_wrench,
         output.success_terminals,
         output.failure_terminals,
     )
@@ -228,25 +225,21 @@ def _vecenv_training_step_output_flatten(output: VecEnvTrainingStepOutput):
 def _vecenv_training_step_output_unflatten(aux_data, children):
     (
         prev_states,
-        next_states,
+        next_position_error,
         rewards,
         terminals,
-        commanded_ctrl,
         applied_ctrl,
         actual_wrench,
-        desired_wrench,
         success_terminals,
         failure_terminals,
     ) = children
     return VecEnvTrainingStepOutput(
         prev_states=prev_states,
-        next_states=next_states,
+        next_position_error=next_position_error,
         rewards=rewards,
         terminals=terminals,
-        commanded_ctrl=commanded_ctrl,
         applied_ctrl=applied_ctrl,
         actual_wrench=actual_wrench,
-        desired_wrench=desired_wrench,
         success_terminals=success_terminals,
         failure_terminals=failure_terminals,
     )
@@ -852,9 +845,14 @@ def vecenv_step(
 
     prev_states = _compute_state_features(state.mjx_batch, next_waypoint)
     prev_obs = _compute_observations_from_batch(state.mjx_batch)
-    prepared_state, applied_ctrl, qfrc_applied = prepare_step_functional(
-        state, commanded_ctrl
-    )
+    if config.effects_enabled:
+        prepared_state, applied_ctrl, qfrc_applied = prepare_step_functional(
+            state, commanded_ctrl
+        )
+    else:
+        prepared_state = state
+        applied_ctrl = commanded_ctrl
+        qfrc_applied = jnp.zeros_like(state.mjx_batch.qfrc_applied)
 
     def _debug_nan(tag: str, tensor: jnp.ndarray):
         def _print(_):
@@ -1000,6 +998,7 @@ def vecenv_step_training(
     next_waypoint: jnp.ndarray,
     config: VecEnvStepConfig,
     prev_residuals: Optional[jnp.ndarray] = None,
+    prev_states: Optional[jnp.ndarray] = None,
 ) -> Tuple[VecEnvState, VecEnvTrainingStepOutput]:
     """
     Lean equivalent of ``vecenv_step`` for PPO policy training.
@@ -1011,10 +1010,16 @@ def vecenv_step_training(
     """
     commanded_ctrl = jnp.asarray(commanded_ctrl)
 
-    prev_states = _compute_state_features(state.mjx_batch, next_waypoint)
-    prepared_state, applied_ctrl, qfrc_applied = prepare_step_functional(
-        state, commanded_ctrl
-    )
+    if prev_states is None:
+        prev_states = _compute_state_features(state.mjx_batch, next_waypoint)
+    if config.effects_enabled:
+        prepared_state, applied_ctrl, qfrc_applied = prepare_step_functional(
+            state, commanded_ctrl
+        )
+    else:
+        prepared_state = state
+        applied_ctrl = commanded_ctrl
+        qfrc_applied = jnp.zeros_like(state.mjx_batch.qfrc_applied)
 
     mjx_batch = prepared_state.mjx_batch.replace(
         ctrl=applied_ctrl,
@@ -1073,18 +1078,21 @@ def vecenv_step_training(
     terminal_bonus = jnp.asarray(config.terminal_bonus, dtype=rewards.dtype)
     rewards = rewards + terminal_bonus * success_terminals.astype(rewards.dtype)
 
-    actual_wrench = jnp.atleast_2d(mjx_batch.actuator_force) @ config.thruster_mixer_T
-    desired_wrench = commanded_ctrl @ config.thruster_mixer_T
+    if config.use_adaptive_approach and config.res_dim > 0:
+        actual_wrench = (
+            jnp.atleast_2d(mjx_batch.actuator_force) @ config.thruster_mixer_T
+        )
+    else:
+        wrench_shape = (commanded_ctrl.shape[0], config.thruster_mixer_T.shape[1])
+        actual_wrench = jnp.zeros(wrench_shape, dtype=commanded_ctrl.dtype)
 
     step_output = VecEnvTrainingStepOutput(
         prev_states=prev_states,
-        next_states=next_states,
+        next_position_error=next_states[:, :3],
         rewards=rewards,
         terminals=terminals,
-        commanded_ctrl=commanded_ctrl,
         applied_ctrl=applied_ctrl,
         actual_wrench=actual_wrench,
-        desired_wrench=desired_wrench,
         success_terminals=success_terminals,
         failure_terminals=failure_terminals,
     )
@@ -1677,7 +1685,9 @@ class VecEnv(BaseEnv):
         finally:
             self.apply_state_struct(original_state)
 
-    def build_step_config(self, *, max_episode_len: int) -> VecEnvStepConfig:
+    def build_step_config(
+        self, *, max_episode_len: int, effects_enabled: bool = True
+    ) -> VecEnvStepConfig:
         """
         Construct the functional step configuration reflecting the current environment.
         """
@@ -1720,6 +1730,7 @@ class VecEnv(BaseEnv):
             res_dim=int(self.res_dim),
             use_adaptive_approach=bool(self.use_adaptive_approach),
             collect_reward_components=bool(self.collect_reward_components),
+            effects_enabled=bool(effects_enabled),
             thruster_mixer_T=self._thruster_mixer_T,
             base_disturbance_states=self.disturbance_states,
             base_perturbation_states=self.perturbation_states,
