@@ -1,3 +1,5 @@
+import os
+
 import jax
 import jax.numpy as jnp
 
@@ -12,6 +14,11 @@ from smallsat_sim.controllers.rl.runners.rollout import (
     prepare_policy_input_with_residuals,
     residuals_from_wrench_delta,
     run_functional_rollout,
+)
+from smallsat_sim.envs.vec_env import (
+    _compute_freeflyer_state_features,
+    freeflyer_reset_masked,
+    vecenv_step_freeflyer,
 )
 
 
@@ -54,7 +61,20 @@ def evaluate_policy_checkpoint(
             )
 
         step_config = runner.env.build_step_config(max_episode_len=runner.episode_len)
-        initial_state = runner.env.state_struct
+        rollout_backend = os.environ.get(
+            "SMALLSAT_ROLLOUT_BACKEND",
+            getattr(runner.env.env_cfg.control.RL, "rollout_backend", "mjx"),
+        )
+        if rollout_backend == "freeflyer":
+            initial_state = runner.env.freeflyer_state_struct()
+            rollout_step_fn = vecenv_step_freeflyer
+            rollout_reset_fn = freeflyer_reset_masked
+            rollout_state_features_fn = _compute_freeflyer_state_features
+        else:
+            initial_state = runner.env.state_struct
+            rollout_step_fn = None
+            rollout_reset_fn = None
+            rollout_state_features_fn = None
 
         if runner.env.use_adaptive_approach:
             residual_init = jnp.zeros((num_envs, runner.env.res_dim), dtype=jnp.float32)
@@ -97,6 +117,9 @@ def evaluate_policy_checkpoint(
                 post_step=_post_eval_step,
                 bootstrap_value=make_zero_bootstrap_value(num_envs),
             ),
+            step_fn=rollout_step_fn,
+            reset_fn=rollout_reset_fn,
+            state_features_fn=rollout_state_features_fn,
         )
         jax.block_until_ready(rollout_result.actions)
         done_masks = rollout_result.done_masks
