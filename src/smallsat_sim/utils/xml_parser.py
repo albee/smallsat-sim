@@ -64,7 +64,7 @@ def generate_mujoco_xml_flat_bed(env_config, model_config, free_floating: bool =
         <visual>
             <global offwidth="{env_config.renderer.width}" offheight="{env_config.renderer.height}"/>
         </visual>
-        <option gravity="0 0 0"/>
+        <option gravity="0 0 0" timestep="{env_config.sim.dt}"/>
         <default>
             <default class="visual">
                 <geom group="2" type="mesh" contype="0" conaffinity="0"/>
@@ -276,7 +276,7 @@ def generate_mujoco_xml_gateway(env_config, model_config, free_floating: bool = 
         <visual>
             <global offwidth="{env_config.renderer.width}" offheight="{env_config.renderer.height}"/>
         </visual>
-        <option gravity="0 0 0"/>
+        <option gravity="0 0 0" timestep="{env_config.sim.dt}"/>
         <default>
             <default class="visual">
                 <geom group="2" type="mesh" contype="0" conaffinity="0"/>
