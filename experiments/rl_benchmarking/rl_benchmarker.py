@@ -89,8 +89,13 @@ class Benchmarker(object):
             if use_adaptive_approach and phase == 2:
                 runner.train_adaptation_module_on_policy()
 
-            # Evaluation
-            runner.evaluate(phase=phase)
+            if os.environ.get("SMALLSAT_SKIP_EVAL", "0") == "1":
+                print(
+                    "Skipping policy evaluation because SMALLSAT_SKIP_EVAL=1. "
+                    "Set RUN_EVAL=1 in train_test_all.sh to enable it."
+                )
+            else:
+                runner.evaluate(phase=phase)
 
         # Save log if logging is enabled
         if self.args.log:

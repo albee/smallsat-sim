@@ -184,7 +184,7 @@ def evaluate_runner(runner: Any, phase: int = 2) -> None:
             return actions, zeros, zeros, rng_key, carry_extra
 
         def _post_step(_step, step_output, actions, residuals, reset_flag, carry_extra):
-            del _step, residuals
+            del _step
             history, counts, history_full, new_extra = update_history_buffer(
                 carry_extra=carry_extra,
                 prev_states=step_output.prev_states,

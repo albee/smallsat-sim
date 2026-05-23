@@ -99,11 +99,11 @@ class EnvConfig(BaseEnvConfig):
 
             class PPO:
                 steps_per_epoch = 512
-                epochs = 400  # Covers the nominal+curriculum phases when failures are enabled
+                epochs = 1800  # 600 nominal + 5 failure phases + disturbance phase at 200 epochs each
                 max_ep_len = 512  # 25.6s at 20Hz; enough for 2m setpoint regulation without overlong episodes
                 gamma = 0.995
                 lam = 0.97
-                actor_lr = 2e-4  # Between 2 and 4e-4
+                actor_lr = 3e-4  # Slightly more aggressive policy updates for faster nominal convergence
                 critic_lr = 5e-4  # >= actor_lr
                 entropy_coef = 1e-5
                 actor_training_epochs = 3
@@ -119,10 +119,12 @@ class EnvConfig(BaseEnvConfig):
                 log_std_min = float(np.log(0.05))
 
             # Sequential failure curriculum knobs
-            curriculum_nominal_epochs = 100
-            curriculum_phase_epochs = 50
+            curriculum_nominal_epochs = 600
+            curriculum_phase_epochs = 200
             curriculum_failure_fraction = 0.4  # 60% nominal, 40% failures
             curriculum_disturbance_fraction = 0.1
+            curriculum_failure_ramp_epochs = 50
+            curriculum_disturbance_ramp_epochs = 50
             curriculum_critic_warmup_epochs = 15
             curriculum_critic_warmup_scale = 1.0 / 3.0
             curriculum_eval_interval = 20
@@ -139,11 +141,11 @@ class EnvConfig(BaseEnvConfig):
             # Mission tolerances (tuned to current training scenario - do not change)
             sigma_pos = 1.6
             sigma_vel = 0.2  # sigma_pos / (N_settle * dt)
-            sigma_att = 0.4  # radians
-            sigma_angvel = 0.04  # sigma_att / (N_settle * dt)
+            sigma_att = 0.8  # radians; wider basin gives useful attitude gradients from large initial errors
+            sigma_angvel = 0.08  # paired with sigma_att for smoother early attitude learning
 
             # Reward weights (can play with overall magnitude s.t. critic loss is well-behaved)
-            w_pos, w_vel, w_att, w_angvel = 5e1, 5e0, 1e1, 2e-1
+            w_pos, w_vel, w_att, w_angvel = 5e1, 1e1, 3e1, 5e-1
 
             # Penalty weights
             lam_fuel = 1e-3
@@ -152,7 +154,7 @@ class EnvConfig(BaseEnvConfig):
             lam_fuel_terminal = 5e-3
             terminal_bonus = 2e1
             terminal_radius = 0.25
-            terminal_hold_steps = 10  # 0.5s at 20Hz control; position-only success hold
+            terminal_hold_steps = 5  # 0.25s at 20Hz control; require settling without making termination unnecessarily rare
             terminal_max_speed = 0.15
             terminal_max_att_error = 0.25  # radians
             terminal_max_ang_speed = 0.05

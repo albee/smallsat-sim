@@ -54,25 +54,50 @@ def learn_runner(self) -> None:
     if os.path.isfile(file_path):
         return
 
+    def _load_actor_critic_checkpoint(ckpt_filename: str) -> bool:
+        file_path = os.path.join(self.ckpt_dir, ckpt_filename)
+        if not os.path.isfile(file_path):
+            return False
+        restored_state = load_trained_modules(self.ckpt_dir, ckpt_filename)
+        actor_state = restored_state["actor_model"]
+        critic_state = restored_state["critic_model"]
+        if isinstance(actor_state, dict):
+            nnx.update(self.agent.actor, actor_state)
+        else:
+            nnx.update(self.agent.actor.mu_net, actor_state.mu_net)
+        if isinstance(critic_state, dict):
+            nnx.update(self.agent.critic, critic_state)
+        else:
+            nnx.update(self.agent.critic.v_net, critic_state.v_net)
+        return True
+
+    def _nominal_checkpoint_name(ckpt_filename: str) -> str:
+        stem, ext = os.path.splitext(ckpt_filename)
+        if stem.endswith("_nominal"):
+            return ckpt_filename
+        return f"{stem}_nominal{ext}"
+
     if self.env.use_pretrained:
         # Check if pretrained actor and critic modules are available and load them
-        file_path = os.path.join(self.ckpt_dir, self.pretraining_state_file_name)
-        if os.path.isfile(file_path):
-            restored_state = load_trained_modules(
-                self.ckpt_dir, self.pretraining_state_file_name
-            )
-            actor_state = restored_state["actor_model"]
-            critic_state = restored_state["critic_model"]
-            if isinstance(actor_state, dict):
-                nnx.update(self.agent.actor, actor_state)
-            else:
-                nnx.update(self.agent.actor.mu_net, actor_state.mu_net)
-            if isinstance(critic_state, dict):
-                nnx.update(self.agent.critic, critic_state)
-            else:
-                nnx.update(self.agent.critic.v_net, critic_state.v_net)
+        if _load_actor_critic_checkpoint(self.pretraining_state_file_name):
+            print(f"Loaded pretrained checkpoint {self.pretraining_state_file_name}.\n")
         else:
             print("No pretrained modules available.\n")
+
+    warm_started_from_nominal = False
+    nominal_checkpoint_name = _nominal_checkpoint_name(self.training_state_file_name)
+    if self.env.train_with_failures and not self.env.use_pretrained:
+        warm_started_from_nominal = _load_actor_critic_checkpoint(nominal_checkpoint_name)
+        if warm_started_from_nominal:
+            print(
+                f"Loaded nominal checkpoint {nominal_checkpoint_name}; "
+                "skipping nominal curriculum phase.\n"
+            )
+        else:
+            print(
+                f"No same-architecture nominal checkpoint found "
+                f"({nominal_checkpoint_name}); training nominal phase first.\n"
+            )
 
     print("Training agent...\n")
 
@@ -103,6 +128,10 @@ def learn_runner(self) -> None:
     phase_epochs = int(cfg.curriculum_phase_epochs)
     failure_fraction = float(cfg.curriculum_failure_fraction)
     disturbance_fraction = float(cfg.curriculum_disturbance_fraction)
+    failure_ramp_epochs = max(1, int(getattr(cfg, "curriculum_failure_ramp_epochs", 1)))
+    disturbance_ramp_epochs = max(
+        1, int(getattr(cfg, "curriculum_disturbance_ramp_epochs", 1))
+    )
     critic_warmup_epochs = int(cfg.curriculum_critic_warmup_epochs)
     critic_warmup_scale = float(cfg.curriculum_critic_warmup_scale)
     eval_interval = int(cfg.curriculum_eval_interval)
@@ -138,6 +167,9 @@ def learn_runner(self) -> None:
         failure_fraction=failure_fraction,
         disturbance_fraction=disturbance_fraction,
     )
+    if warm_started_from_nominal:
+        phases = [phase for phase in phases if phase["active_failures"]]
+        total_epochs = sum(int(phase["epochs"]) for phase in phases)
     # Align runner/agent epoch counts with the curriculum length
     self.epochs = total_epochs
     if hasattr(self.agent, "epochs"):
@@ -174,6 +206,12 @@ def learn_runner(self) -> None:
             global_epoch += 1
             epoch_start_time = time.perf_counter()
             setup_start_time = time.perf_counter()
+            failure_ramp = min(1.0, float(phase_epoch + 1) / float(failure_ramp_epochs))
+            disturbance_ramp = min(
+                1.0, float(phase_epoch + 1) / float(disturbance_ramp_epochs)
+            )
+            current_failure_fraction = phase_failure_fraction * failure_ramp
+            current_disturbance_fraction = phase_disturbance_fraction * disturbance_ramp
             epoch_key = self._take_keys()
             (
                 perturb_key,
@@ -202,7 +240,7 @@ def learn_runner(self) -> None:
                     self.env.reset_perturbations()  # avoid accumulating failures across epochs
                     self.env.apply_random_perturbations(
                         key=perturb_key,
-                        fraction_perturbed_envs=phase_failure_fraction,
+                        fraction_perturbed_envs=current_failure_fraction,
                         perturbation_distribution=phase_distribution,
                         start_time=failure_start_time,
                     )
@@ -211,7 +249,7 @@ def learn_runner(self) -> None:
                         self.env.reset_disturbances()
                     self.env.apply_random_disturbance(
                         key=disturb_key,
-                        fraction_disturbed_envs=phase_disturbance_fraction,
+                        fraction_disturbed_envs=current_disturbance_fraction,
                         start_time=disturbance_start_time,
                     )
 
@@ -483,7 +521,79 @@ def learn_runner(self) -> None:
                 mean_done_final_error,
                 fallback_final_error,
             )
-            final_pos_error_epoch = jnp.linalg.norm(final_position_errors, axis=1).mean()
+            final_pos_error_by_env = jnp.linalg.norm(final_position_errors, axis=1)
+            final_pos_error_epoch = final_pos_error_by_env.mean()
+            median_final_pos_error_epoch = jnp.median(final_pos_error_by_env)
+            p75_final_pos_error_epoch = jnp.quantile(final_pos_error_by_env, 0.75)
+            p90_final_pos_error_epoch = jnp.quantile(final_pos_error_by_env, 0.90)
+
+            def _final_scalar_from_done(metric_seq):
+                done_metric_sum = jnp.where(done_events_bool, metric_seq, 0.0).sum(
+                    axis=0
+                )
+                mean_done_metric = done_metric_sum / jnp.maximum(
+                    done_count_by_env, 1
+                )
+                return jnp.where(done_count_by_env > 0, mean_done_metric, metric_seq[-1])
+
+            final_speed_by_env = _final_scalar_from_done(step_outputs.next_speed)
+            final_att_error_by_env = _final_scalar_from_done(
+                step_outputs.next_attitude_error
+            )
+            final_ang_speed_by_env = _final_scalar_from_done(
+                step_outputs.next_angular_speed
+            )
+            final_pos_ok_by_env = final_pos_error_by_env <= self.env.terminal_radius
+            final_speed_ok_by_env = final_speed_by_env <= self.env.terminal_max_speed
+            final_att_ok_by_env = (
+                final_att_error_by_env <= self.env.terminal_max_att_error
+            )
+            final_ang_speed_ok_by_env = (
+                final_ang_speed_by_env <= self.env.terminal_max_ang_speed
+            )
+            fraction_pos_within_radius_epoch = final_pos_ok_by_env.astype(
+                jnp.float32
+            ).mean()
+            fraction_speed_within_limit_epoch = final_speed_ok_by_env.astype(
+                jnp.float32
+            ).mean()
+            fraction_att_within_limit_epoch = final_att_ok_by_env.astype(
+                jnp.float32
+            ).mean()
+            fraction_ang_speed_within_limit_epoch = final_ang_speed_ok_by_env.astype(
+                jnp.float32
+            ).mean()
+            fraction_all_conditions_except_hold_epoch = (
+                final_pos_ok_by_env
+                & final_speed_ok_by_env
+                & final_att_ok_by_env
+                & final_ang_speed_ok_by_env
+            ).astype(jnp.float32).mean()
+
+            pos_ok_seq = (
+                jnp.linalg.norm(step_outputs.next_position_error, axis=-1)
+                <= self.env.terminal_radius
+            )
+
+            def _hold_count_scan(carry, inputs):
+                counts, max_counts = carry
+                pos_ok, done = inputs
+                next_counts = jnp.where(pos_ok, counts + 1, 0)
+                next_max_counts = jnp.maximum(max_counts, next_counts)
+                carry_counts = jnp.where(done, 0, next_counts)
+                return (carry_counts, next_max_counts), None
+
+            (_, max_success_hold_steps_by_env), _ = jax.lax.scan(
+                _hold_count_scan,
+                (
+                    jnp.zeros((self.env.num_envs,), dtype=jnp.int32),
+                    jnp.zeros((self.env.num_envs,), dtype=jnp.int32),
+                ),
+                (pos_ok_seq, done_events_bool),
+            )
+            mean_consecutive_success_hold_steps_epoch = (
+                max_success_hold_steps_by_env.astype(jnp.float32).mean()
+            )
 
             terminals_any_epoch = jnp.any(step_outputs.success_terminals, axis=0)
             success_env_count_epoch = jnp.asarray(
@@ -693,6 +803,31 @@ def learn_runner(self) -> None:
                     mean_lateral_error=float(tracking_error_epoch),
                     mean_angle_error=float(angle_error_epoch),
                     mean_final_position_error=float(final_pos_error_epoch),
+                    current_failure_fraction=float(current_failure_fraction),
+                    current_disturbance_fraction=float(current_disturbance_fraction),
+                    median_final_position_error=float(
+                        median_final_pos_error_epoch
+                    ),
+                    p75_final_position_error=float(p75_final_pos_error_epoch),
+                    p90_final_position_error=float(p90_final_pos_error_epoch),
+                    fraction_pos_within_radius=float(
+                        fraction_pos_within_radius_epoch
+                    ),
+                    fraction_speed_within_limit=float(
+                        fraction_speed_within_limit_epoch
+                    ),
+                    fraction_att_within_limit=float(
+                        fraction_att_within_limit_epoch
+                    ),
+                    fraction_ang_speed_within_limit=float(
+                        fraction_ang_speed_within_limit_epoch
+                    ),
+                    fraction_all_conditions_except_hold=float(
+                        fraction_all_conditions_except_hold_epoch
+                    ),
+                    mean_consecutive_success_hold_steps=float(
+                        mean_consecutive_success_hold_steps_epoch
+                    ),
                     reward_component_means={
                         metric_name: float(metric_value)
                         for metric_name, metric_value in reward_component_means.items()
@@ -742,6 +877,31 @@ def learn_runner(self) -> None:
                     mean_lateral_error=float(tracking_error_epoch),
                     mean_angle_error=float(angle_error_epoch),
                     mean_final_position_error=float(final_pos_error_epoch),
+                    current_failure_fraction=float(current_failure_fraction),
+                    current_disturbance_fraction=float(current_disturbance_fraction),
+                    median_final_position_error=float(
+                        median_final_pos_error_epoch
+                    ),
+                    p75_final_position_error=float(p75_final_pos_error_epoch),
+                    p90_final_position_error=float(p90_final_pos_error_epoch),
+                    fraction_pos_within_radius=float(
+                        fraction_pos_within_radius_epoch
+                    ),
+                    fraction_speed_within_limit=float(
+                        fraction_speed_within_limit_epoch
+                    ),
+                    fraction_att_within_limit=float(
+                        fraction_att_within_limit_epoch
+                    ),
+                    fraction_ang_speed_within_limit=float(
+                        fraction_ang_speed_within_limit_epoch
+                    ),
+                    fraction_all_conditions_except_hold=float(
+                        fraction_all_conditions_except_hold_epoch
+                    ),
+                    mean_consecutive_success_hold_steps=float(
+                        mean_consecutive_success_hold_steps_epoch
+                    ),
                     train_mean_episodic_returns=float(mean_ep_return_epoch),
                     reward_scale_metrics=reward_scale_metrics,
                 )
@@ -790,9 +950,9 @@ def learn_runner(self) -> None:
                 mixture_score = evaluate_policy_checkpoint(
                     self,
                     key=eval_keys[2],
-                    fraction_perturbed_envs=phase_failure_fraction,
+                    fraction_perturbed_envs=current_failure_fraction,
                     perturbation_distribution=phase_distribution,
-                    disturbance_fraction=phase_disturbance_fraction,
+                    disturbance_fraction=current_disturbance_fraction,
                     eval_episodes=eval_episodes,
                 )
 
@@ -814,6 +974,14 @@ def learn_runner(self) -> None:
                 global_epoch % checkpoint_interval == 0
                 or global_epoch == self.epochs
             )
+            if (
+                self.env.train_with_failures
+                and phase_name == "nominal"
+                and phase_epoch + 1 == phase_epochs
+            ):
+                save_trained_modules(
+                    self.agent, self.ckpt_dir, nominal_checkpoint_name
+                )
             if should_save_checkpoint:
                 save_trained_modules(
                     self.agent, self.ckpt_dir, self.training_state_file_name

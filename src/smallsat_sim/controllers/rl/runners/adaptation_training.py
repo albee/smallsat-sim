@@ -78,6 +78,7 @@ def train_adaptation_module_on_policy_runner(self) -> None:
 
     subkeys_train = self._take_keys(self.epochs)
 
+    cfg = self.env.env_cfg.control.RL
     am_lr = self.env.env_cfg.control.RL.am_lr
     am_weight_decay = self.env.env_cfg.control.RL.am_weight_decay
     grad_clip_norm = max(float(self.env.env_cfg.control.RL.am_grad_clip_norm), 1e-6)
@@ -96,7 +97,6 @@ def train_adaptation_module_on_policy_runner(self) -> None:
     num_envs = self.env.num_envs
     history_len = self.env.history_len
     state_action_dim = self.state_action_dim
-    cfg = self.env.env_cfg.control.RL
     failure_start_time_min = float(
         getattr(cfg, "curriculum_failure_start_time_min", 0.0)
     )

@@ -56,10 +56,20 @@ else
   export SMALLSAT_SKIP_DEPLOY=0
 fi
 
+# Policy evaluation runs full rollout episodes after training. Skip by default
+# for fast training sweeps; enable it when collecting comparable eval numbers.
+if [ "${RUN_EVAL:-0}" != "1" ]; then
+  export SMALLSAT_SKIP_EVAL=1
+  echo "Skipping policy evals. Set RUN_EVAL=1 to enable them."
+else
+  export SMALLSAT_SKIP_EVAL=0
+fi
+
 # W&B is enabled by default so benchmark runs are recorded.
 # Use RUN_WANDB=0 only for local smoke tests where W&B overhead is unwanted.
 #   RUN_LOG=1 RUN_VIDEO=1 ./train_test_all.sh
 #   RUN_LOG=1 RUN_OPTIONAL_CONTROLS=1 ./train_test_all.sh
+#   RUN_EVAL=1 RUN_LOG=1 ./train_test_all.sh
 #   RUN_DEPLOY=1 RUN_LOG=1 ./train_test_all.sh
 #   RUN_COUNTERFACTUAL_PROBE=1 ./train_test_all.sh
 #
