@@ -13,8 +13,20 @@ from smallsat_sim.controllers.rl.runners.rollout import (
     run_functional_rollout,
 )
 from smallsat_sim.controllers.rl.runners.curriculum import (
+    build_difficulty_curriculum,
     build_failure_curriculum,
     uniform_failure_distribution,
+)
+from smallsat_sim.controllers.rl.runners.failure_scenarios import (
+    SPLIT_EVAL_ID,
+    SPLIT_EVAL_OOD,
+    SPLIT_STRESS,
+    SPLIT_TRAIN,
+    apply_sampled_failure_scenario_split,
+    build_failure_scenario_table,
+    scenario_bin_counts,
+    scenario_split_counts,
+    save_scenario_table_csv,
 )
 from smallsat_sim.controllers.rl.runners.runner_timing import (
     EpochTiming,
@@ -158,18 +170,74 @@ def learn_runner(self) -> None:
     authority_logging_interval = max(1, authority_logging_interval)
     checkpoint_interval = int(getattr(cfg, "training_checkpoint_interval", 10))
     checkpoint_interval = max(1, checkpoint_interval)
+    curriculum_mode = str(getattr(cfg, "failure_curriculum_mode", "type"))
+    use_controllable_failure_scenarios = bool(
+        getattr(cfg, "use_controllable_failure_scenarios", False)
+    )
+    split_name_to_id = {
+        "train": SPLIT_TRAIN,
+        "eval_id": SPLIT_EVAL_ID,
+        "eval_ood": SPLIT_EVAL_OOD,
+        "stress": SPLIT_STRESS,
+    }
+    failure_scenario_train_split = str(
+        getattr(cfg, "failure_scenario_train_split", "train")
+    )
+    failure_scenario_split_id = split_name_to_id.get(
+        failure_scenario_train_split, SPLIT_TRAIN
+    )
+    failure_scenario_table = None
+    if use_controllable_failure_scenarios:
+        failure_scenario_table = build_failure_scenario_table(
+            self.env._thruster_mixer_T,
+            self.agent.actor.act_low,
+            self.agent.actor.act_high,
+            max_faults=int(getattr(cfg, "failure_scenario_max_faults", 2)),
+            min_rank=int(getattr(cfg, "failure_scenario_min_rank", 6)),
+            stress_quantile=float(
+                getattr(cfg, "failure_scenario_stress_quantile", 0.9)
+            ),
+            mild_effectiveness=float(
+                getattr(cfg, "failure_scenario_mild_effectiveness", 0.5)
+            ),
+        )
+        print(
+            "[Failure Scenarios] Using controllability-filtered scenario table "
+            f"{scenario_split_counts(failure_scenario_table)}; "
+            f"training split={failure_scenario_train_split}; "
+            f"train bins={scenario_bin_counts(failure_scenario_table)}"
+        )
+        scenario_table_path = os.path.join(
+            self.ckpt_dir,
+            f"failure_scenarios_{self.training_state_file_name.replace('.pkl', '.csv')}",
+        )
+        save_scenario_table_csv(failure_scenario_table, scenario_table_path)
+        print(f"[Failure Scenarios] Saved scenario table to {scenario_table_path}")
     # Keep evaluation lightweight relative to training rollouts.
     eval_episodes = max(1, min(self.n_evals, 3))
 
-    # Build phases: nominal -> sequential failures -> disturbances
-    phases, total_epochs = build_failure_curriculum(
-        train_with_failures=bool(self.env.train_with_failures),
-        fallback_epochs=nominal_epochs,
-        nominal_epochs=nominal_epochs,
-        phase_epochs=phase_epochs,
-        failure_fraction=failure_fraction,
-        disturbance_fraction=disturbance_fraction,
-    )
+    if (
+        curriculum_mode == "difficulty"
+        and use_controllable_failure_scenarios
+        and failure_scenario_table is not None
+    ):
+        phases, total_epochs = build_difficulty_curriculum(
+            train_with_failures=bool(self.env.train_with_failures),
+            fallback_epochs=nominal_epochs,
+            nominal_epochs=nominal_epochs,
+            phase_epochs=phase_epochs,
+            failure_fraction=failure_fraction,
+            disturbance_fraction=disturbance_fraction,
+        )
+    else:
+        phases, total_epochs = build_failure_curriculum(
+            train_with_failures=bool(self.env.train_with_failures),
+            fallback_epochs=nominal_epochs,
+            nominal_epochs=nominal_epochs,
+            phase_epochs=phase_epochs,
+            failure_fraction=failure_fraction,
+            disturbance_fraction=disturbance_fraction,
+        )
     if warm_started_from_nominal:
         phases = [phase for phase in phases if phase["active_failures"]]
         total_epochs = sum(int(phase["epochs"]) for phase in phases)
@@ -195,6 +263,10 @@ def learn_runner(self) -> None:
         phase_disturbance_fraction = float(phase["disturbance_fraction"])
         phase_distribution = uniform_failure_distribution(active_failures)
         new_failure_idx = phase["new_failure"]
+        phase_difficulty_bin = phase.get("difficulty_bin")
+        current_difficulty_bin = -1 if phase_difficulty_bin is None else int(
+            phase_difficulty_bin
+        )
         phase_uses_perturbations = bool(active_failures) and phase_failure_fraction > 0.0
         phase_uses_disturbances = phase_disturbance_fraction > 0.0
         phase_uses_effects = phase_uses_perturbations or phase_uses_disturbances
@@ -249,12 +321,27 @@ def learn_runner(self) -> None:
                     if should_resample_effects:
                         applied_failure_fraction = current_failure_fraction
                         self.env.reset_perturbations()
-                        self.env.apply_random_perturbations(
-                            key=perturb_key,
-                            fraction_perturbed_envs=applied_failure_fraction,
-                            perturbation_distribution=phase_distribution,
-                            start_time=failure_start_time,
-                        )
+                        if (
+                            use_controllable_failure_scenarios
+                            and failure_scenario_table is not None
+                            and curriculum_mode == "difficulty"
+                        ):
+                            apply_sampled_failure_scenario_split(
+                                self.env,
+                                key=perturb_key,
+                                table=failure_scenario_table,
+                                split_id=failure_scenario_split_id,
+                                fraction_perturbed_envs=applied_failure_fraction,
+                                start_time=failure_start_time,
+                                difficulty_bin=phase_difficulty_bin,
+                            )
+                        else:
+                            self.env.apply_random_perturbations(
+                                key=perturb_key,
+                                fraction_perturbed_envs=applied_failure_fraction,
+                                perturbation_distribution=phase_distribution,
+                                start_time=failure_start_time,
+                            )
                 if phase_uses_disturbances:
                     if should_resample_effects:
                         applied_disturbance_fraction = current_disturbance_fraction
@@ -813,6 +900,7 @@ def learn_runner(self) -> None:
                     mean_final_position_error=float(final_pos_error_epoch),
                     current_failure_fraction=float(applied_failure_fraction),
                     current_disturbance_fraction=float(applied_disturbance_fraction),
+                    current_difficulty_bin=current_difficulty_bin,
                     median_final_position_error=float(
                         median_final_pos_error_epoch
                     ),
@@ -887,6 +975,7 @@ def learn_runner(self) -> None:
                     mean_final_position_error=float(final_pos_error_epoch),
                     current_failure_fraction=float(applied_failure_fraction),
                     current_disturbance_fraction=float(applied_disturbance_fraction),
+                    current_difficulty_bin=current_difficulty_bin,
                     median_final_position_error=float(
                         median_final_pos_error_epoch
                     ),

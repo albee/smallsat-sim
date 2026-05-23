@@ -47,6 +47,11 @@ export PYTHONPATH="$(pwd):${PYTHONPATH}"
 export SMALLSAT_ROLLOUT_BACKEND="${SMALLSAT_ROLLOUT_BACKEND:-freeflyer}"
 echo "Using RL rollout backend: ${SMALLSAT_ROLLOUT_BACKEND}"
 
+# The RL config currently trains 600 nominal epochs, then advances through
+# controllability-filtered easy/medium/hard scenario phases. The older
+# failure-type curriculum remains available by setting failure_curriculum_mode
+# to "type" in src/smallsat_sim/envs/astrobee_rl/cfg/config.py.
+
 # Deployment runs compile a separate controller/deployment graph and execute many
 # stress-test scenarios. Skip them by default for training/tuning sweeps.
 if [ "${RUN_DEPLOY:-0}" != "1" ]; then

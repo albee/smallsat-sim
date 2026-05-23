@@ -8,6 +8,11 @@ from smallsat_sim.controllers.rl.runners.adaptive_context import (
     authority_metrics_from_wrench,
     summarize_authority_metrics,
 )
+from smallsat_sim.controllers.rl.runners.failure_scenarios import (
+    SPLIT_EVAL_ID,
+    apply_sampled_failure_scenario_split,
+    build_failure_scenario_table,
+)
 from smallsat_sim.controllers.rl.runners.rollout import (
     FunctionalRolloutCallbacks,
     make_zero_bootstrap_value,
@@ -41,6 +46,22 @@ def evaluate_policy_checkpoint(
     episode_keys = jax.random.split(key, eval_episodes)
     rewards = []
     agent_key_before = runner.agent.key
+    cfg = runner.env.env_cfg.control.RL
+    scenario_table = None
+    if bool(getattr(cfg, "use_controllable_failure_scenarios", False)):
+        scenario_table = build_failure_scenario_table(
+            runner.env._thruster_mixer_T,
+            runner.agent.actor.act_low,
+            runner.agent.actor.act_high,
+            max_faults=int(getattr(cfg, "failure_scenario_max_faults", 2)),
+            min_rank=int(getattr(cfg, "failure_scenario_min_rank", 6)),
+            stress_quantile=float(
+                getattr(cfg, "failure_scenario_stress_quantile", 0.9)
+            ),
+            mild_effectiveness=float(
+                getattr(cfg, "failure_scenario_mild_effectiveness", 0.5)
+            ),
+        )
 
     for ep_key in episode_keys:
         runner.env.reset()
@@ -49,11 +70,21 @@ def evaluate_policy_checkpoint(
             runner.env.reset_disturbances()
 
         if fraction_perturbed_envs > 0.0:
-            runner.env.apply_random_perturbations(
-                key=ep_key,
-                fraction_perturbed_envs=float(fraction_perturbed_envs),
-                perturbation_distribution=perturbation_distribution,
-            )
+            if scenario_table is not None:
+                apply_sampled_failure_scenario_split(
+                    runner.env,
+                    key=ep_key,
+                    table=scenario_table,
+                    split_id=SPLIT_EVAL_ID,
+                    fraction_perturbed_envs=float(fraction_perturbed_envs),
+                    start_time=None,
+                )
+            else:
+                runner.env.apply_random_perturbations(
+                    key=ep_key,
+                    fraction_perturbed_envs=float(fraction_perturbed_envs),
+                    perturbation_distribution=perturbation_distribution,
+                )
         if disturbance_fraction > 0.0:
             runner.env.apply_random_disturbance(
                 key=ep_key,

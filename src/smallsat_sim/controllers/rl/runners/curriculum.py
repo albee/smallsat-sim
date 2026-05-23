@@ -91,3 +91,68 @@ def build_failure_curriculum(
 
     total_epochs = sum(int(phase["epochs"]) for phase in phases)
     return phases, total_epochs
+
+
+def build_difficulty_curriculum(
+    *,
+    train_with_failures: bool,
+    fallback_epochs: int,
+    nominal_epochs: int = 100,
+    phase_epochs: int = 50,
+    failure_fraction: float = 0.4,
+    disturbance_fraction: float = 0.1,
+) -> tuple[list[dict], int]:
+    """
+    Build a physics-difficulty curriculum over controllability-filtered scenarios.
+
+    This keeps the nominal phase from the type curriculum but replaces named
+    failure-type phases with easy/medium/hard scenario bins.
+    """
+    if not train_with_failures:
+        return build_failure_curriculum(
+            train_with_failures=False,
+            fallback_epochs=fallback_epochs,
+            nominal_epochs=nominal_epochs,
+            phase_epochs=phase_epochs,
+            failure_fraction=failure_fraction,
+            disturbance_fraction=disturbance_fraction,
+        )
+
+    phases: list[dict] = [
+        {
+            "name": "nominal",
+            "epochs": int(nominal_epochs),
+            "active_failures": [],
+            "failure_fraction": 0.0,
+            "disturbance_fraction": 0.0,
+            "new_failure": None,
+            "difficulty_bin": None,
+        }
+    ]
+    for bin_id, name in enumerate(("easy", "medium", "hard")):
+        phases.append(
+            {
+                "name": f"scenario_{name}",
+                "epochs": int(phase_epochs),
+                "active_failures": list(FAILURE_ORDER),
+                "failure_fraction": float(failure_fraction),
+                "disturbance_fraction": 0.0,
+                "new_failure": None,
+                "difficulty_bin": bin_id,
+            }
+        )
+
+    phases.append(
+        {
+            "name": "scenario_hard_disturbances",
+            "epochs": int(phase_epochs),
+            "active_failures": list(FAILURE_ORDER),
+            "failure_fraction": float(failure_fraction),
+            "disturbance_fraction": float(disturbance_fraction),
+            "new_failure": None,
+            "difficulty_bin": 2,
+        }
+    )
+
+    total_epochs = sum(int(phase["epochs"]) for phase in phases)
+    return phases, total_epochs

@@ -20,6 +20,11 @@ from smallsat_sim.controllers.rl.runners.adaptive_context import (
     build_adaptive_context,
     summarize_authority_metrics,
 )
+from smallsat_sim.controllers.rl.runners.failure_scenarios import (
+    SPLIT_EVAL_ID,
+    apply_sampled_failure_scenario_split,
+    build_failure_scenario_table,
+)
 from smallsat_sim.controllers.rl.runners.runner_utils import load_trained_modules
 from smallsat_sim.controllers.rl.runners.training_helpers import hold_quality_payload
 from smallsat_sim.envs.vec_env import (
@@ -92,6 +97,21 @@ def evaluate_runner(runner: Any, phase: int = 2) -> None:
     disturbance_start_time_max = float(
         getattr(cfg, "curriculum_disturbance_start_time_max", 0.0)
     )
+    scenario_table = None
+    if bool(getattr(cfg, "use_controllable_failure_scenarios", False)):
+        scenario_table = build_failure_scenario_table(
+            runner.env._thruster_mixer_T,
+            runner.agent.actor.act_low,
+            runner.agent.actor.act_high,
+            max_faults=int(getattr(cfg, "failure_scenario_max_faults", 2)),
+            min_rank=int(getattr(cfg, "failure_scenario_min_rank", 6)),
+            stress_quantile=float(
+                getattr(cfg, "failure_scenario_stress_quantile", 0.9)
+            ),
+            mild_effectiveness=float(
+                getattr(cfg, "failure_scenario_mild_effectiveness", 0.5)
+            ),
+        )
     authority_logging_max_samples = int(
         getattr(cfg, "authority_logging_max_samples", 8192)
     )
@@ -132,12 +152,22 @@ def evaluate_runner(runner: Any, phase: int = 2) -> None:
                 disturbance_start_time_min,
                 disturbance_start_time_max,
             )
-            runner.env.apply_random_perturbations(
-                key=perturb_key,
-                fraction_perturbed_envs=0.4,
-                perturbation_distribution=jnp.array([0.2, 0.2, 0.2, 0.2, 0.2]),
-                start_time=failure_start_time,
-            )
+            if scenario_table is not None:
+                apply_sampled_failure_scenario_split(
+                    runner.env,
+                    key=perturb_key,
+                    table=scenario_table,
+                    split_id=SPLIT_EVAL_ID,
+                    fraction_perturbed_envs=0.4,
+                    start_time=failure_start_time,
+                )
+            else:
+                runner.env.apply_random_perturbations(
+                    key=perturb_key,
+                    fraction_perturbed_envs=0.4,
+                    perturbation_distribution=jnp.array([0.2, 0.2, 0.2, 0.2, 0.2]),
+                    start_time=failure_start_time,
+                )
             runner.env.apply_random_disturbance(
                 key=disturb_key,
                 fraction_disturbed_envs=0.1,
