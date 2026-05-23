@@ -462,12 +462,48 @@ def train_adaptation_module_on_policy_runner(self) -> None:
             float(last_val_loss) if last_val_loss is not None else None
         )
         mean_am_val_loss = float(mean_am_val_loss_arr)
+        attention_metrics = {}
+        if self.env.am_architecture == "transformer_cross_attention":
+            query_dim = int(self.env.am_query_dim)
+            if query_dim > 0 and X_val.shape[0] > 0:
+                target_all_val = y_val[:, -1, :]
+                query_val = target_all_val[
+                    :, self.env.res_dim : self.env.res_dim + query_dim
+                ]
+                _, attention = jax.vmap(
+                    lambda hist, query_i: self.am(
+                        hist,
+                        query_i,
+                        return_attention=True,
+                    )
+                )(X_val, query_val)
+                attention_mean = attention.mean(axis=(0, 1))
+                time_axis = jnp.linspace(
+                    0.0,
+                    1.0,
+                    attention_mean.shape[0],
+                    dtype=attention_mean.dtype,
+                )
+                attention_entropy = -jnp.sum(
+                    attention_mean * jnp.log(attention_mean + 1e-8)
+                )
+                max_entropy = jnp.log(jnp.asarray(attention_mean.shape[0]))
+                attention_metrics = {
+                    "am_attention/entropy": float(attention_entropy),
+                    "am_attention/normalized_entropy": float(
+                        attention_entropy / (max_entropy + 1e-8)
+                    ),
+                    "am_attention/recency_center": float(
+                        jnp.sum(attention_mean * time_axis)
+                    ),
+                    "am_attention/latest_token_weight": float(attention_mean[-1]),
+                    "am_attention/oldest_token_weight": float(attention_mean[0]),
+                }
         metrics_duration = time.perf_counter() - metrics_start_time
 
         logging_start_time = time.perf_counter()
         if self.env.use_wandb:
-            wandb.log(
-                {
+            wandb_payload = {
                     "am_collection_phase": phase["name"],
                     "am_collection_failure_fraction": phase_failure_fraction,
                     "am_collection_disturbance_fraction": phase_disturbance_fraction,
@@ -492,9 +528,13 @@ def train_adaptation_module_on_policy_runner(self) -> None:
                     "am_val_kl_loss": am_val_kl_loss,
                     "am_val_total_loss": am_val_total_loss,
                 }
-            )
+            wandb_payload.update(attention_metrics)
+            wandb.log(wandb_payload)
 
         if self.agent.has_logger:
+            logger_attention_metrics = {
+                key.replace("/", "_"): value for key, value in attention_metrics.items()
+            }
             self.env.logger.log(
                 self.env.run_id,
                 float(self.env.mjx_batch.time[0]),
@@ -523,6 +563,7 @@ def train_adaptation_module_on_policy_runner(self) -> None:
                 mean_lateral_error=float(tracking_vals.mean()),
                 mean_angle_error=float(angle_vals.mean()),
                 mean_extrinsic_error=float(extrinsic_vals.mean()),
+                **logger_attention_metrics,
             )
         logging_duration = time.perf_counter() - logging_start_time
 

@@ -17,11 +17,14 @@ from smallsat_sim.controllers.rl.algorithms.vpg import VPG
 from smallsat_sim.controllers.rl.algorithms.ppo import PPO
 from smallsat_sim.controllers.rl.modules.am_cnn import CNNAdaptationModule
 from smallsat_sim.controllers.rl.modules.am_transformer import (
+    CrossAttentionAdaptationModule,
     TransformerAdaptationModule,
 )
 from smallsat_sim.controllers.rl.runners.adaptive_context import (
+    authority_metrics_from_wrench,
     build_adaptation_query,
     build_adaptive_context,
+    summarize_authority_metrics,
 )
 from smallsat_sim.controllers.rl.runners.runner_utils import load_trained_modules
 
@@ -79,6 +82,8 @@ class RLController(object):
         perturbation_distribution: jnp.ndarray | None = None,
         perturbation_distributions: tuple[jnp.ndarray, ...] | None = None,
         apply_disturbances: bool = False,
+        perturbation_sequence: tuple[tuple[int, jnp.ndarray], ...] | None = None,
+        disturbance_start_steps: tuple[int, ...] = (),
     ) -> None:
         """
         Control the agent using the previously trained RL controller.
@@ -153,14 +158,57 @@ class RLController(object):
             ext = jnp.empty((self.env.num_envs, 0))
 
         step = 0
+        applied_sequence_events: set[int] = set()
+        applied_disturbance_events: set[int] = set()
         while True:
             if self.deployment_len is not None and step >= max_steps:
                 break
 
             use_functional = not test_pd
 
-            # Start perturbations after 100 steps
+            # Optional single-life sequence: apply multiple faults/disturbances
+            # at different times without resetting the episode.
+            if perturbation_sequence is not None:
+                applied_event_this_step = False
+                for event_idx, (start_step, distribution) in enumerate(
+                    perturbation_sequence
+                ):
+                    if (
+                        step == int(start_step)
+                        and event_idx not in applied_sequence_events
+                    ):
+                        self.env.apply_random_perturbations(
+                            key=self._take_keys(),
+                            fraction_perturbed_envs=1.0,
+                            perturbation_distribution=distribution,
+                        )
+                        applied_sequence_events.add(event_idx)
+                        applied_event_this_step = True
+                for event_idx, start_step in enumerate(disturbance_start_steps):
+                    if (
+                        step == int(start_step)
+                        and event_idx not in applied_disturbance_events
+                    ):
+                        self.env.apply_random_disturbance(
+                            key=self._take_keys(), fraction_disturbed_envs=1.0
+                        )
+                        applied_disturbance_events.add(event_idx)
+                        applied_event_this_step = True
+                if applied_event_this_step:
+                    self.env._refresh_effect_states()
+                    if use_functional:
+                        if rollout_backend == "freeflyer":
+                            vec_state = vec_state.replace(
+                                disturbance_states=self.env.disturbance_states,
+                                perturbation_states=self.env.perturbation_states,
+                            )
+                        else:
+                            vec_state = self.env.state_struct
+
+            # Standard deployment stages start one perturbation set after 100 steps.
             if (
+                perturbation_sequence is None
+                and
                 self.deployment_len is not None
                 and self.deployment_len >= 100
                 and step == 100
@@ -193,6 +241,7 @@ class RLController(object):
                 policy_input = (
                     jnp.concatenate([states, res], axis=1) if res.shape[-1] else states
                 )
+                critic_values = self.agent.critic.forward(policy_input)
                 actions = self.agent.get_control_input(
                     stage,
                     policy_input,
@@ -218,6 +267,7 @@ class RLController(object):
                     policy_input = jnp.concatenate([states, res], axis=1)
                 else:
                     policy_input = states
+                critic_values = self.agent.critic.forward(policy_input)
                 if test_pd:
                     prev_obs = self.env.get_obs()
                     actions = jnp.asarray(
@@ -311,6 +361,32 @@ class RLController(object):
             if self.agent.has_logger:
                 n_log_envs = min(self.env.num_envs, MAX_LOGGED_TRAJECTORY_ENVS)
                 positions = step_output.next_obs[:n_log_envs, :3]
+                pos_error = jnp.linalg.norm(step_output.next_states[:, :3], axis=1)
+                att_error = jnp.linalg.norm(step_output.next_states[:, 3:6], axis=1)
+                speed = jnp.linalg.norm(step_output.next_states[:, 6:9], axis=1)
+                ang_speed = jnp.linalg.norm(step_output.next_states[:, 9:12], axis=1)
+                in_terminal_set = jnp.logical_and(
+                    pos_error <= self.env.terminal_radius,
+                    jnp.logical_and(
+                        speed <= self.env.terminal_max_speed,
+                        jnp.logical_and(
+                            att_error <= self.env.terminal_max_att_error,
+                            ang_speed <= self.env.terminal_max_ang_speed,
+                        ),
+                    ),
+                )
+                authority_payload = summarize_authority_metrics(
+                    authority_metrics_from_wrench(
+                        commanded_ctrl=step_output.commanded_ctrl,
+                        applied_ctrl=step_output.applied_ctrl,
+                        desired_wrench=step_output.desired_wrench,
+                        thruster_mixer_T=self.env._thruster_mixer_T,
+                    )
+                )
+                authority_payload = {
+                    key.replace("/", "_"): value
+                    for key, value in authority_payload.items()
+                }
                 self.env.logger.log(
                     self.env.run_id,
                     float(self.env.mjx_batch.time[0]),
@@ -320,6 +396,24 @@ class RLController(object):
                     position_x=positions[:, 0],
                     position_y=positions[:, 1],
                     position_z=positions[:, 2],
+                    critic_value_mean=float(jnp.mean(critic_values)),
+                    critic_value_std=float(jnp.std(critic_values)),
+                    reward_mean=float(jnp.mean(step_output.rewards)),
+                    terminal_set_rate=float(
+                        jnp.mean(in_terminal_set.astype(jnp.float32))
+                    ),
+                    terminal_set_pos_error_mean=float(jnp.mean(pos_error)),
+                    terminal_set_speed_mean=float(jnp.mean(speed)),
+                    terminal_rate=float(
+                        jnp.mean(step_output.terminals.astype(jnp.float32))
+                    ),
+                    success_terminal_rate=float(
+                        jnp.mean(step_output.success_terminals.astype(jnp.float32))
+                    ),
+                    failure_terminal_rate=float(
+                        jnp.mean(step_output.failure_terminals.astype(jnp.float32))
+                    ),
+                    **authority_payload,
                 )
 
             if self.planner.completed_path.all():
@@ -342,6 +436,16 @@ class RLController(object):
         )
         if self.env.am_architecture == "transformer":
             return TransformerAdaptationModule(
+                self.env.history_len,
+                self.state_action_dim,
+                self.env.ext_dim,
+                query_dim=self.env.am_query_dim,
+                predict_delta_dim=predict_delta_dim,
+                predict_tracking=predict_tracking,
+                rngs=rngs,
+            )
+        if self.env.am_architecture == "transformer_cross_attention":
+            return CrossAttentionAdaptationModule(
                 self.env.history_len,
                 self.state_action_dim,
                 self.env.ext_dim,

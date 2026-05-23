@@ -116,6 +116,13 @@ class Benchmarker(object):
         """
         Deploy and test the RL controller.
         """
+        if os.environ.get("SMALLSAT_SKIP_DEPLOY", "0") == "1":
+            print(
+                "Skipping deployment because SMALLSAT_SKIP_DEPLOY=1. "
+                "Set RUN_DEPLOY=1 in train_test_all.sh to run deployment tests."
+            )
+            return
+
         rl_cfg = rl_config.EnvConfig().control.RL
 
         def _save_video(stage_name: str) -> None:
@@ -159,109 +166,91 @@ class Benchmarker(object):
         # Create controller
         ctrl = RLController(env, planner, ckpt_name=ckpt_name)
 
+        def _run_deployment_stage(stage_name: str = "deployment", **control_kwargs):
+            print(f"[Deployment] Running {self.run_name}: {stage_name}", flush=True)
+            ctrl.control(stage=stage_name, phase=phase, test_pd=test_pd, **control_kwargs)
+            _save_video(stage_name)
+
         # Simulation loop
-        ctrl.control(phase=phase, test_pd=test_pd)
-        _save_video("deployment")
+        _run_deployment_stage("deployment")
 
         # Test stuck off thrusters
-        ctrl.control(
-            stage="stuck_off_deployment",
-            phase=phase,
-            test_pd=test_pd,
+        _run_deployment_stage(
+            "stuck_off_deployment",
             perturbation_distribution=jnp.array([1.0, 0.0, 0.0, 0.0, 0.0]),
         )
-        _save_video("stuck_off_deployment")
 
         # Test stuck on thrusters
-        ctrl.control(
-            stage="stuck_on_deployment",
-            phase=phase,
-            test_pd=test_pd,
+        _run_deployment_stage(
+            "stuck_on_deployment",
             perturbation_distribution=jnp.array([0.0, 1.0, 0.0, 0.0, 0.0]),
         )
-        _save_video("stuck_on_deployment")
 
         # Test faulty valve
-        ctrl.control(
-            stage="faulty_valve_deployment",
-            phase=phase,
-            test_pd=test_pd,
+        _run_deployment_stage(
+            "faulty_valve_deployment",
             perturbation_distribution=jnp.array([0.0, 0.0, 1.0, 0.0, 0.0]),
         )
-        _save_video("faulty_valve_deployment")
 
         # Test saturated thrust
-        ctrl.control(
-            stage="saturated_thrust_deployment",
-            phase=phase,
-            test_pd=test_pd,
+        _run_deployment_stage(
+            "saturated_thrust_deployment",
             perturbation_distribution=jnp.array([0.0, 0.0, 0.0, 1.0, 0.0]),
         )
-        _save_video("saturated_thrust_deployment")
 
         # Test thrust instability
-        ctrl.control(
-            stage="thrust_instability_deployment",
-            phase=phase,
-            test_pd=test_pd,
+        _run_deployment_stage(
+            "thrust_instability_deployment",
             perturbation_distribution=jnp.array([0.0, 0.0, 0.0, 0.0, 1.0]),
         )
-        _save_video("thrust_instability_deployment")
 
         # Test constant force disturbances
-        ctrl.control(
-            stage="constant_force_disturbances_deployment",
-            phase=phase,
-            test_pd=test_pd,
+        _run_deployment_stage(
+            "constant_force_disturbances_deployment",
             apply_disturbances=True,
         )
-        _save_video("constant_force_disturbances_deployment")
 
         stuck_off_dist = jnp.array([1.0, 0.0, 0.0, 0.0, 0.0])
         stuck_on_dist = jnp.array([0.0, 1.0, 0.0, 0.0, 0.0])
 
         # Stress tests: compound/severity-shift failures not used as core training changes.
-        ctrl.control(
-            stage="two_stuck_off_deployment",
-            phase=phase,
-            test_pd=test_pd,
+        _run_deployment_stage(
+            "two_stuck_off_deployment",
             perturbation_distributions=(stuck_off_dist, stuck_off_dist),
         )
-        _save_video("two_stuck_off_deployment")
 
-        ctrl.control(
-            stage="two_stuck_on_deployment",
-            phase=phase,
-            test_pd=test_pd,
+        _run_deployment_stage(
+            "two_stuck_on_deployment",
             perturbation_distributions=(stuck_on_dist, stuck_on_dist),
         )
-        _save_video("two_stuck_on_deployment")
 
-        ctrl.control(
-            stage="stuck_off_plus_disturbance_deployment",
-            phase=phase,
-            test_pd=test_pd,
+        _run_deployment_stage(
+            "stuck_off_plus_disturbance_deployment",
             perturbation_distribution=stuck_off_dist,
             apply_disturbances=True,
         )
-        _save_video("stuck_off_plus_disturbance_deployment")
 
-        ctrl.control(
-            stage="stuck_on_plus_disturbance_deployment",
-            phase=phase,
-            test_pd=test_pd,
+        _run_deployment_stage(
+            "stuck_on_plus_disturbance_deployment",
             perturbation_distribution=stuck_on_dist,
             apply_disturbances=True,
         )
-        _save_video("stuck_on_plus_disturbance_deployment")
 
-        ctrl.control(
-            stage="mixed_stuck_off_stuck_on_deployment",
-            phase=phase,
-            test_pd=test_pd,
+        _run_deployment_stage(
+            "mixed_stuck_off_stuck_on_deployment",
             perturbation_distributions=(stuck_off_dist, stuck_on_dist),
         )
-        _save_video("mixed_stuck_off_stuck_on_deployment")
+
+        # Single-life sequence: multiple failures/disturbances in one deployment
+        # without resetting the spacecraft.
+        _run_deployment_stage(
+            "single_life_fault_sequence_deployment",
+            perturbation_sequence=(
+                (100, stuck_off_dist),
+                (200, stuck_on_dist),
+            ),
+            disturbance_start_steps=(300,),
+        )
 
         # Save log if logging is enabled
         if self.args.log:

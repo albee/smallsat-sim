@@ -103,10 +103,10 @@ class EnvConfig(BaseEnvConfig):
                 max_ep_len = 512  # 25.6s at 20Hz; enough for 2m setpoint regulation without overlong episodes
                 gamma = 0.995
                 lam = 0.97
-                actor_lr = 3e-4  # Between 2 and 4e-4
+                actor_lr = 2e-4  # Between 2 and 4e-4
                 critic_lr = 5e-4  # >= actor_lr
-                entropy_coef = 1e-4
-                actor_training_epochs = 2
+                entropy_coef = 5e-5
+                actor_training_epochs = 3
                 critic_training_epochs = 2
                 actor_critic_training_epochs = 1
                 num_minibatches = 16
@@ -142,14 +142,14 @@ class EnvConfig(BaseEnvConfig):
             sigma_angvel = 0.04  # sigma_att / (N_settle * dt)
 
             # Reward weights (can play with overall magnitude s.t. critic loss is well-behaved)
-            w_pos, w_vel, w_att, w_angvel = 5e1, 1e1, 2e1, 0.0  # Disregard vel and angvel terms for now
+            w_pos, w_vel, w_att, w_angvel = 3e1, 5e0, 1.5e1, 2e-1
 
             # Penalty weights
-            lam_fuel = 1e-4
-            lam_speed_terminal = 1e-1
-            lam_ang_speed_terminal = 1e-3
-            lam_fuel_terminal = 5e-4
-            terminal_bonus = 1e0
+            lam_fuel = 1e-3
+            lam_speed_terminal = 1e0
+            lam_ang_speed_terminal = 1e-1
+            lam_fuel_terminal = 5e-3
+            terminal_bonus = 5e0
             terminal_radius = 0.3
             terminal_hold_steps = 5
             terminal_max_speed = 0.15

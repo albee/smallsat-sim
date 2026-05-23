@@ -149,6 +149,125 @@ def sample_flat_indices(total: int, max_samples: int) -> jnp.ndarray:
     return jnp.linspace(0, total - 1, max_samples, dtype=jnp.int32)
 
 
+def hold_quality_payload(
+    state_seq: jnp.ndarray,
+    *,
+    terminal_radius: float,
+    terminal_max_speed: float,
+    terminal_max_att_error: float,
+    terminal_max_ang_speed: float,
+    terminal_hold_steps: int,
+    mask: jnp.ndarray | None = None,
+    prefix: str = "hold_quality",
+) -> dict[str, float]:
+    """
+    Diagnose whether policies merely reach the setpoint or can hold it.
+
+    `state_seq` is expected to have shape [T, N, 12] with position, attitude
+    vector error, linear velocity, and angular velocity in the standard RL state
+    layout. The metrics look at entry into the terminal set before applying the
+    consecutive-hold requirement used for success termination.
+    """
+    if state_seq.shape[0] == 0:
+        return {}
+
+    pos_error = jnp.linalg.norm(state_seq[:, :, :3], axis=-1)
+    att_error = jnp.linalg.norm(state_seq[:, :, 3:6], axis=-1)
+    speed = jnp.linalg.norm(state_seq[:, :, 6:9], axis=-1)
+    ang_speed = jnp.linalg.norm(state_seq[:, :, 9:12], axis=-1)
+    in_set = jnp.logical_and(
+        pos_error <= terminal_radius,
+        jnp.logical_and(
+            speed <= terminal_max_speed,
+            jnp.logical_and(
+                att_error <= terminal_max_att_error,
+                ang_speed <= terminal_max_ang_speed,
+            ),
+        ),
+    )
+
+    if mask is None:
+        mask = jnp.ones_like(in_set, dtype=bool)
+    else:
+        mask = jnp.asarray(mask, dtype=bool)
+    mask_f = mask.astype(jnp.float32)
+    denom = jnp.maximum(mask_f.sum(), 1.0)
+
+    in_set_masked = jnp.logical_and(in_set, mask)
+    entered = jnp.any(in_set_masked, axis=0)
+    entered_f = entered.astype(jnp.float32)
+    entered_count = jnp.maximum(entered_f.sum(), 1.0)
+    first_entry = jnp.argmax(in_set_masked.astype(jnp.int32), axis=0)
+    time_idx = jnp.arange(state_seq.shape[0], dtype=jnp.int32)[:, None]
+    after_entry = jnp.logical_and(
+        mask,
+        jnp.logical_and(entered[None, :], time_idx >= first_entry[None, :]),
+    )
+    after_entry_f = after_entry.astype(jnp.float32)
+    after_entry_denom = jnp.maximum(after_entry_f.sum(), 1.0)
+
+    post_entry_in_set_fraction = (
+        jnp.logical_and(in_set, after_entry).astype(jnp.float32).sum()
+        / after_entry_denom
+    )
+    exited_after_entry = jnp.logical_and(after_entry, jnp.logical_not(in_set))
+    exit_after_entry_rate = (
+        jnp.any(exited_after_entry, axis=0).astype(jnp.float32) * entered_f
+    ).sum() / entered_count
+    post_entry_pos_error_mean = (pos_error * after_entry_f).sum() / after_entry_denom
+    post_entry_pos_error_max_by_env = jnp.max(
+        jnp.where(after_entry, pos_error, 0.0), axis=0
+    )
+    post_entry_pos_error_max = (
+        post_entry_pos_error_max_by_env * entered_f
+    ).sum() / entered_count
+    post_entry_speed_mean = (speed * after_entry_f).sum() / after_entry_denom
+    valid_in_set = jnp.logical_and(in_set, mask)
+
+    def _run_scan(carry, x):
+        current, best = carry
+        current = jnp.where(x, current + 1, 0)
+        best = jnp.maximum(best, current)
+        return (current, best), best
+
+    (_, _), best_runs = jax.lax.scan(
+        _run_scan,
+        (
+            jnp.zeros((state_seq.shape[1],), dtype=jnp.int32),
+            jnp.zeros((state_seq.shape[1],), dtype=jnp.int32),
+        ),
+        valid_in_set,
+    )
+    max_consecutive = best_runs[-1]
+    hold_requirement_met = max_consecutive >= int(max(terminal_hold_steps, 1))
+    valid_counts = mask.astype(jnp.int32).sum(axis=0)
+    last_valid_idx = jnp.maximum(valid_counts - 1, 0)
+    env_idx = jnp.arange(state_seq.shape[1], dtype=jnp.int32)
+    final_in_set_rate = valid_in_set[last_valid_idx, env_idx].astype(jnp.float32).mean()
+
+    return {
+        f"{prefix}/entered_set_rate": float(entered_f.mean()),
+        f"{prefix}/first_entry_step_mean": float(
+            (first_entry.astype(jnp.float32) * entered_f).sum() / entered_count
+        ),
+        f"{prefix}/in_set_fraction": float(
+            in_set_masked.astype(jnp.float32).sum() / denom
+        ),
+        f"{prefix}/post_entry_in_set_fraction": float(post_entry_in_set_fraction),
+        f"{prefix}/exit_after_entry_rate": float(exit_after_entry_rate),
+        f"{prefix}/post_entry_pos_error_mean": float(post_entry_pos_error_mean),
+        f"{prefix}/post_entry_pos_error_max": float(post_entry_pos_error_max),
+        f"{prefix}/post_entry_speed_mean": float(post_entry_speed_mean),
+        f"{prefix}/max_consecutive_in_set_mean": float(
+            max_consecutive.astype(jnp.float32).mean()
+        ),
+        f"{prefix}/hold_requirement_met_rate": float(
+            hold_requirement_met.astype(jnp.float32).mean()
+        ),
+        f"{prefix}/final_in_set_rate": float(final_in_set_rate),
+    }
+
+
 def rollout_authority_payload(
     runner,
     *,

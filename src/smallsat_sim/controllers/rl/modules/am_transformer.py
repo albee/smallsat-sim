@@ -100,6 +100,70 @@ class MultiHeadSelfAttention(nnx.Module):
         return self.out_proj(attn)
 
 
+class MultiHeadCrossAttention(nnx.Module):
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        dropout_rate: float,
+        rngs: nnx.Rngs,
+    ):
+        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.head_dim = d_model // n_heads
+        self.q_proj = nnx.Linear(d_model, d_model, rngs=rngs)
+        self.k_proj = nnx.Linear(d_model, d_model, rngs=rngs)
+        self.v_proj = nnx.Linear(d_model, d_model, rngs=rngs)
+        self.out_proj = nnx.Linear(d_model, d_model, rngs=rngs)
+        self.dropout = nnx.Dropout(rate=dropout_rate, rngs=rngs)
+
+    def __call__(
+        self,
+        query: jnp.ndarray,
+        context: jnp.ndarray,
+        *,
+        training: bool = False,
+        return_weights: bool = False,
+    ) -> jnp.ndarray | tuple[jnp.ndarray, jnp.ndarray]:
+        """
+        Attend from one or more query tokens to encoded history tokens.
+
+        Args:
+            query: [B, Q, D]
+            context: [B, T, D]
+        """
+        batch_size, query_len, _ = query.shape
+        context_len = context.shape[1]
+        q = (
+            self.q_proj(query)
+            .reshape(batch_size, query_len, self.n_heads, self.head_dim)
+            .transpose(0, 2, 1, 3)
+        )
+        k = (
+            self.k_proj(context)
+            .reshape(batch_size, context_len, self.n_heads, self.head_dim)
+            .transpose(0, 2, 1, 3)
+        )
+        v = (
+            self.v_proj(context)
+            .reshape(batch_size, context_len, self.n_heads, self.head_dim)
+            .transpose(0, 2, 1, 3)
+        )
+        scale = 1.0 / jnp.sqrt(self.head_dim)
+        logits = jnp.einsum("bhqd,bhtd->bhqt", q, k) * scale
+        weights = jax.nn.softmax(logits, axis=-1)
+        dropped_weights = self.dropout(weights, deterministic=not training)
+        attn = jnp.einsum("bhqt,bhtd->bhqd", dropped_weights, v)
+        attn = attn.transpose(0, 2, 1, 3).reshape(
+            batch_size, query_len, self.d_model
+        )
+        output = self.out_proj(attn)
+        if return_weights:
+            return output, weights
+        return output
+
+
 class TransformerBlock(nnx.Module):
     def __init__(
         self,
@@ -254,6 +318,143 @@ class TransformerAdaptationModule(nnx.Module):
             else:
                 tracking = jnp.zeros((1,), dtype=mu.dtype)
             outputs.extend([delta, tracking])
+        if len(outputs) == 1:
+            return outputs[0]
+        return tuple(outputs)
+
+
+class CrossAttentionAdaptationModule(nnx.Module):
+    """
+    Demand-conditioned transformer adaptation module.
+
+    The history is first encoded with causal self-attention. A task/current-state
+    query then cross-attends to the encoded history, so the latent can select
+    history tokens relevant to the current desired wrench/control demand.
+    """
+
+    def __init__(
+        self,
+        n_steps: int,
+        state_action_dim: int,
+        ext_dim: int,
+        d_model: int = 128,
+        n_heads: int = 4,
+        mlp_dim: int = 256,
+        n_layers: int = 3,
+        dropout_rate: float = 0.05,
+        query_dim: int = 0,
+        predict_delta_dim: int = 0,
+        predict_tracking: bool = False,
+        rngs: nnx.Rngs | None = None,
+    ):
+        super().__init__()
+        if rngs is None:
+            rngs = nnx.Rngs(params=0, dropout=1)
+        self.n_steps = n_steps
+        self.state_action_dim = state_action_dim
+        self.ext_dim = max(1, ext_dim)
+        self.query_dim = int(query_dim)
+        self.predict_delta_dim = int(predict_delta_dim)
+        self.predict_tracking = bool(predict_tracking)
+        self.d_model = d_model
+        self.input_proj = nnx.Linear(state_action_dim, d_model, rngs=rngs)
+        self.query_proj = nnx.Linear(max(1, self.query_dim), d_model, rngs=rngs)
+        self.pos_embedding = nnx.Param(
+            0.02 * jax.random.normal(rngs.params(), (n_steps, d_model))
+        )
+        self.input_dropout = nnx.Dropout(rate=dropout_rate, rngs=rngs)
+        self.blocks = [
+            TransformerBlock(d_model, n_heads, mlp_dim, dropout_rate, rngs)
+            for _ in range(n_layers)
+        ]
+        self.history_norm = LayerNorm(d_model)
+        self.query_norm = LayerNorm(d_model)
+        self.cross_attn = MultiHeadCrossAttention(d_model, n_heads, dropout_rate, rngs)
+        self.cross_dropout = nnx.Dropout(rate=dropout_rate, rngs=rngs)
+        self.post_norm = LayerNorm(d_model)
+        self.post_ff = FeedForward(d_model, mlp_dim, dropout_rate, rngs)
+        self.mu_head = nnx.Linear(d_model, self.ext_dim, rngs=rngs)
+        self.log_sigma_head = nnx.Linear(d_model, self.ext_dim, rngs=rngs)
+        self.delta_head = (
+            nnx.Linear(d_model, self.predict_delta_dim, rngs=rngs)
+            if self.predict_delta_dim > 0
+            else None
+        )
+        self.tracking_head = (
+            nnx.Linear(d_model, 1, rngs=rngs) if self.predict_tracking else None
+        )
+
+    def __call__(
+        self,
+        history: jnp.ndarray,
+        query: jnp.ndarray | None = None,
+        *,
+        return_stats: bool = False,
+        return_predictions: bool = False,
+        return_attention: bool = False,
+        training: bool = False,
+    ) -> jnp.ndarray | tuple[jnp.ndarray, ...]:
+        if history.ndim != 2:
+            raise ValueError(
+                "history must be a 2D array of shape [T, state_action_dim]"
+            )
+        if history.shape[0] != self.n_steps:
+            raise ValueError(f"expected {self.n_steps} steps, got {history.shape[0]}")
+        if history.shape[1] != self.state_action_dim:
+            raise ValueError(
+                f"expected feature dim {self.state_action_dim}, got {history.shape[1]}"
+            )
+
+        x = self.input_proj(history)
+        x = x + self.pos_embedding.value
+        x = self.input_dropout(x, deterministic=not training)
+        x = jnp.expand_dims(x, axis=0)
+        mask = _causal_mask(self.n_steps)
+        for block in self.blocks:
+            x = block(x, mask, training=training)
+        x = self.history_norm(x)
+
+        if self.query_dim > 0:
+            if query is None:
+                query = jnp.zeros((self.query_dim,), dtype=x.dtype)
+            if query.shape[-1] != self.query_dim:
+                raise ValueError(
+                    f"expected query dim {self.query_dim}, got {query.shape[-1]}"
+                )
+            query_token = self.query_proj(jnp.expand_dims(query, axis=0))
+        else:
+            query_token = self.query_proj(jnp.zeros((1, 1), dtype=x.dtype))
+        query_token = jnp.expand_dims(query_token, axis=1)
+        query_token = self.query_norm(query_token)
+
+        attended, attn_weights = self.cross_attn(
+            query_token,
+            x,
+            training=training,
+            return_weights=True,
+        )
+        token = query_token + self.cross_dropout(attended, deterministic=not training)
+        token = token + self.post_ff(self.post_norm(token), training=training)
+        token = jnp.squeeze(token, axis=1)
+
+        mu = jnp.squeeze(self.mu_head(token), axis=0)
+        log_sigma = jnp.squeeze(self.log_sigma_head(token), axis=0)
+        outputs = [mu]
+        if return_stats:
+            outputs.append(log_sigma)
+        if return_predictions:
+            if self.delta_head is not None:
+                delta = jnp.squeeze(self.delta_head(token), axis=0)
+            else:
+                delta = jnp.zeros((0,), dtype=mu.dtype)
+            if self.tracking_head is not None:
+                tracking = jnp.squeeze(self.tracking_head(token), axis=0)
+            else:
+                tracking = jnp.zeros((1,), dtype=mu.dtype)
+            outputs.extend([delta, tracking])
+        if return_attention:
+            # [heads, steps] averaged by caller if needed.
+            outputs.append(jnp.squeeze(attn_weights, axis=(0, 2)))
         if len(outputs) == 1:
             return outputs[0]
         return tuple(outputs)

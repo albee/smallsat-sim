@@ -14,6 +14,7 @@ from smallsat_sim.controllers.rl.algorithms.vpg import VPG
 from smallsat_sim.controllers.rl.algorithms.ppo import PPO
 from smallsat_sim.controllers.rl.modules.am_cnn import CNNAdaptationModule
 from smallsat_sim.controllers.rl.modules.am_transformer import (
+    CrossAttentionAdaptationModule,
     TransformerAdaptationModule,
 )
 from smallsat_sim.controllers.rl.storage.replay_buffer import ReplayBuffer
@@ -454,6 +455,16 @@ class OnPolicyRunner(object):
                 predict_tracking=predict_tracking,
                 rngs=rngs,
             )
+        if self.env.am_architecture == "transformer_cross_attention":
+            return CrossAttentionAdaptationModule(
+                self.env.history_len,
+                self.state_action_dim,
+                self.env.ext_dim,
+                query_dim=self.env.am_query_dim,
+                predict_delta_dim=predict_delta_dim,
+                predict_tracking=predict_tracking,
+                rngs=rngs,
+            )
         if self.env.am_architecture == "cnn":
             return CNNAdaptationModule(
                 self.env.history_len,
@@ -469,7 +480,7 @@ class OnPolicyRunner(object):
         )
 
     def _select_am_loss_components_fn(self):
-        if self.env.am_architecture == "transformer":
+        if self.env.am_architecture in ("transformer", "transformer_cross_attention"):
             kl_weight = float(self.am_kl_weight)
             delta_weight = float(self.rl_cfg.am_predict_delta_weight)
             tracking_weight = float(self.rl_cfg.am_predict_tracking_weight)

@@ -1,8 +1,12 @@
+import jax
 import jax.numpy as jnp
 import pytest
 
 from smallsat_sim.controllers.rl.modules.am_cnn import CNNAdaptationModule
-from smallsat_sim.controllers.rl.modules.am_transformer import TransformerAdaptationModule
+from smallsat_sim.controllers.rl.modules.am_transformer import (
+    CrossAttentionAdaptationModule,
+    TransformerAdaptationModule,
+)
 
 
 def test_transformer_adaptation_module_output_shapes() -> None:
@@ -54,6 +58,44 @@ def test_transformer_task_query_and_prediction_heads() -> None:
     assert log_sigma.shape == (3,)
     assert delta.shape == (4,)
     assert tracking.shape == (1,)
+
+
+def test_cross_attention_task_query_prediction_heads_and_attention() -> None:
+    module = CrossAttentionAdaptationModule(
+        n_steps=8,
+        state_action_dim=6,
+        ext_dim=3,
+        query_dim=5,
+        predict_delta_dim=4,
+        predict_tracking=True,
+        d_model=32,
+        n_heads=4,
+        mlp_dim=64,
+        n_layers=2,
+        dropout_rate=0.1,
+    )
+    history = jnp.ones((8, 6), dtype=jnp.float32)
+    query = jnp.ones((5,), dtype=jnp.float32)
+
+    mu, log_sigma, delta, tracking, attention = module(
+        history,
+        query,
+        return_stats=True,
+        return_predictions=True,
+        return_attention=True,
+    )
+    vmapped = jax.vmap(lambda hist, query_i: module(hist, query_i))(
+        jnp.ones((3, 8, 6), dtype=jnp.float32),
+        jnp.ones((3, 5), dtype=jnp.float32),
+    )
+
+    assert mu.shape == (3,)
+    assert log_sigma.shape == (3,)
+    assert delta.shape == (4,)
+    assert tracking.shape == (1,)
+    assert attention.shape == (4, 8)
+    assert jnp.allclose(attention.sum(axis=-1), 1.0, atol=1e-5)
+    assert vmapped.shape == (3, 3)
 
 
 def test_transformer_training_flag_controls_dropout() -> None:

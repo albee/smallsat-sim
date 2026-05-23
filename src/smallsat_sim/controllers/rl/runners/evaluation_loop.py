@@ -21,6 +21,7 @@ from smallsat_sim.controllers.rl.runners.adaptive_context import (
     summarize_authority_metrics,
 )
 from smallsat_sim.controllers.rl.runners.runner_utils import load_trained_modules
+from smallsat_sim.controllers.rl.runners.training_helpers import hold_quality_payload
 from smallsat_sim.envs.vec_env import (
     _compute_freeflyer_state_features,
     freeflyer_to_mjx_state,
@@ -382,6 +383,15 @@ def evaluate_runner(runner: Any, phase: int = 2) -> None:
         )
         ref_pos = jnp.atleast_2d(runner.reference_point)[:, :3]
         final_pos_error = float(jnp.linalg.norm(final_positions - ref_pos, axis=1).mean())
+        hold_payload = hold_quality_payload(
+            step_outputs.next_states,
+            terminal_radius=float(runner.env.terminal_radius),
+            terminal_max_speed=float(runner.env.terminal_max_speed),
+            terminal_max_att_error=float(runner.env.terminal_max_att_error),
+            terminal_max_ang_speed=float(runner.env.terminal_max_ang_speed),
+            terminal_hold_steps=int(runner.env.terminal_hold_steps),
+            mask=first_episode_mask,
+        )
 
         authority_payload = {}
         if runner.agent.has_logger and authority_logging_max_samples > 0:
@@ -430,6 +440,7 @@ def evaluate_runner(runner: Any, phase: int = 2) -> None:
                 mean_angle_error=angle_mean,
                 mean_extrinsic_error=mean_extrinsic_error,
                 mean_final_position_error=final_pos_error,
+                **hold_payload,
                 **authority_payload,
             )
 
