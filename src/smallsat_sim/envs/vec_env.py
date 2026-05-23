@@ -543,6 +543,9 @@ def vecenv_step_training(
     step_output = VecEnvTrainingStepOutput(
         prev_states=prev_states,
         next_position_error=next_states[:, :3],
+        next_attitude_error=jnp.linalg.norm(next_states[:, 3:6], axis=1),
+        next_speed=jnp.linalg.norm(next_states[:, 6:9], axis=1),
+        next_angular_speed=jnp.linalg.norm(next_states[:, 9:12], axis=1),
         rewards=rewards,
         terminals=terminals,
         applied_ctrl=applied_ctrl,
@@ -1571,16 +1574,14 @@ class VecEnv(BaseEnv):
 
     def _in_terminal_set(self, states: jnp.ndarray) -> jnp.ndarray:
         """
-        Returns one if in terminal set, zero otherwise.
+        Returns one if position is inside the success terminal set.
+
+        Linear speed, attitude, and angular speed remain reward/diagnostic terms
+        but are not part of success termination. This keeps fault-recovery
+        success focused on translational setpoint capture and short holding.
         """
         pos_ok = jnp.linalg.norm(states[0:3]) <= self.terminal_radius
-        speed_ok = jnp.linalg.norm(states[6:9]) <= self.terminal_max_speed
-        att_ok = jnp.linalg.norm(states[3:6]) <= self.terminal_max_att_error
-        ang_speed_ok = jnp.linalg.norm(states[9:12]) <= self.terminal_max_ang_speed
-        return jnp.logical_and(
-            pos_ok,
-            jnp.logical_and(speed_ok, jnp.logical_and(att_ok, ang_speed_ok)),
-        )
+        return pos_ok
 
     def _is_failure_state(self, states: jnp.ndarray) -> jnp.ndarray:
         pos_fail = jnp.linalg.norm(states[0:3]) > self.failure_max_position_error

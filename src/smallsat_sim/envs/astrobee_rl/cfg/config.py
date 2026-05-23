@@ -150,8 +150,8 @@ class EnvConfig(BaseEnvConfig):
             lam_ang_speed_terminal = 1e-1
             lam_fuel_terminal = 5e-3
             terminal_bonus = 5e0
-            terminal_radius = 0.3
-            terminal_hold_steps = 5
+            terminal_radius = 0.25
+            terminal_hold_steps = 10  # 0.5s at 20Hz control; position-only success hold
             terminal_max_speed = 0.15
             terminal_max_att_error = 0.25  # radians
             terminal_max_ang_speed = 0.05

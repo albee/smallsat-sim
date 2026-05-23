@@ -194,6 +194,28 @@ def test_compute_terminals_requires_consecutive_hold_steps() -> None:
     assert int(counts_3[0]) == 3
 
 
+def test_compute_terminals_uses_position_only_for_success() -> None:
+    vec_env = pytest.importorskip("smallsat_sim.envs.vec_env")
+    states = jnp.zeros((1, 12), dtype=jnp.float32)
+    states = states.at[0, 6].set(100.0)
+    states = states.at[0, 3].set(100.0)
+    states = states.at[0, 9].set(100.0)
+    config = SimpleNamespace(
+        terminal_radius=0.3,
+        terminal_max_speed=0.15,
+        terminal_max_att_error=0.25,
+        terminal_max_ang_speed=0.05,
+        terminal_hold_steps=1,
+    )
+
+    terminals, counts = vec_env._compute_terminals(
+        states, jnp.array([0], dtype=jnp.int32), config
+    )
+
+    assert bool(terminals[0])
+    assert int(counts[0]) == 1
+
+
 def test_compute_penalties_residual_clip_and_terminal_terms() -> None:
     vec_env = pytest.importorskip("smallsat_sim.envs.vec_env")
     prev_states = jnp.zeros((2, 12), dtype=jnp.float32)

@@ -171,10 +171,40 @@ def hold_quality_payload(
     if state_seq.shape[0] == 0:
         return {}
 
-    pos_error = jnp.linalg.norm(state_seq[:, :, :3], axis=-1)
-    att_error = jnp.linalg.norm(state_seq[:, :, 3:6], axis=-1)
-    speed = jnp.linalg.norm(state_seq[:, :, 6:9], axis=-1)
-    ang_speed = jnp.linalg.norm(state_seq[:, :, 9:12], axis=-1)
+    return hold_quality_components_payload(
+        position_error=jnp.linalg.norm(state_seq[:, :, :3], axis=-1),
+        attitude_error=jnp.linalg.norm(state_seq[:, :, 3:6], axis=-1),
+        speed=jnp.linalg.norm(state_seq[:, :, 6:9], axis=-1),
+        angular_speed=jnp.linalg.norm(state_seq[:, :, 9:12], axis=-1),
+        terminal_radius=terminal_radius,
+        terminal_max_speed=terminal_max_speed,
+        terminal_max_att_error=terminal_max_att_error,
+        terminal_max_ang_speed=terminal_max_ang_speed,
+        terminal_hold_steps=terminal_hold_steps,
+        mask=mask,
+        prefix=prefix,
+    )
+
+
+def hold_quality_components_payload(
+    *,
+    position_error: jnp.ndarray,
+    attitude_error: jnp.ndarray,
+    speed: jnp.ndarray,
+    angular_speed: jnp.ndarray,
+    terminal_radius: float,
+    terminal_max_speed: float,
+    terminal_max_att_error: float,
+    terminal_max_ang_speed: float,
+    terminal_hold_steps: int,
+    mask: jnp.ndarray | None = None,
+    prefix: str = "hold_quality",
+) -> dict[str, float]:
+    """Same diagnostics as `hold_quality_payload`, using precomputed components."""
+    pos_error = jnp.asarray(position_error)
+    att_error = jnp.asarray(attitude_error)
+    speed = jnp.asarray(speed)
+    ang_speed = jnp.asarray(angular_speed)
     in_set = jnp.logical_and(
         pos_error <= terminal_radius,
         jnp.logical_and(
@@ -233,8 +263,8 @@ def hold_quality_payload(
     (_, _), best_runs = jax.lax.scan(
         _run_scan,
         (
-            jnp.zeros((state_seq.shape[1],), dtype=jnp.int32),
-            jnp.zeros((state_seq.shape[1],), dtype=jnp.int32),
+            jnp.zeros((pos_error.shape[1],), dtype=jnp.int32),
+            jnp.zeros((pos_error.shape[1],), dtype=jnp.int32),
         ),
         valid_in_set,
     )
@@ -242,8 +272,25 @@ def hold_quality_payload(
     hold_requirement_met = max_consecutive >= int(max(terminal_hold_steps, 1))
     valid_counts = mask.astype(jnp.int32).sum(axis=0)
     last_valid_idx = jnp.maximum(valid_counts - 1, 0)
-    env_idx = jnp.arange(state_seq.shape[1], dtype=jnp.int32)
+    env_idx = jnp.arange(pos_error.shape[1], dtype=jnp.int32)
     final_in_set_rate = valid_in_set[last_valid_idx, env_idx].astype(jnp.float32).mean()
+    pos_ok = pos_error <= terminal_radius
+    speed_ok = speed <= terminal_max_speed
+    att_ok = att_error <= terminal_max_att_error
+    ang_speed_ok = ang_speed <= terminal_max_ang_speed
+    strict_in_set = jnp.logical_and(
+        pos_ok,
+        jnp.logical_and(speed_ok, jnp.logical_and(att_ok, ang_speed_ok)),
+    )
+    final_pos_ok = jnp.logical_and(pos_ok[-1], mask[-1]).astype(jnp.float32).mean()
+    final_speed_ok = jnp.logical_and(speed_ok[-1], mask[-1]).astype(jnp.float32).mean()
+    final_att_ok = jnp.logical_and(att_ok[-1], mask[-1]).astype(jnp.float32).mean()
+    final_ang_speed_ok = (
+        jnp.logical_and(ang_speed_ok[-1], mask[-1]).astype(jnp.float32).mean()
+    )
+    final_strict_in_set = (
+        jnp.logical_and(strict_in_set[-1], mask[-1]).astype(jnp.float32).mean()
+    )
 
     return {
         f"{prefix}/entered_set_rate": float(entered_f.mean()),
@@ -265,6 +312,11 @@ def hold_quality_payload(
             hold_requirement_met.astype(jnp.float32).mean()
         ),
         f"{prefix}/final_in_set_rate": float(final_in_set_rate),
+        f"{prefix}/final_pos_ok_rate": float(final_pos_ok),
+        f"{prefix}/final_speed_ok_rate": float(final_speed_ok),
+        f"{prefix}/final_att_ok_rate": float(final_att_ok),
+        f"{prefix}/final_ang_speed_ok_rate": float(final_ang_speed_ok),
+        f"{prefix}/final_strict_in_set_rate": float(final_strict_in_set),
     }
 
 

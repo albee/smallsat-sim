@@ -196,19 +196,9 @@ def _compute_terminals(
     config: VecEnvStepConfig,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     radius = jnp.asarray(config.terminal_radius, dtype=states.dtype)
-    max_speed = jnp.asarray(config.terminal_max_speed, dtype=states.dtype)
-    max_att_error = jnp.asarray(config.terminal_max_att_error, dtype=states.dtype)
-    max_ang_speed = jnp.asarray(config.terminal_max_ang_speed, dtype=states.dtype)
     required_steps = max(int(config.terminal_hold_steps), 1)
     pos_ok = jnp.linalg.norm(states[:, 0:3], axis=1) <= radius
-    speed_ok = jnp.linalg.norm(states[:, 6:9], axis=1) <= max_speed
-    att_ok = jnp.linalg.norm(states[:, 3:6], axis=1) <= max_att_error
-    ang_speed_ok = jnp.linalg.norm(states[:, 9:12], axis=1) <= max_ang_speed
-    in_terminal_set = jnp.logical_and(
-        pos_ok,
-        jnp.logical_and(speed_ok, jnp.logical_and(att_ok, ang_speed_ok)),
-    )
-    counts_next = jnp.where(in_terminal_set, terminal_hold_counts + 1, 0)
+    counts_next = jnp.where(pos_ok, terminal_hold_counts + 1, 0)
     terminals = counts_next >= required_steps
     return terminals, counts_next
 
@@ -293,4 +283,3 @@ def _compute_penalties(
     details["penalty_wrench_residual"] = wrench_residual_pen
     details["penalty_total"] = penalties
     return penalties, details
-

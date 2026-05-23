@@ -156,6 +156,9 @@ class VecEnvTrainingStepOutput:
 
     prev_states: jnp.ndarray
     next_position_error: jnp.ndarray
+    next_attitude_error: jnp.ndarray
+    next_speed: jnp.ndarray
+    next_angular_speed: jnp.ndarray
     rewards: jnp.ndarray
     terminals: jnp.ndarray
     applied_ctrl: jnp.ndarray
@@ -228,6 +231,9 @@ def _vecenv_training_step_output_flatten(output: VecEnvTrainingStepOutput):
     children = (
         output.prev_states,
         output.next_position_error,
+        output.next_attitude_error,
+        output.next_speed,
+        output.next_angular_speed,
         output.rewards,
         output.terminals,
         output.applied_ctrl,
@@ -243,6 +249,9 @@ def _vecenv_training_step_output_unflatten(aux_data, children):
     (
         prev_states,
         next_position_error,
+        next_attitude_error,
+        next_speed,
+        next_angular_speed,
         rewards,
         terminals,
         applied_ctrl,
@@ -254,6 +263,9 @@ def _vecenv_training_step_output_unflatten(aux_data, children):
     return VecEnvTrainingStepOutput(
         prev_states=prev_states,
         next_position_error=next_position_error,
+        next_attitude_error=next_attitude_error,
+        next_speed=next_speed,
+        next_angular_speed=next_angular_speed,
         rewards=rewards,
         terminals=terminals,
         applied_ctrl=applied_ctrl,

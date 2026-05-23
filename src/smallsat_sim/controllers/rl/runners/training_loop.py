@@ -22,6 +22,7 @@ from smallsat_sim.controllers.rl.runners.runner_timing import (
 )
 from smallsat_sim.controllers.rl.runners.training_helpers import (
     evaluate_policy_checkpoint,
+    hold_quality_components_payload,
     hold_quality_payload,
     rollout_authority_payload,
     sample_start_time,
@@ -544,8 +545,13 @@ def learn_runner(self) -> None:
                 done_cum_for_hold == 0,
                 jnp.logical_and(done_masks.astype(bool), done_cum_for_hold == 1),
             )
-            hold_payload = hold_quality_payload(
-                step_outputs.next_states,
+            hold_payload = hold_quality_components_payload(
+                position_error=jnp.linalg.norm(
+                    step_outputs.next_position_error, axis=1
+                ),
+                attitude_error=step_outputs.next_attitude_error,
+                speed=step_outputs.next_speed,
+                angular_speed=step_outputs.next_angular_speed,
                 terminal_radius=float(self.env.terminal_radius),
                 terminal_max_speed=float(self.env.terminal_max_speed),
                 terminal_max_att_error=float(self.env.terminal_max_att_error),

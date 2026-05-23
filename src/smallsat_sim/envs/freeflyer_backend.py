@@ -439,6 +439,9 @@ def vecenv_step_training_freeflyer(
     step_output = VecEnvTrainingStepOutput(
         prev_states=prev_states,
         next_position_error=next_states[:, :3],
+        next_attitude_error=jnp.linalg.norm(next_states[:, 3:6], axis=1),
+        next_speed=jnp.linalg.norm(next_states[:, 6:9], axis=1),
+        next_angular_speed=jnp.linalg.norm(next_states[:, 9:12], axis=1),
         rewards=rewards,
         terminals=terminals,
         applied_ctrl=applied_ctrl,

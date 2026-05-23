@@ -402,6 +402,33 @@ class RLController(object):
                     terminal_set_rate=float(
                         jnp.mean(in_terminal_set.astype(jnp.float32))
                     ),
+                    terminal_strict_set_rate=float(
+                        jnp.mean(in_terminal_set.astype(jnp.float32))
+                    ),
+                    terminal_pos_ok_rate=float(
+                        jnp.mean(
+                            (pos_error <= self.env.terminal_radius).astype(jnp.float32)
+                        )
+                    ),
+                    terminal_speed_ok_rate=float(
+                        jnp.mean(
+                            (speed <= self.env.terminal_max_speed).astype(jnp.float32)
+                        )
+                    ),
+                    terminal_att_ok_rate=float(
+                        jnp.mean(
+                            (att_error <= self.env.terminal_max_att_error).astype(
+                                jnp.float32
+                            )
+                        )
+                    ),
+                    terminal_ang_speed_ok_rate=float(
+                        jnp.mean(
+                            (ang_speed <= self.env.terminal_max_ang_speed).astype(
+                                jnp.float32
+                            )
+                        )
+                    ),
                     terminal_set_pos_error_mean=float(jnp.mean(pos_error)),
                     terminal_set_speed_mean=float(jnp.mean(speed)),
                     terminal_rate=float(
