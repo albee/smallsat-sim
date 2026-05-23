@@ -228,7 +228,7 @@ def hold_quality_components_payload(
     entered_f = entered.astype(jnp.float32)
     entered_count = jnp.maximum(entered_f.sum(), 1.0)
     first_entry = jnp.argmax(in_set_masked.astype(jnp.int32), axis=0)
-    time_idx = jnp.arange(state_seq.shape[0], dtype=jnp.int32)[:, None]
+    time_idx = jnp.arange(pos_error.shape[0], dtype=jnp.int32)[:, None]
     after_entry = jnp.logical_and(
         mask,
         jnp.logical_and(entered[None, :], time_idx >= first_entry[None, :]),
@@ -273,7 +273,6 @@ def hold_quality_components_payload(
     valid_counts = mask.astype(jnp.int32).sum(axis=0)
     last_valid_idx = jnp.maximum(valid_counts - 1, 0)
     env_idx = jnp.arange(pos_error.shape[1], dtype=jnp.int32)
-    final_in_set_rate = valid_in_set[last_valid_idx, env_idx].astype(jnp.float32).mean()
     pos_ok = pos_error <= terminal_radius
     speed_ok = speed <= terminal_max_speed
     att_ok = att_error <= terminal_max_att_error
@@ -282,14 +281,18 @@ def hold_quality_components_payload(
         pos_ok,
         jnp.logical_and(speed_ok, jnp.logical_and(att_ok, ang_speed_ok)),
     )
-    final_pos_ok = jnp.logical_and(pos_ok[-1], mask[-1]).astype(jnp.float32).mean()
-    final_speed_ok = jnp.logical_and(speed_ok[-1], mask[-1]).astype(jnp.float32).mean()
-    final_att_ok = jnp.logical_and(att_ok[-1], mask[-1]).astype(jnp.float32).mean()
-    final_ang_speed_ok = (
-        jnp.logical_and(ang_speed_ok[-1], mask[-1]).astype(jnp.float32).mean()
-    )
-    final_strict_in_set = (
-        jnp.logical_and(strict_in_set[-1], mask[-1]).astype(jnp.float32).mean()
+    final_in_set_rate = valid_in_set[last_valid_idx, env_idx].astype(jnp.float32).mean()
+    final_pos_ok = pos_ok[last_valid_idx, env_idx].astype(jnp.float32).mean()
+    final_speed_ok = speed_ok[last_valid_idx, env_idx].astype(jnp.float32).mean()
+    final_att_ok = att_ok[last_valid_idx, env_idx].astype(jnp.float32).mean()
+    final_ang_speed_ok = ang_speed_ok[last_valid_idx, env_idx].astype(jnp.float32).mean()
+    final_strict_in_set = strict_in_set[last_valid_idx, env_idx].astype(jnp.float32).mean()
+    final_pos_error_mean = pos_error[last_valid_idx, env_idx].mean()
+    final_speed_mean = speed[last_valid_idx, env_idx].mean()
+    final_att_error_mean = att_error[last_valid_idx, env_idx].mean()
+    final_ang_speed_mean = ang_speed[last_valid_idx, env_idx].mean()
+    terminal_hold_success_rate = (
+        hold_requirement_met.astype(jnp.float32).mean()
     )
 
     return {
@@ -309,14 +312,19 @@ def hold_quality_components_payload(
             max_consecutive.astype(jnp.float32).mean()
         ),
         f"{prefix}/hold_requirement_met_rate": float(
-            hold_requirement_met.astype(jnp.float32).mean()
+            terminal_hold_success_rate
         ),
+        f"{prefix}/terminal_hold_success_rate": float(terminal_hold_success_rate),
         f"{prefix}/final_in_set_rate": float(final_in_set_rate),
         f"{prefix}/final_pos_ok_rate": float(final_pos_ok),
         f"{prefix}/final_speed_ok_rate": float(final_speed_ok),
         f"{prefix}/final_att_ok_rate": float(final_att_ok),
         f"{prefix}/final_ang_speed_ok_rate": float(final_ang_speed_ok),
         f"{prefix}/final_strict_in_set_rate": float(final_strict_in_set),
+        f"{prefix}/final_pos_error_mean": float(final_pos_error_mean),
+        f"{prefix}/final_speed_mean": float(final_speed_mean),
+        f"{prefix}/final_att_error_mean": float(final_att_error_mean),
+        f"{prefix}/final_ang_speed_mean": float(final_ang_speed_mean),
     }
 
 

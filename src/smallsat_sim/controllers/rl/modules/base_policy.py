@@ -21,6 +21,7 @@ class Actor(nnx.Module):
         res_dim: int,
         act_low: jnp.ndarray,
         act_high: jnp.ndarray,
+        initial_log_std: float = -0.5,
         log_std_min: float | None = None,
     ) -> None:
         super().__init__()
@@ -35,7 +36,7 @@ class Actor(nnx.Module):
             self._range_mask > 0, self.act_range, jnp.ones_like(self.act_range)
         )
         self._log_range_safe = jnp.log(self._range_safe)
-        log_std = -0.5 * jnp.ones(act_dim)
+        log_std = initial_log_std * jnp.ones(act_dim)
         self.log_std = nnx.Param(log_std)
         if log_std_min is None:
             self.log_std_min = None

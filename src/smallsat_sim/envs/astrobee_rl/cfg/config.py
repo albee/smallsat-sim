@@ -105,7 +105,7 @@ class EnvConfig(BaseEnvConfig):
                 lam = 0.97
                 actor_lr = 2e-4  # Between 2 and 4e-4
                 critic_lr = 5e-4  # >= actor_lr
-                entropy_coef = 5e-5
+                entropy_coef = 1e-5
                 actor_training_epochs = 3
                 critic_training_epochs = 2
                 actor_critic_training_epochs = 1
@@ -115,7 +115,8 @@ class EnvConfig(BaseEnvConfig):
                 use_value_clip = True
                 value_clip_coef = 0.2
                 debug_prints = False
-                log_std_min = float(np.log(0.2))
+                initial_log_std = -1.0
+                log_std_min = float(np.log(0.05))
 
             # Sequential failure curriculum knobs
             curriculum_nominal_epochs = 100
@@ -142,14 +143,14 @@ class EnvConfig(BaseEnvConfig):
             sigma_angvel = 0.04  # sigma_att / (N_settle * dt)
 
             # Reward weights (can play with overall magnitude s.t. critic loss is well-behaved)
-            w_pos, w_vel, w_att, w_angvel = 3e1, 5e0, 1.5e1, 2e-1
+            w_pos, w_vel, w_att, w_angvel = 5e1, 5e0, 1e1, 2e-1
 
             # Penalty weights
             lam_fuel = 1e-3
             lam_speed_terminal = 1e0
             lam_ang_speed_terminal = 1e-1
             lam_fuel_terminal = 5e-3
-            terminal_bonus = 5e0
+            terminal_bonus = 2e1
             terminal_radius = 0.25
             terminal_hold_steps = 10  # 0.5s at 20Hz control; position-only success hold
             terminal_max_speed = 0.15

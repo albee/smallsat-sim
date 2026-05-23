@@ -278,8 +278,13 @@ class OnPolicyRunner(object):
             ret,
         )
 
-        # Only pretrain the actor mean, reset log_std
-        self.agent.actor.log_std = nnx.Param(-0.5 * jnp.ones(self.env.act_dim))
+        # Only pretrain the actor mean, reset log_std to the configured PPO prior.
+        initial_log_std = getattr(
+            self.env.env_cfg.control.RL.PPO, "initial_log_std", -0.5
+        )
+        self.agent.actor.log_std = nnx.Param(
+            initial_log_std * jnp.ones(self.env.act_dim)
+        )
 
         # Save the trained actor and critic network weights
         save_trained_modules(

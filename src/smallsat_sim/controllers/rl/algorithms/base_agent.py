@@ -69,6 +69,11 @@ class BaseAgent(BaseController):
         log_std_min = None
         if hasattr(self.ctrl_cfg, "PPO") and hasattr(self.ctrl_cfg.PPO, "log_std_min"):
             log_std_min = self.ctrl_cfg.PPO.log_std_min
+        initial_log_std = -0.5
+        if hasattr(self.ctrl_cfg, "PPO") and hasattr(
+            self.ctrl_cfg.PPO, "initial_log_std"
+        ):
+            initial_log_std = self.ctrl_cfg.PPO.initial_log_std
         self.actor = Actor(
             env.obs_dim,
             env.act_dim,
@@ -77,6 +82,7 @@ class BaseAgent(BaseController):
             env.res_dim,
             act_low,
             act_high,
+            initial_log_std=initial_log_std,
             log_std_min=log_std_min,
         )
         self.critic = Critic(env.obs_dim, hidden_sizes, activation, env.res_dim)
