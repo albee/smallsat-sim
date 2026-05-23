@@ -125,6 +125,7 @@ class EnvConfig(BaseEnvConfig):
             curriculum_disturbance_fraction = 0.1
             curriculum_failure_ramp_epochs = 50
             curriculum_disturbance_ramp_epochs = 50
+            curriculum_resample_effects_interval = 5
             curriculum_critic_warmup_epochs = 15
             curriculum_critic_warmup_scale = 1.0 / 3.0
             curriculum_eval_interval = 20

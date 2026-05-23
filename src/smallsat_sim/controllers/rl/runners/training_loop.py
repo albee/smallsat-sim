@@ -132,6 +132,9 @@ def learn_runner(self) -> None:
     disturbance_ramp_epochs = max(
         1, int(getattr(cfg, "curriculum_disturbance_ramp_epochs", 1))
     )
+    resample_effects_interval = max(
+        1, int(getattr(cfg, "curriculum_resample_effects_interval", 1))
+    )
     critic_warmup_epochs = int(cfg.curriculum_critic_warmup_epochs)
     critic_warmup_scale = float(cfg.curriculum_critic_warmup_scale)
     eval_interval = int(cfg.curriculum_eval_interval)
@@ -195,6 +198,8 @@ def learn_runner(self) -> None:
         phase_uses_perturbations = bool(active_failures) and phase_failure_fraction > 0.0
         phase_uses_disturbances = phase_disturbance_fraction > 0.0
         phase_uses_effects = phase_uses_perturbations or phase_uses_disturbances
+        applied_failure_fraction = 0.0
+        applied_disturbance_fraction = 0.0
 
         print(
             f"[Curriculum] Phase {phase_idx + 1}/{len(phases)}: {phase_name} "
@@ -235,23 +240,31 @@ def learn_runner(self) -> None:
             )
 
             # Apply failures/disturbances for this phase with fixed proportions
+            should_resample_effects = (
+                phase_epoch == 0
+                or phase_epoch % resample_effects_interval == 0
+            )
             if self.env.train_with_failures and phase_uses_effects:
                 if phase_uses_perturbations:
-                    self.env.reset_perturbations()  # avoid accumulating failures across epochs
-                    self.env.apply_random_perturbations(
-                        key=perturb_key,
-                        fraction_perturbed_envs=current_failure_fraction,
-                        perturbation_distribution=phase_distribution,
-                        start_time=failure_start_time,
-                    )
+                    if should_resample_effects:
+                        applied_failure_fraction = current_failure_fraction
+                        self.env.reset_perturbations()
+                        self.env.apply_random_perturbations(
+                            key=perturb_key,
+                            fraction_perturbed_envs=applied_failure_fraction,
+                            perturbation_distribution=phase_distribution,
+                            start_time=failure_start_time,
+                        )
                 if phase_uses_disturbances:
-                    if hasattr(self.env, "reset_disturbances"):
-                        self.env.reset_disturbances()
-                    self.env.apply_random_disturbance(
-                        key=disturb_key,
-                        fraction_disturbed_envs=current_disturbance_fraction,
-                        start_time=disturbance_start_time,
-                    )
+                    if should_resample_effects:
+                        applied_disturbance_fraction = current_disturbance_fraction
+                        if hasattr(self.env, "reset_disturbances"):
+                            self.env.reset_disturbances()
+                        self.env.apply_random_disturbance(
+                            key=disturb_key,
+                            fraction_disturbed_envs=applied_disturbance_fraction,
+                            start_time=disturbance_start_time,
+                        )
 
             # Accumulate rollout stats to emit once per epoch
             setup_duration = time.perf_counter() - setup_start_time
@@ -471,11 +484,6 @@ def learn_runner(self) -> None:
             else:
                 self.env.reset()
                 jax.block_until_ready(self.env.mjx_batch.qpos)
-            if self.env.train_with_failures and phase_uses_effects:
-                if phase_uses_perturbations:
-                    self.env.reset_perturbations()
-                if phase_uses_disturbances and hasattr(self.env, "reset_disturbances"):
-                    self.env.reset_disturbances()
             reset_duration = time.perf_counter() - reset_start_time
 
             rollout_duration = time.perf_counter() - epoch_start_time
@@ -803,8 +811,8 @@ def learn_runner(self) -> None:
                     mean_lateral_error=float(tracking_error_epoch),
                     mean_angle_error=float(angle_error_epoch),
                     mean_final_position_error=float(final_pos_error_epoch),
-                    current_failure_fraction=float(current_failure_fraction),
-                    current_disturbance_fraction=float(current_disturbance_fraction),
+                    current_failure_fraction=float(applied_failure_fraction),
+                    current_disturbance_fraction=float(applied_disturbance_fraction),
                     median_final_position_error=float(
                         median_final_pos_error_epoch
                     ),
@@ -877,8 +885,8 @@ def learn_runner(self) -> None:
                     mean_lateral_error=float(tracking_error_epoch),
                     mean_angle_error=float(angle_error_epoch),
                     mean_final_position_error=float(final_pos_error_epoch),
-                    current_failure_fraction=float(current_failure_fraction),
-                    current_disturbance_fraction=float(current_disturbance_fraction),
+                    current_failure_fraction=float(applied_failure_fraction),
+                    current_disturbance_fraction=float(applied_disturbance_fraction),
                     median_final_position_error=float(
                         median_final_pos_error_epoch
                     ),
@@ -950,9 +958,9 @@ def learn_runner(self) -> None:
                 mixture_score = evaluate_policy_checkpoint(
                     self,
                     key=eval_keys[2],
-                    fraction_perturbed_envs=current_failure_fraction,
+                    fraction_perturbed_envs=applied_failure_fraction,
                     perturbation_distribution=phase_distribution,
-                    disturbance_fraction=current_disturbance_fraction,
+                    disturbance_fraction=applied_disturbance_fraction,
                     eval_episodes=eval_episodes,
                 )
 
