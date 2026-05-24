@@ -60,6 +60,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--predict-delta-weight", type=float, default=0.1)
     parser.add_argument("--predict-tracking-weight", type=float, default=0.1)
+    parser.add_argument("--predict-authority-weight", type=float, default=0.1)
     parser.add_argument("--num-samples", type=int, default=DEFAULT_NUM_SAMPLES)
     parser.add_argument("--diagnostic-envs", type=int, default=DEFAULT_DIAGNOSTIC_ENVS)
     parser.add_argument("--seed", type=int, default=0)
@@ -111,6 +112,7 @@ def _load_runner(args: argparse.Namespace) -> OnPolicyRunner:
         use_task_conditioned_am=args.task_conditioned,
         am_predict_delta_weight=args.predict_delta_weight,
         am_predict_tracking_weight=args.predict_tracking_weight,
+        am_predict_authority_weight=args.predict_authority_weight,
         num_envs=args.diagnostic_envs,
     )
     planner = OraclePlannerRL(env, radius=0.0)
@@ -232,30 +234,30 @@ def _probe_module(
     if runner.env.am_architecture == "transformer_cross_attention":
 
         def _apply(hist, query):
-            mu, log_sigma, delta, tracking, attention = runner.am(
+            mu, log_sigma, delta, tracking, authority, attention = runner.am(
                 hist,
                 query,
                 return_stats=True,
                 return_predictions=True,
                 return_attention=True,
             )
-            return mu, log_sigma, delta, tracking, attention
+            return mu, log_sigma, delta, tracking, authority, attention
 
-        mu, log_sigma, delta, tracking, attention = jax.vmap(_apply)(
+        mu, log_sigma, delta, tracking, authority, attention = jax.vmap(_apply)(
             histories_flat, queries_flat
         )
     elif runner.env.am_architecture == "transformer":
 
         def _apply(hist, query):
-            mu, log_sigma, delta, tracking = runner.am(
+            mu, log_sigma, delta, tracking, authority = runner.am(
                 hist,
                 query,
                 return_stats=True,
                 return_predictions=True,
             )
-            return mu, log_sigma, delta, tracking
+            return mu, log_sigma, delta, tracking, authority
 
-        mu, log_sigma, delta, tracking = jax.vmap(_apply)(
+        mu, log_sigma, delta, tracking, authority = jax.vmap(_apply)(
             histories_flat, queries_flat
         )
         attention = jnp.zeros(
@@ -265,15 +267,15 @@ def _probe_module(
     else:
 
         def _apply(hist, query):
-            mu, delta, tracking = runner.am(
+            mu, delta, tracking, authority = runner.am(
                 hist,
                 query,
                 return_predictions=True,
             )
             log_sigma = jnp.zeros_like(mu)
-            return mu, log_sigma, delta, tracking
+            return mu, log_sigma, delta, tracking, authority
 
-        mu, log_sigma, delta, tracking = jax.vmap(_apply)(
+        mu, log_sigma, delta, tracking, authority = jax.vmap(_apply)(
             histories_flat, queries_flat
         )
         attention = jnp.zeros(
@@ -287,6 +289,7 @@ def _probe_module(
         "log_sigma": log_sigma.reshape(*shape_prefix, -1),
         "delta": delta.reshape(*shape_prefix, -1),
         "tracking": tracking.reshape(*shape_prefix, -1),
+        "authority": authority.reshape(*shape_prefix, -1),
         "attention": attention.reshape(*shape_prefix, attention.shape[-2], attention.shape[-1]),
     }
 
@@ -295,6 +298,7 @@ def _summary_metrics(outputs: dict[str, jnp.ndarray]) -> dict[str, float]:
     mu = outputs["mu"]
     attention = outputs["attention"]
     tracking = outputs["tracking"]
+    authority = outputs["authority"]
 
     zero_mu = mu[:, :1, :]
     latent_delta = jnp.linalg.norm(mu - zero_mu, axis=-1)
@@ -311,7 +315,7 @@ def _summary_metrics(outputs: dict[str, jnp.ndarray]) -> dict[str, float]:
     time_axis = jnp.linspace(0.0, 1.0, attn_mean_heads.shape[-1])
     recency_center = jnp.sum(attn_mean_heads * time_axis, axis=-1)
 
-    return {
+    summary = {
         "latent_delta_from_zero_mean": float(latent_delta[:, 1:].mean()),
         "latent_delta_from_zero_max_mean": float(latent_delta[:, 1:].max(axis=1).mean()),
         "latent_candidate_std_mean": float(latent_std.mean()),
@@ -329,6 +333,18 @@ def _summary_metrics(outputs: dict[str, jnp.ndarray]) -> dict[str, float]:
             jnp.std(jnp.squeeze(tracking, axis=-1), axis=1).mean()
         ),
     }
+    if authority.shape[-1] > 0:
+        summary.update(
+            {
+                "predicted_authority_norm_mean": float(
+                    jnp.linalg.norm(authority, axis=-1).mean()
+                ),
+                "predicted_authority_candidate_std_mean": float(
+                    jnp.std(authority, axis=1).mean()
+                ),
+            }
+        )
+    return summary
 
 
 def _write_outputs(

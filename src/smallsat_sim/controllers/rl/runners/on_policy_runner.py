@@ -450,6 +450,14 @@ class OnPolicyRunner(object):
         predict_tracking = (
             float(self.env.env_cfg.control.RL.am_predict_tracking_weight) > 0.0
         )
+        predict_authority_dim = (
+            3
+            if float(
+                getattr(self.env.env_cfg.control.RL, "am_predict_authority_weight", 0.0)
+            )
+            > 0.0
+            else 0
+        )
         if self.env.am_architecture == "transformer":
             return TransformerAdaptationModule(
                 self.env.history_len,
@@ -458,6 +466,7 @@ class OnPolicyRunner(object):
                 query_dim=self.env.am_query_dim,
                 predict_delta_dim=predict_delta_dim,
                 predict_tracking=predict_tracking,
+                predict_authority_dim=predict_authority_dim,
                 rngs=rngs,
             )
         if self.env.am_architecture == "transformer_cross_attention":
@@ -468,6 +477,7 @@ class OnPolicyRunner(object):
                 query_dim=self.env.am_query_dim,
                 predict_delta_dim=predict_delta_dim,
                 predict_tracking=predict_tracking,
+                predict_authority_dim=predict_authority_dim,
                 rngs=rngs,
             )
         if self.env.am_architecture == "cnn":
@@ -478,6 +488,7 @@ class OnPolicyRunner(object):
                 query_dim=self.env.am_query_dim,
                 predict_delta_dim=predict_delta_dim,
                 predict_tracking=predict_tracking,
+                predict_authority_dim=predict_authority_dim,
                 rngs=rngs,
             )
         raise ValueError(
@@ -489,9 +500,13 @@ class OnPolicyRunner(object):
             kl_weight = float(self.am_kl_weight)
             delta_weight = float(self.rl_cfg.am_predict_delta_weight)
             tracking_weight = float(self.rl_cfg.am_predict_tracking_weight)
+            authority_weight = float(
+                getattr(self.rl_cfg, "am_predict_authority_weight", 0.0)
+            )
             res_dim = int(self.env.res_dim)
             query_dim = int(self.env.am_query_dim)
             obs_dim = int(self.env.obs_dim)
+            authority_dim = 3
 
             def _components(model, X: jnp.ndarray, y: jnp.ndarray):
                 target_all = y[:, -1, :]
@@ -503,7 +518,18 @@ class OnPolicyRunner(object):
                 tracking_target = target_all[
                     :, res_dim + query_dim + obs_dim : res_dim + query_dim + obs_dim + 1
                 ]
-                mu, log_sigma, delta_pred, tracking_pred = jax.vmap(
+                authority_target = target_all[
+                    :,
+                    res_dim
+                    + query_dim
+                    + obs_dim
+                    + 1 : res_dim
+                    + query_dim
+                    + obs_dim
+                    + 1
+                    + authority_dim,
+                ]
+                mu, log_sigma, delta_pred, tracking_pred, authority_pred = jax.vmap(
                     lambda hist, query_i: model(
                         hist,
                         query_i,
@@ -533,6 +559,13 @@ class OnPolicyRunner(object):
                     tracking_loss = jnp.mean(
                         jnp.square(tracking_pred - tracking_target)
                     ) / tracking_scale
+                authority_loss = jnp.array(0.0, dtype=context_loss.dtype)
+                if authority_weight > 0.0:
+                    authority_scale = jnp.mean(jnp.square(authority_target)) + 1e-6
+                    authority_loss = (
+                        jnp.mean(jnp.square(authority_pred - authority_target))
+                        / authority_scale
+                    )
                 kl_loss = jnp.array(0.0, dtype=context_loss.dtype)
                 if kl_weight > 0.0:
                     kl_loss = jnp.mean(
@@ -546,17 +579,27 @@ class OnPolicyRunner(object):
                     context_loss
                     + delta_weight * delta_loss
                     + tracking_weight * tracking_loss
+                    + authority_weight * authority_loss
                     + kl_weight * kl_loss
                 )
-                return context_loss, delta_loss, tracking_loss, kl_loss, total
+                return (
+                    context_loss,
+                    delta_loss,
+                    tracking_loss,
+                    authority_loss,
+                    kl_loss,
+                    total,
+                )
 
             return _components
 
         delta_weight = float(self.rl_cfg.am_predict_delta_weight)
         tracking_weight = float(self.rl_cfg.am_predict_tracking_weight)
+        authority_weight = float(getattr(self.rl_cfg, "am_predict_authority_weight", 0.0))
         res_dim = int(self.env.res_dim)
         query_dim = int(self.env.am_query_dim)
         obs_dim = int(self.env.obs_dim)
+        authority_dim = 3
 
         def _mse_components(model, X: jnp.ndarray, y: jnp.ndarray):
             target_all = y[:, -1, :]
@@ -568,7 +611,18 @@ class OnPolicyRunner(object):
             tracking_target = target_all[
                 :, res_dim + query_dim + obs_dim : res_dim + query_dim + obs_dim + 1
             ]
-            preds, delta_pred, tracking_pred = jax.vmap(
+            authority_target = target_all[
+                :,
+                res_dim
+                + query_dim
+                + obs_dim
+                + 1 : res_dim
+                + query_dim
+                + obs_dim
+                + 1
+                + authority_dim,
+            ]
+            preds, delta_pred, tracking_pred, authority_pred = jax.vmap(
                 lambda hist, query_i: model(
                     hist,
                     query_i,
@@ -589,13 +643,21 @@ class OnPolicyRunner(object):
                     jnp.mean(jnp.square(tracking_pred - tracking_target))
                     / tracking_scale
                 )
+            authority_loss = jnp.array(0.0, dtype=context_loss.dtype)
+            if authority_weight > 0.0:
+                authority_scale = jnp.mean(jnp.square(authority_target)) + 1e-6
+                authority_loss = (
+                    jnp.mean(jnp.square(authority_pred - authority_target))
+                    / authority_scale
+                )
             kl_loss = jnp.array(0.0, dtype=context_loss.dtype)
             total = (
                 context_loss
                 + delta_weight * delta_loss
                 + tracking_weight * tracking_loss
+                + authority_weight * authority_loss
             )
-            return context_loss, delta_loss, tracking_loss, kl_loss, total
+            return context_loss, delta_loss, tracking_loss, authority_loss, kl_loss, total
 
         return _mse_components
 

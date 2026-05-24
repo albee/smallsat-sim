@@ -84,6 +84,7 @@ class EnvConfig(BaseEnvConfig):
             use_task_conditioned_am = False
             am_predict_delta_weight = 0.0
             am_predict_tracking_weight = 0.0
+            am_predict_authority_weight = 0.0
 
             # Hyperparams for the learning loop
             class VPG:
@@ -126,7 +127,7 @@ class EnvConfig(BaseEnvConfig):
             curriculum_failure_ramp_epochs = 1
             curriculum_disturbance_ramp_epochs = 1
             curriculum_resample_effects_interval = 5
-            failure_curriculum_mode = "difficulty"  # "difficulty" or backup "type"
+            failure_curriculum_mode = "authority"  # "authority", "difficulty", or backup "type"
             use_controllable_failure_scenarios = True
             failure_scenario_max_faults = 2
             failure_scenario_train_split = "train"

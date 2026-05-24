@@ -215,6 +215,7 @@ class TransformerAdaptationModule(nnx.Module):
         query_dim: int = 0,
         predict_delta_dim: int = 0,
         predict_tracking: bool = False,
+        predict_authority_dim: int = 0,
         rngs: nnx.Rngs | None = None,
     ):
         super().__init__()
@@ -226,6 +227,7 @@ class TransformerAdaptationModule(nnx.Module):
         self.query_dim = int(query_dim)
         self.predict_delta_dim = int(predict_delta_dim)
         self.predict_tracking = bool(predict_tracking)
+        self.predict_authority_dim = int(predict_authority_dim)
         self.d_model = d_model
         self.input_proj = nnx.Linear(state_action_dim, d_model, rngs=rngs)
         self.query_proj = (
@@ -251,6 +253,11 @@ class TransformerAdaptationModule(nnx.Module):
         )
         self.tracking_head = (
             nnx.Linear(d_model, 1, rngs=rngs) if self.predict_tracking else None
+        )
+        self.authority_head = (
+            nnx.Linear(d_model, self.predict_authority_dim, rngs=rngs)
+            if self.predict_authority_dim > 0
+            else None
         )
 
     def __call__(
@@ -317,7 +324,11 @@ class TransformerAdaptationModule(nnx.Module):
                 tracking = jnp.squeeze(self.tracking_head(last_token), axis=0)
             else:
                 tracking = jnp.zeros((1,), dtype=mu.dtype)
-            outputs.extend([delta, tracking])
+            if self.authority_head is not None:
+                authority = jnp.squeeze(self.authority_head(last_token), axis=0)
+            else:
+                authority = jnp.zeros((0,), dtype=mu.dtype)
+            outputs.extend([delta, tracking, authority])
         if len(outputs) == 1:
             return outputs[0]
         return tuple(outputs)
@@ -345,6 +356,7 @@ class CrossAttentionAdaptationModule(nnx.Module):
         query_dim: int = 0,
         predict_delta_dim: int = 0,
         predict_tracking: bool = False,
+        predict_authority_dim: int = 0,
         rngs: nnx.Rngs | None = None,
     ):
         super().__init__()
@@ -356,6 +368,7 @@ class CrossAttentionAdaptationModule(nnx.Module):
         self.query_dim = int(query_dim)
         self.predict_delta_dim = int(predict_delta_dim)
         self.predict_tracking = bool(predict_tracking)
+        self.predict_authority_dim = int(predict_authority_dim)
         self.d_model = d_model
         self.input_proj = nnx.Linear(state_action_dim, d_model, rngs=rngs)
         self.query_proj = nnx.Linear(max(1, self.query_dim), d_model, rngs=rngs)
@@ -382,6 +395,11 @@ class CrossAttentionAdaptationModule(nnx.Module):
         )
         self.tracking_head = (
             nnx.Linear(d_model, 1, rngs=rngs) if self.predict_tracking else None
+        )
+        self.authority_head = (
+            nnx.Linear(d_model, self.predict_authority_dim, rngs=rngs)
+            if self.predict_authority_dim > 0
+            else None
         )
 
     def __call__(
@@ -451,7 +469,11 @@ class CrossAttentionAdaptationModule(nnx.Module):
                 tracking = jnp.squeeze(self.tracking_head(token), axis=0)
             else:
                 tracking = jnp.zeros((1,), dtype=mu.dtype)
-            outputs.extend([delta, tracking])
+            if self.authority_head is not None:
+                authority = jnp.squeeze(self.authority_head(token), axis=0)
+            else:
+                authority = jnp.zeros((0,), dtype=mu.dtype)
+            outputs.extend([delta, tracking, authority])
         if return_attention:
             # [heads, steps] averaged by caller if needed.
             outputs.append(jnp.squeeze(attn_weights, axis=(0, 2)))

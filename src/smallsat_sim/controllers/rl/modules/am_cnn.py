@@ -15,6 +15,7 @@ class CNNAdaptationModule(nnx.Module):
         query_dim: int = 0,
         predict_delta_dim: int = 0,
         predict_tracking: bool = False,
+        predict_authority_dim: int = 0,
         rngs: nnx.Rngs | None = None,
     ):
         super().__init__()
@@ -23,6 +24,7 @@ class CNNAdaptationModule(nnx.Module):
         self.query_dim = int(query_dim)
         self.predict_delta_dim = int(predict_delta_dim)
         self.predict_tracking = bool(predict_tracking)
+        self.predict_authority_dim = int(predict_authority_dim)
         self.encoder = nnx.Linear(
             in_features=state_action_dim,
             out_features=32,
@@ -81,6 +83,15 @@ class CNNAdaptationModule(nnx.Module):
             if self.predict_tracking
             else None
         )
+        self.authority_head = (
+            nnx.Linear(
+                in_features=256,
+                out_features=self.predict_authority_dim,
+                rngs=rngs,
+            )
+            if self.predict_authority_dim > 0
+            else None
+        )
 
     def __call__(
         self,
@@ -118,4 +129,8 @@ class CNNAdaptationModule(nnx.Module):
             tracking = self.tracking_head(x)
         else:
             tracking = jnp.zeros((1,), dtype=context.dtype)
-        return context, delta, tracking
+        if self.authority_head is not None:
+            authority = self.authority_head(x)
+        else:
+            authority = jnp.zeros((0,), dtype=context.dtype)
+        return context, delta, tracking, authority

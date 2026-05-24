@@ -18,10 +18,19 @@ from smallsat_sim.controllers.rl.runners.rollout import (
 from smallsat_sim.controllers.rl.runners.adaptive_context import (
     build_adaptation_query,
     build_adaptive_context,
+    task_authority_targets,
 )
 from smallsat_sim.controllers.rl.runners.curriculum import (
+    build_authority_regime_curriculum,
+    build_difficulty_curriculum,
     build_failure_curriculum,
     uniform_failure_distribution,
+)
+from smallsat_sim.controllers.rl.runners.failure_scenarios import (
+    SPLIT_TRAIN,
+    apply_sampled_failure_scenario_split,
+    build_failure_scenario_table,
+    precompute_scenario_gp_samples,
 )
 from smallsat_sim.controllers.rl.runners.runner_utils import (
     load_trained_modules,
@@ -109,14 +118,62 @@ def train_adaptation_module_on_policy_runner(self) -> None:
     disturbance_start_time_max = float(
         getattr(cfg, "curriculum_disturbance_start_time_max", 0.0)
     )
-    curriculum_phases, curriculum_total_epochs = build_failure_curriculum(
-        train_with_failures=bool(self.env.train_with_failures),
-        fallback_epochs=int(self.epochs),
-        nominal_epochs=int(cfg.curriculum_nominal_epochs),
-        phase_epochs=int(cfg.curriculum_phase_epochs),
-        failure_fraction=float(cfg.curriculum_failure_fraction),
-        disturbance_fraction=float(cfg.curriculum_disturbance_fraction),
+    curriculum_mode = str(getattr(cfg, "failure_curriculum_mode", "type"))
+    use_controllable_failure_scenarios = bool(
+        getattr(cfg, "use_controllable_failure_scenarios", False)
     )
+    failure_scenario_table = None
+    if use_controllable_failure_scenarios:
+        failure_scenario_table = build_failure_scenario_table(
+            self.env._thruster_mixer_T,
+            self.agent.actor.act_low,
+            self.agent.actor.act_high,
+            max_faults=int(getattr(cfg, "failure_scenario_max_faults", 2)),
+            min_rank=int(getattr(cfg, "failure_scenario_min_rank", 6)),
+            stress_quantile=float(
+                getattr(cfg, "failure_scenario_stress_quantile", 0.9)
+            ),
+            mild_effectiveness=float(
+                getattr(cfg, "failure_scenario_mild_effectiveness", 0.5)
+            ),
+        )
+        precompute_scenario_gp_samples(self.env, self._take_keys())
+
+    if (
+        curriculum_mode == "authority"
+        and use_controllable_failure_scenarios
+        and failure_scenario_table is not None
+    ):
+        curriculum_phases, curriculum_total_epochs = build_authority_regime_curriculum(
+            train_with_failures=bool(self.env.train_with_failures),
+            fallback_epochs=int(self.epochs),
+            nominal_epochs=int(cfg.curriculum_nominal_epochs),
+            phase_epochs=int(cfg.curriculum_phase_epochs),
+            failure_fraction=float(cfg.curriculum_failure_fraction),
+            disturbance_fraction=float(cfg.curriculum_disturbance_fraction),
+        )
+    elif (
+        curriculum_mode == "difficulty"
+        and use_controllable_failure_scenarios
+        and failure_scenario_table is not None
+    ):
+        curriculum_phases, curriculum_total_epochs = build_difficulty_curriculum(
+            train_with_failures=bool(self.env.train_with_failures),
+            fallback_epochs=int(self.epochs),
+            nominal_epochs=int(cfg.curriculum_nominal_epochs),
+            phase_epochs=int(cfg.curriculum_phase_epochs),
+            failure_fraction=float(cfg.curriculum_failure_fraction),
+            disturbance_fraction=float(cfg.curriculum_disturbance_fraction),
+        )
+    else:
+        curriculum_phases, curriculum_total_epochs = build_failure_curriculum(
+            train_with_failures=bool(self.env.train_with_failures),
+            fallback_epochs=int(self.epochs),
+            nominal_epochs=int(cfg.curriculum_nominal_epochs),
+            phase_epochs=int(cfg.curriculum_phase_epochs),
+            failure_fraction=float(cfg.curriculum_failure_fraction),
+            disturbance_fraction=float(cfg.curriculum_disturbance_fraction),
+        )
     phase_end_epochs = []
     running_epoch = 0
     for phase in curriculum_phases:
@@ -145,6 +202,8 @@ def train_adaptation_module_on_policy_runner(self) -> None:
         phase = _phase_for_am_epoch(epoch)
         phase_failure_fraction = float(phase["failure_fraction"])
         phase_disturbance_fraction = float(phase["disturbance_fraction"])
+        phase_difficulty_bin = phase.get("difficulty_bin")
+        phase_authority_regime = phase.get("authority_regime")
         phase_distribution = uniform_failure_distribution(
             list(phase["active_failures"])
         )
@@ -165,12 +224,28 @@ def train_adaptation_module_on_policy_runner(self) -> None:
             disturbance_start_time_max,
         )
         if phase_failure_fraction > 0.0:
-            self.env.apply_random_perturbations(
-                key=perturb_key,
-                fraction_perturbed_envs=phase_failure_fraction,
-                perturbation_distribution=phase_distribution,
-                start_time=failure_start_time,
-            )
+            if (
+                use_controllable_failure_scenarios
+                and failure_scenario_table is not None
+                and curriculum_mode in ("authority", "difficulty")
+            ):
+                apply_sampled_failure_scenario_split(
+                    self.env,
+                    key=perturb_key,
+                    table=failure_scenario_table,
+                    split_id=SPLIT_TRAIN,
+                    fraction_perturbed_envs=phase_failure_fraction,
+                    start_time=failure_start_time,
+                    difficulty_bin=phase_difficulty_bin,
+                    authority_regime=phase_authority_regime,
+                )
+            else:
+                self.env.apply_random_perturbations(
+                    key=perturb_key,
+                    fraction_perturbed_envs=phase_failure_fraction,
+                    perturbation_distribution=phase_distribution,
+                    start_time=failure_start_time,
+                )
         if phase_disturbance_fraction > 0.0:
             self.env.apply_random_disturbance(
                 key=disturb_key,
@@ -197,7 +272,7 @@ def train_adaptation_module_on_policy_runner(self) -> None:
         def _post_step(
             _step, step_output, actions, residuals, reset_flag, carry_extra
         ):
-            del _step, residuals  # unused
+            del _step
             _, _, history_full, new_extra = update_history_buffer(
                 carry_extra=carry_extra,
                 prev_states=step_output.prev_states,
@@ -291,8 +366,14 @@ def train_adaptation_module_on_policy_runner(self) -> None:
         tracking_targets = calc_lateral_tracking_error(
             next_obs.reshape(-1, next_obs.shape[-1]), self.planner
         ).reshape(self.steps_per_epoch, num_envs, 1)
+        authority_targets = task_authority_targets(
+            commanded_ctrl=step_outputs.commanded_ctrl.reshape(-1, self.env.act_dim),
+            applied_ctrl=step_outputs.applied_ctrl.reshape(-1, self.env.act_dim),
+            actual_wrench=step_outputs.actual_wrench.reshape(-1, 6),
+            desired_wrench=step_outputs.desired_wrench.reshape(-1, 6),
+        ).reshape(self.steps_per_epoch, num_envs, 3)
         am_targets = jnp.concatenate(
-            [extrinsics, query_data, delta_states, tracking_targets],
+            [extrinsics, query_data, delta_states, tracking_targets, authority_targets],
             axis=2,
         )
         actual_wrench = step_outputs.actual_wrench
@@ -436,6 +517,7 @@ def train_adaptation_module_on_policy_runner(self) -> None:
             am_context_loss,
             am_delta_loss,
             am_tracking_loss,
+            am_authority_loss,
             am_kl_loss,
             am_total_loss,
         ) = self.jitted_batched_am_loss_components(self.am, X_train, y_train)
@@ -443,17 +525,20 @@ def train_adaptation_module_on_policy_runner(self) -> None:
             am_val_context_loss,
             am_val_delta_loss,
             am_val_tracking_loss,
+            am_val_authority_loss,
             am_val_kl_loss,
             am_val_total_loss,
         ) = self.jitted_batched_am_loss_components(self.am, X_val, y_val)
         am_context_loss = float(am_context_loss)
         am_delta_loss = float(am_delta_loss)
         am_tracking_loss = float(am_tracking_loss)
+        am_authority_loss = float(am_authority_loss)
         am_kl_loss = float(am_kl_loss)
         am_total_loss = float(am_total_loss)
         am_val_context_loss = float(am_val_context_loss)
         am_val_delta_loss = float(am_val_delta_loss)
         am_val_tracking_loss = float(am_val_tracking_loss)
+        am_val_authority_loss = float(am_val_authority_loss)
         am_val_kl_loss = float(am_val_kl_loss)
         am_val_total_loss = float(am_val_total_loss)
         am_train_loss_value = float(am_train_loss_last)
@@ -504,30 +589,32 @@ def train_adaptation_module_on_policy_runner(self) -> None:
         logging_start_time = time.perf_counter()
         if self.env.use_wandb:
             wandb_payload = {
-                    "am_collection_phase": phase["name"],
-                    "am_collection_failure_fraction": phase_failure_fraction,
-                    "am_collection_disturbance_fraction": phase_disturbance_fraction,
-                    "am_train_loss_last": am_train_loss_value,
-                    "am_train_loss_mean": mean_am_train_loss,
-                    "am_context_loss": am_context_loss,
-                    "am_delta_loss": am_delta_loss,
-                    "am_tracking_loss": am_tracking_loss,
-                    "am_kl_loss": am_kl_loss,
-                    "am_total_loss": am_total_loss,
-                    "am_val_loss_last": (
-                        last_val_loss_value
-                        if last_val_loss_value is not None
-                        else float("nan")
-                    ),
-                    "am_val_loss_mean": (
-                        mean_am_val_loss if val_loss_count > 0 else float("nan")
-                    ),
-                    "am_val_context_loss": am_val_context_loss,
-                    "am_val_delta_loss": am_val_delta_loss,
-                    "am_val_tracking_loss": am_val_tracking_loss,
-                    "am_val_kl_loss": am_val_kl_loss,
-                    "am_val_total_loss": am_val_total_loss,
-                }
+                "am_collection_phase": phase["name"],
+                "am_collection_failure_fraction": phase_failure_fraction,
+                "am_collection_disturbance_fraction": phase_disturbance_fraction,
+                "am_train_loss_last": am_train_loss_value,
+                "am_train_loss_mean": mean_am_train_loss,
+                "am_context_loss": am_context_loss,
+                "am_delta_loss": am_delta_loss,
+                "am_tracking_loss": am_tracking_loss,
+                "am_authority_loss": am_authority_loss,
+                "am_kl_loss": am_kl_loss,
+                "am_total_loss": am_total_loss,
+                "am_val_loss_last": (
+                    last_val_loss_value
+                    if last_val_loss_value is not None
+                    else float("nan")
+                ),
+                "am_val_loss_mean": (
+                    mean_am_val_loss if val_loss_count > 0 else float("nan")
+                ),
+                "am_val_context_loss": am_val_context_loss,
+                "am_val_delta_loss": am_val_delta_loss,
+                "am_val_tracking_loss": am_val_tracking_loss,
+                "am_val_authority_loss": am_val_authority_loss,
+                "am_val_kl_loss": am_val_kl_loss,
+                "am_val_total_loss": am_val_total_loss,
+            }
             wandb_payload.update(attention_metrics)
             wandb.log(wandb_payload)
 
@@ -549,6 +636,7 @@ def train_adaptation_module_on_policy_runner(self) -> None:
                 am_context_loss=am_context_loss,
                 am_delta_loss=am_delta_loss,
                 am_tracking_loss=am_tracking_loss,
+                am_authority_loss=am_authority_loss,
                 am_kl_loss=am_kl_loss,
                 am_total_loss=am_total_loss,
                 am_val_loss_last=(
@@ -558,6 +646,7 @@ def train_adaptation_module_on_policy_runner(self) -> None:
                 am_val_context_loss=am_val_context_loss,
                 am_val_delta_loss=am_val_delta_loss,
                 am_val_tracking_loss=am_val_tracking_loss,
+                am_val_authority_loss=am_val_authority_loss,
                 am_val_kl_loss=am_val_kl_loss,
                 am_val_total_loss=am_val_total_loss,
                 mean_lateral_error=float(tracking_vals.mean()),

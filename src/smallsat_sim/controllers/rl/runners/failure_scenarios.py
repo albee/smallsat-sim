@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import os
 from functools import lru_cache
 from itertools import combinations
@@ -24,6 +25,10 @@ SPLIT_STRESS = 3
 BIN_EASY = 0
 BIN_MEDIUM = 1
 BIN_HARD = 2
+REGIME_REDUNDANT = 0
+REGIME_MARGINAL = 1
+REGIME_AUTHORITY_LIMITED = 2
+REGIME_BIAS_LIMITED = 3
 FAILURE_TYPE_NAMES = {
     0: "stuck_off",
     1: "stuck_on",
@@ -42,6 +47,12 @@ BIN_NAMES = {
     BIN_MEDIUM: "medium",
     BIN_HARD: "hard",
 }
+AUTHORITY_REGIME_NAMES = {
+    REGIME_REDUNDANT: "redundant",
+    REGIME_MARGINAL: "marginal",
+    REGIME_AUTHORITY_LIMITED: "authority_limited",
+    REGIME_BIAS_LIMITED: "bias_limited",
+}
 SCENARIO_FAILURE_STATUS = {
     0: PerturbationStatus.STUCK_OFF.value,
     1: PerturbationStatus.STUCK_ON.value,
@@ -50,6 +61,44 @@ SCENARIO_FAILURE_STATUS = {
     4: PerturbationStatus.THRUST_INSTABILITY.value,
 }
 _GP_SAMPLE_BANK: dict[tuple, tuple[jnp.ndarray, jnp.ndarray]] = {}
+
+
+def _scenario_cache_dir() -> str:
+    cache_dir = os.environ.get(
+        "SMALLSAT_SCENARIO_CACHE_DIR",
+        os.path.join(
+            os.getcwd(),
+            "src",
+            "smallsat_sim",
+            "controllers",
+            "rl",
+            "checkpoints",
+            "scenario_cache",
+        ),
+    )
+    os.makedirs(cache_dir, exist_ok=True)
+    return cache_dir
+
+
+def _scenario_cache_key(
+    mixer_t: np.ndarray,
+    ctrl_low: np.ndarray,
+    ctrl_high: np.ndarray,
+    *,
+    max_faults: int,
+    min_rank: int,
+    stress_quantile: float,
+    mild_effectiveness: float,
+) -> str:
+    digest = hashlib.sha256()
+    digest.update(np.asarray(mixer_t, dtype=np.float32).tobytes())
+    digest.update(np.asarray(ctrl_low, dtype=np.float32).tobytes())
+    digest.update(np.asarray(ctrl_high, dtype=np.float32).tobytes())
+    digest.update(str(int(max_faults)).encode())
+    digest.update(str(int(min_rank)).encode())
+    digest.update(f"{float(stress_quantile):.8f}".encode())
+    digest.update(f"{float(mild_effectiveness):.8f}".encode())
+    return digest.hexdigest()[:16]
 
 
 def _task_wrench_samples(mixer_t: np.ndarray, ctrl_high: np.ndarray) -> np.ndarray:
@@ -93,6 +142,44 @@ def _projected_bounded_residual(
     return float(np.linalg.norm(wrench_map @ u - target_wrench))
 
 
+def _max_feasible_wrench_scale(
+    wrench_map: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    target_wrench: np.ndarray,
+    *,
+    tolerance: float = 0.05,
+    high: float = 4.0,
+    iterations: int = 20,
+) -> float:
+    """
+    Approximate the largest scale alpha such that alpha * target_wrench remains
+    feasible under actuator bounds.
+
+    Feasibility is tested by projected bounded least squares. The returned value
+    has a direct control interpretation: alpha=1 means the sampled task wrench is
+    just feasible, alpha>1 means authority margin remains, and alpha<1 means even
+    the nominal sampled task wrench is outside the damaged wrench set.
+    """
+    target_norm = float(np.linalg.norm(target_wrench)) + 1e-6
+
+    def feasible(scale: float) -> bool:
+        residual = _projected_bounded_residual(
+            wrench_map, lower, upper, scale * target_wrench
+        )
+        return residual / (scale * target_norm + 1e-6) <= tolerance
+
+    lo = 0.0
+    hi = float(high)
+    for _ in range(iterations):
+        mid = 0.5 * (lo + hi)
+        if feasible(mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
 def _scenario_bounds(
     failure_types: tuple[int, ...],
     thrusters: tuple[int, ...],
@@ -128,7 +215,7 @@ def _scenario_metrics(
     ctrl_high: np.ndarray,
     task_wrenches: np.ndarray,
     mild_effectiveness: float,
-) -> tuple[int, float, float, float, float, float, float]:
+) -> tuple[int, float, float, float, float, float, float, float, float, int]:
     effectiveness, lower, upper = _scenario_bounds(
         failure_types,
         thrusters,
@@ -146,10 +233,16 @@ def _scenario_metrics(
     ) if singular_values.size else float("inf")
 
     errors = []
+    margins = []
     for wrench in task_wrenches:
         residual = _projected_bounded_residual(wrench_map, lower, upper, wrench)
         errors.append(residual / (float(np.linalg.norm(wrench)) + 1e-6))
+        feasible_scale = _max_feasible_wrench_scale(
+            wrench_map, lower, upper, wrench
+        )
+        margins.append(feasible_scale - 1.0)
     errors_np = np.asarray(errors, dtype=np.float32)
+    margins_np = np.asarray(margins, dtype=np.float32)
     zero_residual = _projected_bounded_residual(
         wrench_map, lower, upper, np.zeros((wrench_map.shape[0],), dtype=np.float32)
     )
@@ -157,14 +250,28 @@ def _scenario_metrics(
     bias_cancellation_error = zero_residual / nominal_scale
     bias_wrench = wrench_map @ np.clip(np.zeros_like(lower), lower, upper)
     bias_wrench_norm = float(np.linalg.norm(bias_wrench))
+    p10_margin = float(np.percentile(margins_np, 10.0))
+    mean_margin = float(np.mean(margins_np))
+    p90_error = float(np.percentile(errors_np, 90.0))
+    if bias_cancellation_error > 0.10:
+        authority_regime = REGIME_BIAS_LIMITED
+    elif p90_error > 0.10 or p10_margin < 0.05:
+        authority_regime = REGIME_AUTHORITY_LIMITED
+    elif p10_margin < 0.50:
+        authority_regime = REGIME_MARGINAL
+    else:
+        authority_regime = REGIME_REDUNDANT
     return (
         rank,
         min_sv,
         condition_number,
         float(np.mean(errors_np)),
-        float(np.percentile(errors_np, 90.0)),
+        p90_error,
         float(bias_cancellation_error),
         bias_wrench_norm,
+        p10_margin,
+        mean_margin,
+        authority_regime,
     )
 
 
@@ -205,6 +312,9 @@ def _build_scenario_table_cached(
                 p90_error,
                 bias_cancellation_error,
                 bias_wrench_norm,
+                p10_authority_margin,
+                mean_authority_margin,
+                authority_regime,
             ) = _scenario_metrics(
                 failure_types,
                 thrusters,
@@ -228,6 +338,9 @@ def _build_scenario_table_cached(
                     "p90_error": p90_error,
                     "bias_cancellation_error": bias_cancellation_error,
                     "bias_wrench_norm": bias_wrench_norm,
+                    "p10_authority_margin": p10_authority_margin,
+                    "mean_authority_margin": mean_authority_margin,
+                    "authority_regime": authority_regime,
                 }
             )
             p90_all.append(p90_error)
@@ -256,6 +369,9 @@ def _build_scenario_table_cached(
             "p90_feasibility_error": np.empty((0,), dtype=np.float32),
             "bias_cancellation_error": np.empty((0,), dtype=np.float32),
             "bias_wrench_norm": np.empty((0,), dtype=np.float32),
+            "p10_authority_margin": np.empty((0,), dtype=np.float32),
+            "mean_authority_margin": np.empty((0,), dtype=np.float32),
+            "authority_regime": np.empty((0,), dtype=np.int32),
         }
 
     p90_all_np = np.asarray(p90_all, dtype=np.float32)
@@ -281,6 +397,9 @@ def _build_scenario_table_cached(
     p90_error_rows: list[float] = []
     bias_cancel_rows: list[float] = []
     bias_norm_rows: list[float] = []
+    p10_margin_rows: list[float] = []
+    mean_margin_rows: list[float] = []
+    authority_regime_rows: list[int] = []
 
     for row_idx, row in enumerate(scenario_rows):
         failure_types = row["failure_types"]
@@ -315,6 +434,9 @@ def _build_scenario_table_cached(
         p90_error_rows.append(p90_error)
         bias_cancel_rows.append(row["bias_cancellation_error"])
         bias_norm_rows.append(row["bias_wrench_norm"])
+        p10_margin_rows.append(row["p10_authority_margin"])
+        mean_margin_rows.append(row["mean_authority_margin"])
+        authority_regime_rows.append(row["authority_regime"])
 
     return {
         "failure_types": np.asarray(failure_type_rows, dtype=np.int32),
@@ -329,6 +451,9 @@ def _build_scenario_table_cached(
         "p90_feasibility_error": np.asarray(p90_error_rows, dtype=np.float32),
         "bias_cancellation_error": np.asarray(bias_cancel_rows, dtype=np.float32),
         "bias_wrench_norm": np.asarray(bias_norm_rows, dtype=np.float32),
+        "p10_authority_margin": np.asarray(p10_margin_rows, dtype=np.float32),
+        "mean_authority_margin": np.asarray(mean_margin_rows, dtype=np.float32),
+        "authority_regime": np.asarray(authority_regime_rows, dtype=np.int32),
     }
 
 
@@ -345,6 +470,20 @@ def build_failure_scenario_table(
     mixer_t = np.asarray(jax.device_get(thruster_mixer_t), dtype=np.float32)
     ctrl_low_np = np.asarray(jax.device_get(ctrl_low), dtype=np.float32)
     ctrl_high_np = np.asarray(jax.device_get(ctrl_high), dtype=np.float32)
+    cache_key = _scenario_cache_key(
+        mixer_t,
+        ctrl_low_np,
+        ctrl_high_np,
+        max_faults=max_faults,
+        min_rank=min_rank,
+        stress_quantile=stress_quantile,
+        mild_effectiveness=mild_effectiveness,
+    )
+    cache_path = os.path.join(_scenario_cache_dir(), f"{cache_key}.npz")
+    if os.path.isfile(cache_path):
+        with np.load(cache_path) as cached:
+            return {key: jnp.asarray(cached[key]) for key in cached.files}
+
     table = _build_scenario_table_cached(
         mixer_t.tobytes(),
         tuple(mixer_t.shape),
@@ -355,6 +494,7 @@ def build_failure_scenario_table(
         float(stress_quantile),
         float(mild_effectiveness),
     )
+    np.savez_compressed(cache_path, **table)
     return {key: jnp.asarray(value) for key, value in table.items()}
 
 
@@ -379,6 +519,22 @@ def scenario_bin_counts(table: dict[str, jnp.ndarray], split_id: int = SPLIT_TRA
     }
 
 
+def scenario_authority_regime_counts(
+    table: dict[str, jnp.ndarray],
+    split_id: int | None = None,
+) -> dict[str, int]:
+    regimes = np.asarray(jax.device_get(table["authority_regime"]))
+    if split_id is None:
+        mask = np.ones_like(regimes, dtype=bool)
+    else:
+        split = np.asarray(jax.device_get(table["split"]))
+        mask = split == int(split_id)
+    return {
+        name: int(np.logical_and(mask, regimes == regime_id).sum())
+        for regime_id, name in AUTHORITY_REGIME_NAMES.items()
+    }
+
+
 def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     failure_types = np.asarray(jax.device_get(table["failure_types"]))
@@ -393,6 +549,9 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
     p90_err = np.asarray(jax.device_get(table["p90_feasibility_error"]))
     bias_cancel = np.asarray(jax.device_get(table["bias_cancellation_error"]))
     bias_norm = np.asarray(jax.device_get(table["bias_wrench_norm"]))
+    p10_margin = np.asarray(jax.device_get(table["p10_authority_margin"]))
+    mean_margin = np.asarray(jax.device_get(table["mean_authority_margin"]))
+    authority_regime = np.asarray(jax.device_get(table["authority_regime"]))
 
     max_faults = failure_types.shape[1] if failure_types.ndim == 2 else 0
     fieldnames = [
@@ -407,6 +566,9 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
         "p90_feasibility_error",
         "bias_cancellation_error",
         "bias_wrench_norm",
+        "p10_authority_margin",
+        "mean_authority_margin",
+        "authority_regime",
     ]
     for idx in range(max_faults):
         fieldnames.extend(
@@ -433,6 +595,11 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
                 "p90_feasibility_error": float(p90_err[scenario_id]),
                 "bias_cancellation_error": float(bias_cancel[scenario_id]),
                 "bias_wrench_norm": float(bias_norm[scenario_id]),
+                "p10_authority_margin": float(p10_margin[scenario_id]),
+                "mean_authority_margin": float(mean_margin[scenario_id]),
+                "authority_regime": AUTHORITY_REGIME_NAMES.get(
+                    int(authority_regime[scenario_id]), "unknown"
+                ),
             }
             for fault_idx in range(max_faults):
                 failure_type = int(failure_types[scenario_id, fault_idx])
@@ -476,6 +643,15 @@ def scenario_selection_payload(
     bias_norm = np.asarray(jax.device_get(table["bias_wrench_norm"]))[
         scenario_indices_np
     ]
+    p10_margin = np.asarray(jax.device_get(table["p10_authority_margin"]))[
+        scenario_indices_np
+    ]
+    mean_margin = np.asarray(jax.device_get(table["mean_authority_margin"]))[
+        scenario_indices_np
+    ]
+    regimes = np.asarray(jax.device_get(table["authority_regime"]))[
+        scenario_indices_np
+    ]
     denom = float(max(scenario_indices_np.size, 1))
     return {
         f"{prefix}/num_selected": float(scenario_indices_np.size),
@@ -496,6 +672,20 @@ def scenario_selection_payload(
         f"{prefix}/mean_feasibility_error": float(mean_error.mean()),
         f"{prefix}/mean_bias_cancellation_error": float(bias_error.mean()),
         f"{prefix}/mean_bias_wrench_norm": float(bias_norm.mean()),
+        f"{prefix}/mean_p10_authority_margin": float(p10_margin.mean()),
+        f"{prefix}/mean_authority_margin": float(mean_margin.mean()),
+        f"{prefix}/regime_redundant_fraction": float(
+            (regimes == REGIME_REDUNDANT).sum() / denom
+        ),
+        f"{prefix}/regime_marginal_fraction": float(
+            (regimes == REGIME_MARGINAL).sum() / denom
+        ),
+        f"{prefix}/regime_authority_limited_fraction": float(
+            (regimes == REGIME_AUTHORITY_LIMITED).sum() / denom
+        ),
+        f"{prefix}/regime_bias_limited_fraction": float(
+            (regimes == REGIME_BIAS_LIMITED).sum() / denom
+        ),
     }
 
 
@@ -506,12 +696,18 @@ def sample_scenario_indices(
     split_id: int,
     count: int,
     difficulty_bin: int | None = None,
+    authority_regime: int | None = None,
 ) -> jnp.ndarray:
     split = table["split"]
     mask = split == int(split_id)
     if difficulty_bin is not None:
         bin_mask = jnp.logical_and(mask, table["difficulty_bin"] == int(difficulty_bin))
         mask = jnp.where(jnp.any(bin_mask), bin_mask, mask)
+    if authority_regime is not None:
+        regime_mask = jnp.logical_and(
+            mask, table["authority_regime"] == int(authority_regime)
+        )
+        mask = jnp.where(jnp.any(regime_mask), regime_mask, mask)
     logits = jnp.where(mask, 0.0, -jnp.inf)
     sampled = jax.random.categorical(key, logits, shape=(count,))
     return sampled.astype(jnp.int32)
@@ -705,6 +901,7 @@ def apply_sampled_failure_scenario_split(
     fraction_perturbed_envs: float,
     start_time: float | None,
     difficulty_bin: int | None = None,
+    authority_regime: int | None = None,
 ) -> dict[str, float]:
     num_perturbed = int(env.num_envs * max(0.0, min(1.0, fraction_perturbed_envs)))
     if num_perturbed <= 0:
@@ -730,6 +927,7 @@ def apply_sampled_failure_scenario_split(
         split_id=split_id,
         count=num_perturbed,
         difficulty_bin=difficulty_bin,
+        authority_regime=authority_regime,
     )
     apply_failure_scenarios(
         env,

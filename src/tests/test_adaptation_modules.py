@@ -38,6 +38,7 @@ def test_transformer_task_query_and_prediction_heads() -> None:
         query_dim=5,
         predict_delta_dim=4,
         predict_tracking=True,
+        predict_authority_dim=3,
         d_model=32,
         n_heads=4,
         mlp_dim=64,
@@ -47,7 +48,7 @@ def test_transformer_task_query_and_prediction_heads() -> None:
     history = jnp.ones((8, 6), dtype=jnp.float32)
     query = jnp.ones((5,), dtype=jnp.float32)
 
-    mu, log_sigma, delta, tracking = module(
+    mu, log_sigma, delta, tracking, authority = module(
         history,
         query,
         return_stats=True,
@@ -58,6 +59,7 @@ def test_transformer_task_query_and_prediction_heads() -> None:
     assert log_sigma.shape == (3,)
     assert delta.shape == (4,)
     assert tracking.shape == (1,)
+    assert authority.shape == (3,)
 
 
 def test_cross_attention_task_query_prediction_heads_and_attention() -> None:
@@ -68,6 +70,7 @@ def test_cross_attention_task_query_prediction_heads_and_attention() -> None:
         query_dim=5,
         predict_delta_dim=4,
         predict_tracking=True,
+        predict_authority_dim=3,
         d_model=32,
         n_heads=4,
         mlp_dim=64,
@@ -77,7 +80,7 @@ def test_cross_attention_task_query_prediction_heads_and_attention() -> None:
     history = jnp.ones((8, 6), dtype=jnp.float32)
     query = jnp.ones((5,), dtype=jnp.float32)
 
-    mu, log_sigma, delta, tracking, attention = module(
+    mu, log_sigma, delta, tracking, authority, attention = module(
         history,
         query,
         return_stats=True,
@@ -93,6 +96,7 @@ def test_cross_attention_task_query_prediction_heads_and_attention() -> None:
     assert log_sigma.shape == (3,)
     assert delta.shape == (4,)
     assert tracking.shape == (1,)
+    assert authority.shape == (3,)
     assert attention.shape == (4, 8)
     assert jnp.allclose(attention.sum(axis=-1), 1.0, atol=1e-5)
     assert vmapped.shape == (3, 3)
@@ -137,15 +141,19 @@ def test_cnn_task_query_and_prediction_heads() -> None:
         query_dim=5,
         predict_delta_dim=4,
         predict_tracking=True,
+        predict_authority_dim=3,
     )
     history = jnp.ones((16, 6), dtype=jnp.float32)
     query = jnp.ones((5,), dtype=jnp.float32)
 
-    context, delta, tracking = module(history, query, return_predictions=True)
+    context, delta, tracking, authority = module(
+        history, query, return_predictions=True
+    )
 
     assert context.shape == (3,)
     assert delta.shape == (4,)
     assert tracking.shape == (1,)
+    assert authority.shape == (3,)
 
 
 def test_transformer_rejects_non_2d_history() -> None:

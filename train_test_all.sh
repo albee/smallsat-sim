@@ -5,10 +5,6 @@ core_scripts=(
   "experiments/rl_benchmarking/ppo_plain.py"
   "experiments/rl_benchmarking/ppo_adaptive_sim_residual.py"
   "experiments/rl_benchmarking/ppo_adaptive_transformer_residual.py"
-  "experiments/rl_benchmarking/ppo_adaptive_transformer_residual_task_predictive.py"
-  "experiments/rl_benchmarking/ppo_adaptive_transformer_structured.py"
-  "experiments/rl_benchmarking/ppo_adaptive_transformer_task_predictive.py"
-  "experiments/rl_benchmarking/ppo_adaptive_cross_attention_structured.py"
   "experiments/rl_benchmarking/ppo_adaptive_cross_attention_task_predictive.py"
 )
 
@@ -16,6 +12,10 @@ optional_control_scripts=(
   "experiments/rl_benchmarking/ppo_adaptive_sim_structured.py"
   "experiments/rl_benchmarking/ppo_adaptive_cnn_residual.py"
   "experiments/rl_benchmarking/ppo_adaptive_cnn_structured.py"
+  "experiments/rl_benchmarking/ppo_adaptive_transformer_residual_task_predictive.py"
+  "experiments/rl_benchmarking/ppo_adaptive_transformer_structured.py"
+  "experiments/rl_benchmarking/ppo_adaptive_transformer_task_predictive.py"
+  "experiments/rl_benchmarking/ppo_adaptive_cross_attention_structured.py"
   "experiments/rl_benchmarking/ppo_adaptive_cross_attention_residual_task_predictive.py"
 )
 
@@ -24,7 +24,7 @@ diagnostic_scripts=(
 )
 
 scenario_split_eval_scripts=(
-  "experiments/rl_benchmarking/evaluate_ppo_plain_scenario_splits.py"
+  "experiments/rl_benchmarking/evaluate_scenario_splits.py"
 )
 
 classic_control_scripts=(
@@ -58,10 +58,11 @@ export PYTHONPATH="$(pwd):${PYTHONPATH}"
 export SMALLSAT_ROLLOUT_BACKEND="${SMALLSAT_ROLLOUT_BACKEND:-freeflyer}"
 echo "Using RL rollout backend: ${SMALLSAT_ROLLOUT_BACKEND}"
 
-# The RL config currently trains 600 nominal epochs, then advances through
-# controllability-filtered easy/medium/hard scenario phases. The older
-# failure-type curriculum remains available by setting failure_curriculum_mode
-# to "type" in src/smallsat_sim/envs/astrobee_rl/cfg/config.py.
+# The focused paper suite trains 600 nominal epochs, then advances through
+# control-theoretic authority regimes: redundant, marginal, authority-limited,
+# and bias-limited/disturbance. The older difficulty and failure-type curricula
+# remain available by setting failure_curriculum_mode to "difficulty" or "type"
+# in src/smallsat_sim/envs/astrobee_rl/cfg/config.py.
 
 # Deployment runs compile a separate controller/deployment graph and execute many
 # stress-test scenarios. Skip them by default for training/tuning sweeps.
@@ -90,6 +91,16 @@ fi
 #   RUN_COUNTERFACTUAL_PROBE=1 ./train_test_all.sh
 #   RUN_SCENARIO_SPLIT_EVAL=1 ./train_test_all.sh
 #   RUN_ONLY_SCENARIO_SPLIT_EVAL=1 ./train_test_all.sh
+#
+# The scenario evaluator defaults to ppo_plain. To evaluate an adaptive
+# checkpoint on the same authority-regime/eval/stress splits, run it directly,
+# e.g.:
+#   python experiments/rl_benchmarking/evaluate_scenario_splits.py --headless --wandb \
+#     --run-name ppo_adaptive_cross_attention_task_predictive \
+#     --use-adaptive-approach --am-architecture transformer_cross_attention \
+#     --adaptive-context-mode structured --task-conditioned \
+#     --predict-delta-weight 0.1 --predict-tracking-weight 0.1 \
+#     --predict-authority-weight 0.1
 #
 # Existing checkpoints are reused by the Python runners. Remove the relevant
 # checkpoint files if you want to force retraining a variant.

@@ -28,6 +28,7 @@ class AstrobeeEnvVectorized(VecEnv):
         use_task_conditioned_am: bool | None = None,
         am_predict_delta_weight: float | None = None,
         am_predict_tracking_weight: float | None = None,
+        am_predict_authority_weight: float | None = None,
         num_envs: int | None = None,
     ) -> None:
         # Run name for logging
@@ -58,6 +59,10 @@ class AstrobeeEnvVectorized(VecEnv):
         if am_predict_tracking_weight is not None:
             self.env_cfg.control.RL.am_predict_tracking_weight = (
                 am_predict_tracking_weight
+            )
+        if am_predict_authority_weight is not None:
+            self.env_cfg.control.RL.am_predict_authority_weight = (
+                am_predict_authority_weight
             )
         if num_envs is not None:
             self.env_cfg.control.RL.num_envs = int(num_envs)

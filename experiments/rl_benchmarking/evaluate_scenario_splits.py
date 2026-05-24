@@ -1,9 +1,11 @@
 """
-Evaluate a trained PPO policy on the precomputed failure-scenario splits.
+Evaluate a trained policy on authority-regime failure-scenario splits.
 
-This is a diagnostic script for answering whether the non-adaptive PPO baseline
-only sees easy failures during training or genuinely generalizes to held-out and
-stress actuator-failure scenarios.
+This diagnostic tests whether a trained policy succeeds because failures are
+redundant/behaviorally irrelevant, or because it can handle marginal,
+authority-limited, bias-limited, held-out, and stress actuator-failure regimes.
+It defaults to ppo_plain, but can evaluate adaptive checkpoints by passing the
+matching architecture/context flags.
 """
 
 from __future__ import annotations
@@ -24,6 +26,10 @@ from smallsat_sim.controllers.rl.runners.failure_scenarios import (
     BIN_EASY,
     BIN_HARD,
     BIN_MEDIUM,
+    REGIME_AUTHORITY_LIMITED,
+    REGIME_BIAS_LIMITED,
+    REGIME_MARGINAL,
+    REGIME_REDUNDANT,
     SPLIT_EVAL_ID,
     SPLIT_EVAL_OOD,
     SPLIT_STRESS,
@@ -31,15 +37,19 @@ from smallsat_sim.controllers.rl.runners.failure_scenarios import (
     apply_sampled_failure_scenario_split,
     build_failure_scenario_table,
     scenario_bin_counts,
+    scenario_authority_regime_counts,
     scenario_split_counts,
 )
 from smallsat_sim.controllers.rl.runners.runner_utils import load_trained_modules
 from smallsat_sim.controllers.rl.runners.rollout import (
+    AdaptationRolloutExtra,
     FunctionalRolloutCallbacks,
     make_zero_bootstrap_value,
     prepare_policy_input_with_residuals,
     run_functional_rollout,
+    update_history_buffer,
 )
+from smallsat_sim.controllers.rl.runners.adaptive_context import build_adaptation_query
 from smallsat_sim.envs.astrobee_rl.env import AstrobeeEnvVectorized
 from smallsat_sim.envs.vec_env import (
     _compute_freeflyer_state_features,
@@ -51,12 +61,16 @@ from smallsat_sim.planners.oracle.oracle_rl import OraclePlannerRL
 
 
 SCENARIO_EVALS = (
-    ("train_easy", SPLIT_TRAIN, BIN_EASY),
-    ("train_medium", SPLIT_TRAIN, BIN_MEDIUM),
-    ("train_hard", SPLIT_TRAIN, BIN_HARD),
-    ("eval_id", SPLIT_EVAL_ID, None),
-    ("eval_ood", SPLIT_EVAL_OOD, None),
-    ("stress", SPLIT_STRESS, None),
+    ("train_redundant", SPLIT_TRAIN, None, REGIME_REDUNDANT),
+    ("train_marginal", SPLIT_TRAIN, None, REGIME_MARGINAL),
+    ("train_authority_limited", SPLIT_TRAIN, None, REGIME_AUTHORITY_LIMITED),
+    ("train_bias_limited", SPLIT_TRAIN, None, REGIME_BIAS_LIMITED),
+    ("train_easy", SPLIT_TRAIN, BIN_EASY, None),
+    ("train_medium", SPLIT_TRAIN, BIN_MEDIUM, None),
+    ("train_hard", SPLIT_TRAIN, BIN_HARD, None),
+    ("eval_id", SPLIT_EVAL_ID, None, None),
+    ("eval_ood", SPLIT_EVAL_OOD, None, None),
+    ("stress", SPLIT_STRESS, None, None),
 )
 
 
@@ -70,10 +84,35 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--episodes", type=int, default=3)
     parser.add_argument("--failure-fraction", type=float, default=0.4)
     parser.add_argument("--disturbance-fraction", type=float, default=0.0)
+    parser.add_argument(
+        "--run-name",
+        default=os.environ.get("SCENARIO_EVAL_RUN_NAME", "ppo_plain"),
+    )
     parser.add_argument("--checkpoint", default=None)
+    parser.add_argument("--use-adaptive-approach", action="store_true")
+    parser.add_argument(
+        "--am-architecture",
+        default=None,
+        choices=(None, "transformer", "transformer_cross_attention", "cnn"),
+    )
+    parser.add_argument(
+        "--adaptive-context-mode",
+        default=None,
+        choices=(
+            None,
+            "residual",
+            "residual_effectiveness",
+            "residual_controllability",
+            "structured",
+        ),
+    )
+    parser.add_argument("--task-conditioned", action="store_true")
+    parser.add_argument("--predict-delta-weight", type=float, default=None)
+    parser.add_argument("--predict-tracking-weight", type=float, default=None)
+    parser.add_argument("--predict-authority-weight", type=float, default=None)
     parser.add_argument(
         "--output",
-        default="experiments/rl_results/scenario_split_eval/ppo_plain_scenario_split_eval.csv",
+        default=None,
     )
     return parser.parse_args()
 
@@ -91,7 +130,7 @@ def _sim_args(args: argparse.Namespace) -> Namespace:
     )
 
 
-def _load_actor_critic(runner: OnPolicyRunner, checkpoint: str | None) -> str:
+def _load_modules(runner: OnPolicyRunner, checkpoint: str | None) -> str:
     ckpt_name = checkpoint or runner.training_state_file_name
     ckpt_path = os.path.join(runner.ckpt_dir, ckpt_name)
     if not os.path.isfile(ckpt_path):
@@ -110,6 +149,17 @@ def _load_actor_critic(runner: OnPolicyRunner, checkpoint: str | None) -> str:
         nnx.update(runner.agent.critic, critic_state)
     else:
         nnx.update(runner.agent.critic.v_net, critic_state.v_net)
+    if runner.env.use_adaptive_approach:
+        am_path = os.path.join(runner.ckpt_dir, runner.adaptation_module_file_name)
+        if not os.path.isfile(am_path):
+            raise FileNotFoundError(
+                f"Adaptation module checkpoint not found: {am_path}. "
+                "Pass flags matching the trained adaptive method."
+            )
+        am_state = load_trained_modules(
+            runner.ckpt_dir, runner.adaptation_module_file_name
+        )["am_model"]
+        nnx.update(runner.am, am_state)
     return ckpt_name
 
 
@@ -137,10 +187,19 @@ def _rollout_once(runner: OnPolicyRunner) -> dict[str, float]:
         rollout_reset_fn = None
         rollout_state_features_fn = None
 
-    residual_init = jnp.zeros((num_envs, 0), dtype=jnp.float32)
+    history_len = runner.env.history_len
+    state_action_dim = runner.env.obs_dim + runner.env.act_dim
+    if runner.env.use_adaptive_approach:
+        residual_init = jnp.zeros((num_envs, runner.env.res_dim), dtype=jnp.float32)
+        extra = AdaptationRolloutExtra(
+            history=jnp.zeros((num_envs, history_len, state_action_dim)),
+            counts=jnp.zeros((num_envs,), dtype=jnp.int32),
+        )
+    else:
+        residual_init = jnp.zeros((num_envs, 0), dtype=jnp.float32)
+        extra = None
 
     def _prepare_policy_input(_step, states, residuals, carry_extra):
-        del carry_extra
         return prepare_policy_input_with_residuals(_step, states, residuals, None)
 
     def _sample_policy(_step, policy_input, rng_key, carry_extra):
@@ -150,8 +209,24 @@ def _rollout_once(runner: OnPolicyRunner) -> dict[str, float]:
         return actions, zeros, zeros, rng_key, None
 
     def _post_step(_step, step_output, actions, residuals, reset_flag, carry_extra):
-        del _step, step_output, actions, reset_flag, carry_extra
-        return residuals, None, None
+        del _step
+        if not runner.env.use_adaptive_approach:
+            return residuals, None, None
+        history, counts, history_full, new_extra = update_history_buffer(
+            carry_extra=carry_extra,
+            prev_states=step_output.prev_states,
+            actions=actions,
+            reset_flag=reset_flag,
+            history_len=history_len,
+        )
+        query = build_adaptation_query(
+            states=step_output.prev_states,
+            desired_wrench=step_output.desired_wrench,
+            use_task_conditioned_am=runner.env.use_task_conditioned_am,
+        )
+        context_pred = runner.adaptation_module(history, query)
+        residuals_next = jnp.where(history_full[:, None], context_pred, residuals)
+        return residuals_next, history_full, new_extra
 
     rollout = run_functional_rollout(
         step_config=step_config,
@@ -166,6 +241,7 @@ def _rollout_once(runner: OnPolicyRunner) -> dict[str, float]:
             post_step=_post_step,
             bootstrap_value=make_zero_bootstrap_value(num_envs),
         ),
+        extra=extra,
         step_fn=rollout_step_fn,
         reset_fn=rollout_reset_fn,
         state_features_fn=rollout_state_features_fn,
@@ -265,6 +341,7 @@ def _evaluate_scenario(
     scenario_name: str,
     split_id: int,
     difficulty_bin: int | None,
+    authority_regime: int | None,
     episodes: int,
     failure_fraction: float,
     disturbance_fraction: float,
@@ -304,6 +381,7 @@ def _evaluate_scenario(
             table=table,
             split_id=split_id,
             difficulty_bin=difficulty_bin,
+            authority_regime=authority_regime,
             fraction_perturbed_envs=failure_fraction,
             start_time=failure_start_time,
         )
@@ -325,6 +403,7 @@ def _evaluate_scenario(
         "scenario": scenario_name,
         "split_id": split_id,
         "difficulty_bin": difficulty_bin,
+        "authority_regime": authority_regime,
         "episodes": episodes,
         "failure_fraction": failure_fraction,
         "disturbance_fraction": disturbance_fraction,
@@ -343,15 +422,21 @@ def main() -> None:
     args = _parse_args()
     env = AstrobeeEnvVectorized(
         args=_sim_args(args),
-        run_name="ppo_plain_scenario_split_eval",
+        run_name=args.run_name,
         train_with_failures=True,
         use_pretrained=False,
-        use_adaptive_approach=False,
+        use_adaptive_approach=args.use_adaptive_approach,
+        am_architecture=args.am_architecture,
+        adaptive_context_mode=args.adaptive_context_mode,
+        use_task_conditioned_am=args.task_conditioned,
+        am_predict_delta_weight=args.predict_delta_weight,
+        am_predict_tracking_weight=args.predict_tracking_weight,
+        am_predict_authority_weight=args.predict_authority_weight,
         num_envs=args.num_envs,
     )
     planner = OraclePlannerRL(env, radius=0.0)
     runner = OnPolicyRunner(env, planner)
-    ckpt_name = _load_actor_critic(runner, args.checkpoint)
+    ckpt_name = _load_modules(runner, args.checkpoint)
     print(f"[Scenario Eval] Loaded checkpoint: {ckpt_name}", flush=True)
 
     cfg = env.env_cfg.control.RL
@@ -369,12 +454,13 @@ def main() -> None:
     print(
         "[Scenario Eval] Table counts "
         f"splits={scenario_split_counts(table)} "
-        f"train_bins={scenario_bin_counts(table, SPLIT_TRAIN)}",
+        f"train_bins={scenario_bin_counts(table, SPLIT_TRAIN)} "
+        f"train_regimes={scenario_authority_regime_counts(table, SPLIT_TRAIN)}",
         flush=True,
     )
 
     rows = []
-    for scenario_name, split_id, difficulty_bin in SCENARIO_EVALS:
+    for scenario_name, split_id, difficulty_bin, authority_regime in SCENARIO_EVALS:
         rows.append(
             _evaluate_scenario(
                 runner,
@@ -382,13 +468,17 @@ def main() -> None:
                 scenario_name=scenario_name,
                 split_id=split_id,
                 difficulty_bin=difficulty_bin,
+                authority_regime=authority_regime,
                 episodes=max(1, int(args.episodes)),
                 failure_fraction=float(args.failure_fraction),
                 disturbance_fraction=float(args.disturbance_fraction),
             )
         )
 
-    output_path = Path(args.output)
+    output_path = Path(
+        args.output
+        or f"experiments/rl_results/scenario_split_eval/{args.run_name}_scenario_split_eval.csv"
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = list(rows[0].keys())
     with output_path.open("w", newline="") as file:

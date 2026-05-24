@@ -13,6 +13,7 @@ from smallsat_sim.controllers.rl.runners.rollout import (
     run_functional_rollout,
 )
 from smallsat_sim.controllers.rl.runners.curriculum import (
+    build_authority_regime_curriculum,
     build_difficulty_curriculum,
     build_failure_curriculum,
     uniform_failure_distribution,
@@ -25,6 +26,7 @@ from smallsat_sim.controllers.rl.runners.failure_scenarios import (
     apply_sampled_failure_scenario_split,
     build_failure_scenario_table,
     precompute_scenario_gp_samples,
+    scenario_authority_regime_counts,
     scenario_bin_counts,
     scenario_split_counts,
     save_scenario_table_csv,
@@ -206,7 +208,9 @@ def learn_runner(self) -> None:
             "[Failure Scenarios] Using controllability-filtered scenario table "
             f"{scenario_split_counts(failure_scenario_table)}; "
             f"training split={failure_scenario_train_split}; "
-            f"train bins={scenario_bin_counts(failure_scenario_table)}"
+            f"train bins={scenario_bin_counts(failure_scenario_table)}; "
+            f"train authority regimes="
+            f"{scenario_authority_regime_counts(failure_scenario_table, SPLIT_TRAIN)}"
         )
         scenario_table_path = os.path.join(
             self.ckpt_dir,
@@ -224,6 +228,19 @@ def learn_runner(self) -> None:
     eval_episodes = max(1, min(self.n_evals, 3))
 
     if (
+        curriculum_mode == "authority"
+        and use_controllable_failure_scenarios
+        and failure_scenario_table is not None
+    ):
+        phases, total_epochs = build_authority_regime_curriculum(
+            train_with_failures=bool(self.env.train_with_failures),
+            fallback_epochs=nominal_epochs,
+            nominal_epochs=nominal_epochs,
+            phase_epochs=phase_epochs,
+            failure_fraction=failure_fraction,
+            disturbance_fraction=disturbance_fraction,
+        )
+    elif (
         curriculum_mode == "difficulty"
         and use_controllable_failure_scenarios
         and failure_scenario_table is not None
@@ -273,6 +290,10 @@ def learn_runner(self) -> None:
         phase_difficulty_bin = phase.get("difficulty_bin")
         current_difficulty_bin = -1 if phase_difficulty_bin is None else int(
             phase_difficulty_bin
+        )
+        phase_authority_regime = phase.get("authority_regime")
+        current_authority_regime = (
+            -1 if phase_authority_regime is None else int(phase_authority_regime)
         )
         phase_uses_perturbations = bool(active_failures) and phase_failure_fraction > 0.0
         phase_uses_disturbances = phase_disturbance_fraction > 0.0
@@ -342,6 +363,7 @@ def learn_runner(self) -> None:
                                 fraction_perturbed_envs=applied_failure_fraction,
                                 start_time=failure_start_time,
                                 difficulty_bin=phase_difficulty_bin,
+                                authority_regime=phase_authority_regime,
                             )
                         else:
                             self.env.apply_random_perturbations(
@@ -909,6 +931,7 @@ def learn_runner(self) -> None:
                     current_failure_fraction=float(applied_failure_fraction),
                     current_disturbance_fraction=float(applied_disturbance_fraction),
                     current_difficulty_bin=current_difficulty_bin,
+                    current_authority_regime=current_authority_regime,
                     median_final_position_error=float(
                         median_final_pos_error_epoch
                     ),
@@ -985,6 +1008,7 @@ def learn_runner(self) -> None:
                     current_failure_fraction=float(applied_failure_fraction),
                     current_disturbance_fraction=float(applied_disturbance_fraction),
                     current_difficulty_bin=current_difficulty_bin,
+                    current_authority_regime=current_authority_regime,
                     median_final_position_error=float(
                         median_final_pos_error_epoch
                     ),

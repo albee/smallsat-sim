@@ -96,6 +96,39 @@ def authority_metrics_from_wrench(
     }
 
 
+def task_authority_targets(
+    *,
+    commanded_ctrl: jnp.ndarray,
+    applied_ctrl: jnp.ndarray,
+    actual_wrench: jnp.ndarray,
+    desired_wrench: jnp.ndarray,
+    eps: float = 1e-6,
+) -> jnp.ndarray:
+    """
+    Lightweight task-conditioned actuator-authority target for AM training.
+
+    This is not a full bounded wrench-polytope solve. It asks a narrower,
+    rollout-cheap question: for the current desired wrench, how badly did the
+    realized actuator response miss, and how much actuator mismatch was present?
+    """
+    residual = jnp.asarray(actual_wrench) - jnp.asarray(desired_wrench)
+    desired_norm = jnp.linalg.norm(desired_wrench, axis=1)
+    residual_norm = jnp.linalg.norm(residual, axis=1)
+    normalized_wrench_error = residual_norm / (desired_norm + eps)
+    directional_error = jnp.sum(residual * desired_wrench, axis=1) / (
+        desired_norm**2 + eps
+    )
+    ctrl_scale = jnp.abs(commanded_ctrl) + 1e-3
+    actuator_mismatch = jnp.mean(
+        jnp.clip(jnp.abs(applied_ctrl - commanded_ctrl) / ctrl_scale, 0.0, 10.0),
+        axis=1,
+    )
+    return jnp.stack(
+        [normalized_wrench_error, directional_error, actuator_mismatch],
+        axis=1,
+    )
+
+
 def summarize_authority_metrics(
     metrics: dict[str, jnp.ndarray],
     mask: jnp.ndarray | None = None,

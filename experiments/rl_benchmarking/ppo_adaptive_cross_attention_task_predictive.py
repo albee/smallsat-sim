@@ -17,6 +17,7 @@ benchmarker.train_and_evaluate(
     use_task_conditioned_am=True,
     am_predict_delta_weight=0.1,
     am_predict_tracking_weight=0.1,
+    am_predict_authority_weight=0.1,
 )
 
 benchmarker.deploy_and_test(
@@ -28,4 +29,5 @@ benchmarker.deploy_and_test(
     use_task_conditioned_am=True,
     am_predict_delta_weight=0.1,
     am_predict_tracking_weight=0.1,
+    am_predict_authority_weight=0.1,
 )

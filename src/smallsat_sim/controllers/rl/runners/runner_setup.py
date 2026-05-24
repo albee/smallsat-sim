@@ -33,9 +33,22 @@ def build_checkpoint_file_names(env) -> dict[str, str]:
             env.use_task_conditioned_am
             or float(env.env_cfg.control.RL.am_predict_delta_weight) > 0.0
             or float(env.env_cfg.control.RL.am_predict_tracking_weight) > 0.0
+            or float(getattr(env.env_cfg.control.RL, "am_predict_authority_weight", 0.0))
+            > 0.0
         )
         if prefix.startswith("adapt_module") and predictive_am:
             parts.append("taskpred")
+            if (
+                float(
+                    getattr(
+                        env.env_cfg.control.RL,
+                        "am_predict_authority_weight",
+                        0.0,
+                    )
+                )
+                > 0.0
+            ):
+                parts.append("authority")
         return "_".join(p for p in parts if p) + ".pkl"
 
     if adaptive:

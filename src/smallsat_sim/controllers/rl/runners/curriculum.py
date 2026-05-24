@@ -2,6 +2,13 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 
+from smallsat_sim.controllers.rl.runners.failure_scenarios import (
+    REGIME_AUTHORITY_LIMITED,
+    REGIME_BIAS_LIMITED,
+    REGIME_MARGINAL,
+    REGIME_REDUNDANT,
+)
+
 # VecEnv distribution order:
 # [STUCK_OFF, STUCK_ON, FAULTY_VALVE, SATURATED_THRUST, THRUST_INSTABILITY]
 FAILURE_NAMES: dict[int, str] = {
@@ -154,5 +161,86 @@ def build_difficulty_curriculum(
         }
     )
 
+    total_epochs = sum(int(phase["epochs"]) for phase in phases)
+    return phases, total_epochs
+
+
+def build_authority_regime_curriculum(
+    *,
+    train_with_failures: bool,
+    fallback_epochs: int,
+    nominal_epochs: int = 100,
+    phase_epochs: int = 50,
+    failure_fraction: float = 0.4,
+    disturbance_fraction: float = 0.1,
+) -> tuple[list[dict], int]:
+    """
+    Build a curriculum over control-authority regimes.
+
+    Regimes are assigned in `failure_scenarios.py` from bounded wrench
+    allocation margins, not from failure count or hand-picked failure type.
+    """
+    if not train_with_failures:
+        return build_failure_curriculum(
+            train_with_failures=False,
+            fallback_epochs=fallback_epochs,
+            nominal_epochs=nominal_epochs,
+            phase_epochs=phase_epochs,
+            failure_fraction=failure_fraction,
+            disturbance_fraction=disturbance_fraction,
+        )
+
+    phases: list[dict] = [
+        {
+            "name": "nominal",
+            "epochs": int(nominal_epochs),
+            "active_failures": [],
+            "failure_fraction": 0.0,
+            "disturbance_fraction": 0.0,
+            "new_failure": None,
+            "difficulty_bin": None,
+            "authority_regime": None,
+        },
+        {
+            "name": "authority_redundant",
+            "epochs": int(phase_epochs),
+            "active_failures": list(FAILURE_ORDER),
+            "failure_fraction": float(failure_fraction),
+            "disturbance_fraction": 0.0,
+            "new_failure": None,
+            "difficulty_bin": None,
+            "authority_regime": REGIME_REDUNDANT,
+        },
+        {
+            "name": "authority_marginal",
+            "epochs": int(phase_epochs),
+            "active_failures": list(FAILURE_ORDER),
+            "failure_fraction": float(failure_fraction),
+            "disturbance_fraction": 0.0,
+            "new_failure": None,
+            "difficulty_bin": None,
+            "authority_regime": REGIME_MARGINAL,
+        },
+        {
+            "name": "authority_limited",
+            "epochs": int(phase_epochs),
+            "active_failures": list(FAILURE_ORDER),
+            "failure_fraction": float(failure_fraction),
+            "disturbance_fraction": 0.0,
+            "new_failure": None,
+            "difficulty_bin": None,
+            "authority_regime": REGIME_AUTHORITY_LIMITED,
+        },
+        {
+            "name": "bias_limited_disturbances",
+            "epochs": int(phase_epochs),
+            "active_failures": list(FAILURE_ORDER),
+            "failure_fraction": float(failure_fraction),
+            "disturbance_fraction": float(disturbance_fraction),
+            "new_failure": None,
+            "difficulty_bin": None,
+            "authority_regime": REGIME_BIAS_LIMITED,
+        },
+    ]
     total_epochs = sum(int(phase["epochs"]) for phase in phases)
     return phases, total_epochs

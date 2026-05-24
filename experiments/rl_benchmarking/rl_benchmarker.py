@@ -51,6 +51,7 @@ class Benchmarker(object):
         use_task_conditioned_am: bool | None = None,
         am_predict_delta_weight: float | None = None,
         am_predict_tracking_weight: float | None = None,
+        am_predict_authority_weight: float | None = None,
         phase: int = 2,
         pretrain_only: bool = False,
     ) -> None:
@@ -69,6 +70,7 @@ class Benchmarker(object):
             use_task_conditioned_am=use_task_conditioned_am,
             am_predict_delta_weight=am_predict_delta_weight,
             am_predict_tracking_weight=am_predict_tracking_weight,
+            am_predict_authority_weight=am_predict_authority_weight,
         )
 
         # Create planner
@@ -114,6 +116,7 @@ class Benchmarker(object):
         use_task_conditioned_am: bool | None = None,
         am_predict_delta_weight: float | None = None,
         am_predict_tracking_weight: float | None = None,
+        am_predict_authority_weight: float | None = None,
         phase: int = 2,
         ckpt_name: str | None = None,
         test_pd: bool = False,
@@ -159,6 +162,7 @@ class Benchmarker(object):
             use_task_conditioned_am=use_task_conditioned_am,
             am_predict_delta_weight=am_predict_delta_weight,
             am_predict_tracking_weight=am_predict_tracking_weight,
+            am_predict_authority_weight=am_predict_authority_weight,
         )
 
         # Create planner
