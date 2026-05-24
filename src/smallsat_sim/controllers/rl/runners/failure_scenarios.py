@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import csv
+import os
 from functools import lru_cache
 from itertools import combinations
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+
+from smallsat_sim.envs.perturbation_gp import ThrusterFailureSimulator
+from smallsat_sim.envs.perturbation_state import (
+    PerturbationState,
+    PerturbationStatus,
+)
+from smallsat_sim.envs.perturbations_rl import Perturbation
 
 
 SPLIT_TRAIN = 0
@@ -34,6 +42,14 @@ BIN_NAMES = {
     BIN_MEDIUM: "medium",
     BIN_HARD: "hard",
 }
+SCENARIO_FAILURE_STATUS = {
+    0: PerturbationStatus.STUCK_OFF.value,
+    1: PerturbationStatus.STUCK_ON.value,
+    2: PerturbationStatus.FAULTY_VALVE.value,
+    3: PerturbationStatus.SATURATED_THRUST.value,
+    4: PerturbationStatus.THRUST_INSTABILITY.value,
+}
+_GP_SAMPLE_BANK: dict[tuple, tuple[jnp.ndarray, jnp.ndarray]] = {}
 
 
 def _task_wrench_samples(mixer_t: np.ndarray, ctrl_high: np.ndarray) -> np.ndarray:
@@ -364,6 +380,7 @@ def scenario_bin_counts(table: dict[str, jnp.ndarray], split_id: int = SPLIT_TRA
 
 
 def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     failure_types = np.asarray(jax.device_get(table["failure_types"]))
     thrusters = np.asarray(jax.device_get(table["thrusters"]))
     n_faults = np.asarray(jax.device_get(table["n_faults"]))
@@ -429,6 +446,59 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
             writer.writerow(row)
 
 
+def scenario_selection_payload(
+    table: dict[str, jnp.ndarray],
+    scenario_indices: jnp.ndarray,
+    *,
+    prefix: str = "scenario",
+) -> dict[str, float]:
+    scenario_indices_np = np.asarray(jax.device_get(scenario_indices), dtype=np.int32)
+    if scenario_indices_np.size == 0:
+        return {
+            f"{prefix}/num_selected": 0.0,
+            f"{prefix}/bin_easy_fraction": 0.0,
+            f"{prefix}/bin_medium_fraction": 0.0,
+            f"{prefix}/bin_hard_fraction": 0.0,
+        }
+
+    bins = np.asarray(jax.device_get(table["difficulty_bin"]))[scenario_indices_np]
+    splits = np.asarray(jax.device_get(table["split"]))[scenario_indices_np]
+    n_faults = np.asarray(jax.device_get(table["n_faults"]))[scenario_indices_np]
+    p90_error = np.asarray(jax.device_get(table["p90_feasibility_error"]))[
+        scenario_indices_np
+    ]
+    mean_error = np.asarray(jax.device_get(table["mean_feasibility_error"]))[
+        scenario_indices_np
+    ]
+    bias_error = np.asarray(jax.device_get(table["bias_cancellation_error"]))[
+        scenario_indices_np
+    ]
+    bias_norm = np.asarray(jax.device_get(table["bias_wrench_norm"]))[
+        scenario_indices_np
+    ]
+    denom = float(max(scenario_indices_np.size, 1))
+    return {
+        f"{prefix}/num_selected": float(scenario_indices_np.size),
+        f"{prefix}/bin_easy_fraction": float((bins == BIN_EASY).sum() / denom),
+        f"{prefix}/bin_medium_fraction": float((bins == BIN_MEDIUM).sum() / denom),
+        f"{prefix}/bin_hard_fraction": float((bins == BIN_HARD).sum() / denom),
+        f"{prefix}/split_train_fraction": float((splits == SPLIT_TRAIN).sum() / denom),
+        f"{prefix}/split_eval_id_fraction": float(
+            (splits == SPLIT_EVAL_ID).sum() / denom
+        ),
+        f"{prefix}/split_eval_ood_fraction": float(
+            (splits == SPLIT_EVAL_OOD).sum() / denom
+        ),
+        f"{prefix}/split_stress_fraction": float((splits == SPLIT_STRESS).sum() / denom),
+        f"{prefix}/mean_num_faults": float(n_faults.mean()),
+        f"{prefix}/mean_p90_feasibility_error": float(p90_error.mean()),
+        f"{prefix}/max_p90_feasibility_error": float(p90_error.max()),
+        f"{prefix}/mean_feasibility_error": float(mean_error.mean()),
+        f"{prefix}/mean_bias_cancellation_error": float(bias_error.mean()),
+        f"{prefix}/mean_bias_wrench_norm": float(bias_norm.mean()),
+    }
+
+
 def sample_scenario_indices(
     key: jnp.ndarray,
     table: dict[str, jnp.ndarray],
@@ -447,6 +517,77 @@ def sample_scenario_indices(
     return sampled.astype(jnp.int32)
 
 
+def _scenario_rows_for_indices(
+    table: dict[str, jnp.ndarray],
+    selected_envs: jnp.ndarray,
+    scenario_indices: jnp.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    selected_envs_np = np.asarray(jax.device_get(selected_envs), dtype=np.int32)
+    scenario_indices_np = np.asarray(jax.device_get(scenario_indices), dtype=np.int32)
+    failure_types = np.asarray(jax.device_get(table["failure_types"]))[
+        scenario_indices_np
+    ]
+    thrusters = np.asarray(jax.device_get(table["thrusters"]))[scenario_indices_np]
+
+    env_rows = np.repeat(selected_envs_np[:, None], failure_types.shape[1], axis=1)
+    valid = np.logical_and(failure_types >= 0, thrusters >= 0)
+    flat_envs = env_rows[valid].astype(np.int32)
+    flat_thrusters = thrusters[valid].astype(np.int32)
+    flat_failure_types = failure_types[valid].astype(np.int32)
+    return flat_envs, flat_thrusters, flat_failure_types
+
+
+def _gp_samples_for_failure(perturbation, failure_status: int, key: jnp.ndarray):
+    max_force = getattr(perturbation, "thruster_list", [None])[0].ctrlrange[-1]
+    valve_min = 0.15 * max_force
+    valve_max = 0.8 * max_force
+    simulator_kwargs = perturbation._gp_simulator_kwargs(
+        upper_bound=max_force,
+        valve_min=valve_min,
+        valve_max=valve_max,
+    )
+    cache_key = (
+        int(failure_status),
+        float(simulator_kwargs["upper_bound"]),
+        float(valve_min),
+        float(valve_max),
+        int(simulator_kwargs["num_points"]),
+        int(simulator_kwargs["subset_size"]),
+    )
+    cached = _GP_SAMPLE_BANK.get(cache_key)
+    if cached is not None:
+        return cached
+
+    x_data, y_data = ThrusterFailureSimulator(**simulator_kwargs).generate_failure_data(
+        key, PerturbationStatus(failure_status)
+    )
+    x_data = jnp.asarray(x_data)
+    y_data = jnp.asarray(y_data)
+    _GP_SAMPLE_BANK[cache_key] = (x_data, y_data)
+    return x_data, y_data
+
+
+def precompute_scenario_gp_samples(env, key: jnp.ndarray) -> None:
+    """
+    Populate the global GP sample bank used by scenario application.
+
+    Scenario curricula resample failures many times. The nonlinear GP failure
+    curves are independent of the specific env assignment, so generating them
+    once avoids repeated Cholesky/sampling work during later curriculum epochs.
+    """
+    if not hasattr(env, "perturbations") or env.perturbations is None:
+        return
+    subkeys = jax.random.split(key, 4)
+    for failure_type in (2, 3, 4):
+        failure_status = SCENARIO_FAILURE_STATUS[failure_type]
+        samples = _gp_samples_for_failure(
+            env.perturbations.perturbations[failure_type],
+            failure_status,
+            subkeys[failure_type - 1],
+        )
+        jax.block_until_ready(samples[1])
+
+
 def apply_failure_scenarios(
     env,
     *,
@@ -459,52 +600,97 @@ def apply_failure_scenarios(
     if selected_envs.size == 0:
         return
 
-    selected_envs_np = np.asarray(jax.device_get(selected_envs), dtype=np.int32)
-    scenario_indices_np = np.asarray(jax.device_get(scenario_indices), dtype=np.int32)
-    failure_types = np.asarray(jax.device_get(table["failure_types"]))[scenario_indices_np]
-    thrusters = np.asarray(jax.device_get(table["thrusters"]))[scenario_indices_np]
-    max_faults = int(failure_types.shape[1])
-    subkeys = jax.random.split(key, max_faults * 5 + 1)[1:]
+    flat_envs_np, flat_thrusters_np, flat_failure_types_np = _scenario_rows_for_indices(
+        table, selected_envs, scenario_indices
+    )
+    if flat_envs_np.size == 0:
+        return
 
-    for fault_slot in range(max_faults):
-        slot_types = failure_types[:, fault_slot]
-        slot_thrusters = thrusters[:, fault_slot]
-        valid = slot_types >= 0
-        for failure_type in range(5):
-            for thruster in range(env.act_dim):
-                mask = np.logical_and(
-                    valid,
-                    np.logical_and(slot_types == failure_type, slot_thrusters == thruster),
+    flat_envs = jnp.asarray(flat_envs_np, dtype=jnp.int32)
+    flat_thrusters = jnp.asarray(flat_thrusters_np, dtype=jnp.int32)
+    flat_status = jnp.asarray(
+        [SCENARIO_FAILURE_STATUS[int(ft)] for ft in flat_failure_types_np],
+        dtype=jnp.int32,
+    )
+
+    # Update the shared env/thruster failure mask once. This avoids the slow
+    # interactive registration path, which grouped scenarios by type/thruster and
+    # repeatedly synchronized with the host.
+    thruster_mask = jnp.asarray(Perturbation.thruster_mask)
+    Perturbation.thruster_mask = thruster_mask.at[flat_envs, flat_thrusters].set(
+        flat_status
+    )
+
+    start_time_value = jnp.asarray(
+        0.0 if start_time is None else start_time, dtype=jnp.float32
+    )
+    subkeys = jax.random.split(key, 6)
+    perturbations = env.perturbations.perturbations
+
+    for failure_type, failure_status in SCENARIO_FAILURE_STATUS.items():
+        type_mask_np = flat_failure_types_np == failure_type
+        type_envs_np = flat_envs_np[type_mask_np]
+        type_thrusters_np = flat_thrusters_np[type_mask_np]
+        perturbation = perturbations[failure_type]
+        base_start_times = getattr(
+            perturbation,
+            "start_times",
+            jnp.zeros((env.num_envs, env.act_dim), dtype=jnp.float32),
+        )
+        start_times = jnp.zeros_like(base_start_times)
+        if type_envs_np.size > 0:
+            type_envs = jnp.asarray(type_envs_np, dtype=jnp.int32)
+            type_thrusters = jnp.asarray(type_thrusters_np, dtype=jnp.int32)
+            start_times = start_times.at[type_envs, type_thrusters].set(
+                start_time_value.astype(start_times.dtype)
+            )
+
+        perturbation.start_times = start_times
+        if failure_type == 0:
+            perturbation.state = PerturbationState(
+                rng=perturbation._key,
+                thruster_mask=Perturbation.thruster_mask,
+                failure_value=failure_status,
+                start_times=start_times,
+            )
+        elif failure_type == 1:
+            stuck_force = jnp.asarray(perturbation.stuck_on_force)
+            if type_envs_np.size > 0:
+                type_envs = jnp.asarray(type_envs_np, dtype=jnp.int32)
+                type_thrusters = jnp.asarray(type_thrusters_np, dtype=jnp.int32)
+                min_force = perturbation.min_thruster_force[type_thrusters]
+                max_force = perturbation.max_thruster_force[type_thrusters]
+                sampled_force = jax.random.uniform(
+                    subkeys[1],
+                    shape=(type_envs.shape[0],),
+                    minval=min_force,
+                    maxval=max_force,
                 )
-                envs_for_failure_np = selected_envs_np[mask]
-                if envs_for_failure_np.size == 0:
-                    continue
-                envs_for_failure = jnp.asarray(envs_for_failure_np, dtype=jnp.int32)
-                thrusters_for_failure = jnp.full(
-                    (envs_for_failure.shape[0],), thruster, dtype=jnp.int32
+                stuck_force = stuck_force.at[type_envs, type_thrusters].set(
+                    sampled_force
                 )
-                failure_key = subkeys[fault_slot * 5 + failure_type]
-                if failure_type == 0:
-                    env.perturbations.perturbations[0].stuck_off_thruster(
-                        failure_key,
-                        envs_for_failure,
-                        thrusters_for_failure,
-                        start_time=start_time,
-                    )
-                elif failure_type == 1:
-                    env.perturbations.perturbations[1].stuck_on_thruster(
-                        failure_key,
-                        envs_for_failure,
-                        thrusters_for_failure,
-                        start_time=start_time,
-                    )
-                else:
-                    env.perturbations.perturbations[failure_type].register_perturbation(
-                        failure_key,
-                        envs_for_failure,
-                        index=thruster,
-                        start_time=start_time,
-                    )
+            perturbation.stuck_on_force = stuck_force
+            perturbation.state = PerturbationState(
+                rng=perturbation._key,
+                thruster_mask=Perturbation.thruster_mask,
+                failure_value=failure_status,
+                start_times=start_times,
+                max_thruster_force=stuck_force,
+            )
+        else:
+            x_data, y_data = _gp_samples_for_failure(
+                perturbation, failure_status, subkeys[failure_type]
+            )
+            gp_x = jnp.tile(x_data[None, :], (env.act_dim, 1))
+            gp_y = jnp.tile(y_data[None, :], (env.act_dim, 1))
+            perturbation.state = PerturbationState(
+                rng=perturbation._key,
+                thruster_mask=Perturbation.thruster_mask,
+                failure_value=failure_status,
+                start_times=start_times,
+                gp_x_samples=gp_x,
+                gp_y_samples=gp_y,
+            )
 
     env._refresh_effect_states()
     env._state = env._state.replace(perturbation_states=env.perturbation_states)
@@ -519,10 +705,13 @@ def apply_sampled_failure_scenario_split(
     fraction_perturbed_envs: float,
     start_time: float | None,
     difficulty_bin: int | None = None,
-) -> int:
+) -> dict[str, float]:
     num_perturbed = int(env.num_envs * max(0.0, min(1.0, fraction_perturbed_envs)))
     if num_perturbed <= 0:
-        return 0
+        return scenario_selection_payload(
+            table,
+            jnp.empty((0,), dtype=jnp.int32),
+        )
 
     select_key, scenario_key, apply_key = jax.random.split(key, 3)
     has_perturbation, has_disturbance = env._get_active_failure_masks()
@@ -550,4 +739,4 @@ def apply_sampled_failure_scenario_split(
         scenario_indices=scenario_indices,
         start_time=start_time,
     )
-    return num_perturbed
+    return scenario_selection_payload(table, scenario_indices)

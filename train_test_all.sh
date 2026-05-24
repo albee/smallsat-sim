@@ -23,13 +23,21 @@ diagnostic_scripts=(
   "experiments/rl_benchmarking/counterfactual_demand_probe.py"
 )
 
+scenario_split_eval_scripts=(
+  "experiments/rl_benchmarking/evaluate_ppo_plain_scenario_splits.py"
+)
+
 classic_control_scripts=(
   # "experiments/rl_benchmarking/pd_controller.py"
   # "experiments/rl_benchmarking/lqr.py"
   # "experiments/rl_benchmarking/nominal_mpc.py"
 )
 
-scripts=("${core_scripts[@]}")
+if [ "${RUN_ONLY_SCENARIO_SPLIT_EVAL:-0}" = "1" ]; then
+  scripts=("${scenario_split_eval_scripts[@]}")
+else
+  scripts=("${core_scripts[@]}")
+fi
 if [ "${RUN_OPTIONAL_CONTROLS:-0}" = "1" ]; then
   scripts+=("${optional_control_scripts[@]}")
 fi
@@ -38,6 +46,9 @@ if [ "${RUN_CLASSIC_CONTROLS:-0}" = "1" ]; then
 fi
 if [ "${RUN_COUNTERFACTUAL_PROBE:-0}" = "1" ]; then
   scripts+=("${diagnostic_scripts[@]}")
+fi
+if [ "${RUN_SCENARIO_SPLIT_EVAL:-0}" = "1" ] && [ "${RUN_ONLY_SCENARIO_SPLIT_EVAL:-0}" != "1" ]; then
+  scripts+=("${scenario_split_eval_scripts[@]}")
 fi
 
 # Ensure repository root is on PYTHONPATH so `experiments` can be imported
@@ -77,6 +88,8 @@ fi
 #   RUN_EVAL=1 RUN_LOG=1 ./train_test_all.sh
 #   RUN_DEPLOY=1 RUN_LOG=1 ./train_test_all.sh
 #   RUN_COUNTERFACTUAL_PROBE=1 ./train_test_all.sh
+#   RUN_SCENARIO_SPLIT_EVAL=1 ./train_test_all.sh
+#   RUN_ONLY_SCENARIO_SPLIT_EVAL=1 ./train_test_all.sh
 #
 # Existing checkpoints are reused by the Python runners. Remove the relevant
 # checkpoint files if you want to force retraining a variant.

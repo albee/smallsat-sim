@@ -24,6 +24,7 @@ from smallsat_sim.controllers.rl.runners.failure_scenarios import (
     SPLIT_TRAIN,
     apply_sampled_failure_scenario_split,
     build_failure_scenario_table,
+    precompute_scenario_gp_samples,
     scenario_bin_counts,
     scenario_split_counts,
     save_scenario_table_csv,
@@ -213,6 +214,12 @@ def learn_runner(self) -> None:
         )
         save_scenario_table_csv(failure_scenario_table, scenario_table_path)
         print(f"[Failure Scenarios] Saved scenario table to {scenario_table_path}")
+        precompute_start = time.perf_counter()
+        precompute_scenario_gp_samples(self.env, self._take_keys())
+        print(
+            "[Failure Scenarios] Precomputed GP failure samples in "
+            f"{time.perf_counter() - precompute_start:.2f}s"
+        )
     # Keep evaluation lightweight relative to training rollouts.
     eval_episodes = max(1, min(self.n_evals, 3))
 
@@ -272,6 +279,7 @@ def learn_runner(self) -> None:
         phase_uses_effects = phase_uses_perturbations or phase_uses_disturbances
         applied_failure_fraction = 0.0
         applied_disturbance_fraction = 0.0
+        active_scenario_payload: dict[str, float] = {}
 
         print(
             f"[Curriculum] Phase {phase_idx + 1}/{len(phases)}: {phase_name} "
@@ -326,7 +334,7 @@ def learn_runner(self) -> None:
                             and failure_scenario_table is not None
                             and curriculum_mode == "difficulty"
                         ):
-                            apply_sampled_failure_scenario_split(
+                            active_scenario_payload = apply_sampled_failure_scenario_split(
                                 self.env,
                                 key=perturb_key,
                                 table=failure_scenario_table,
@@ -931,6 +939,7 @@ def learn_runner(self) -> None:
                     reward_scale_metrics=reward_scale_metrics,
                 )
                 wandb_payload.update(authority_payload)
+                wandb_payload.update(active_scenario_payload)
                 wandb.log(
                     wandb_payload,
                     step=global_epoch,
@@ -1003,6 +1012,7 @@ def learn_runner(self) -> None:
                     reward_scale_metrics=reward_scale_metrics,
                 )
                 logger_payload.update(authority_payload)
+                logger_payload.update(active_scenario_payload)
                 self.env.logger.log(
                     self.env.run_id,
                     float(self.env.mjx_batch.time[0]),

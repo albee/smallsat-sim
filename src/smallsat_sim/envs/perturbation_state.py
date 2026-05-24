@@ -1,4 +1,4 @@
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Tuple
 
@@ -292,10 +292,8 @@ def gp_apply_from_state(
 
     control = jnp.asarray(control)
     original_control = control
-    sanitize = lambda arr: jnp.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
-    gp_x_samples = sanitize(state.gp_x_samples)
-    gp_y_samples = sanitize(state.gp_y_samples)
-    state = replace(state, gp_x_samples=gp_x_samples, gp_y_samples=gp_y_samples)
+    gp_x_samples = state.gp_x_samples
+    gp_y_samples = state.gp_y_samples
 
     mask = _broadcast_to_control_shape(state.thruster_mask, control)
     mask = mask == failure_value
@@ -308,52 +306,43 @@ def gp_apply_from_state(
     )
     active = jnp.logical_and(mask, timestamp_arr >= start_times)
 
-    gp_support = jnp.any(
-        jnp.diff(state.gp_x_samples, axis=-1) != 0, axis=-1
-    )  # True when we have a non-degenerate grid
+    gp_support = jnp.any(jnp.diff(gp_x_samples, axis=-1) != 0, axis=-1)
     gp_support = _broadcast_to_control_shape(gp_support, control)
     active = jnp.logical_and(active, gp_support)
 
-    def _interp_single(args):
-        active_flag, value, xs, ys = args
-        return jax.lax.cond(
-            active_flag,
-            lambda tup: jnp.interp(tup[0], tup[1], tup[2]),
-            lambda tup: tup[0],
-            (value, xs, ys),
+    # Fast fixed-grid interpolation. GP registration/precomputation stores each
+    # failed-thruster curve as a monotone lookup table, so runtime application
+    # only needs two gathers and a linear blend instead of per-element jnp.interp.
+    n_points = gp_y_samples.shape[-1]
+    x_min = gp_x_samples[:, 0]
+    x_max = gp_x_samples[:, -1]
+    x_min_b = _broadcast_to_control_shape(x_min, control)
+    x_max_b = _broadcast_to_control_shape(x_max, control)
+    scale = (n_points - 1) / jnp.maximum(x_max_b - x_min_b, 1e-6)
+    grid_pos = (control - x_min_b) * scale
+    grid_pos = jnp.clip(grid_pos, 0.0, float(n_points - 1))
+    idx0 = jnp.floor(grid_pos).astype(jnp.int32)
+    idx1 = jnp.minimum(idx0 + 1, n_points - 1)
+    frac = grid_pos - idx0.astype(grid_pos.dtype)
+
+    if control.ndim == 1:
+        thruster_idx = jnp.arange(control.shape[0], dtype=jnp.int32)
+    else:
+        thruster_idx = jnp.broadcast_to(
+            jnp.arange(control.shape[-1], dtype=jnp.int32),
+            control.shape,
         )
-
-    def _interp_row(ctrl_row, active_row):
-        return jax.vmap(
-            lambda a, v, xs, ys: _interp_single((a, v, xs, ys)),
-            in_axes=(0, 0, 0, 0),
-        )(active_row, ctrl_row, gp_x_samples, gp_y_samples)
-
-    control = jax.vmap(
-        lambda ctrl_row, active_row: _interp_row(ctrl_row, active_row),
-        in_axes=(0, 0),
-    )(control, active)
-
-    def _debug_nan(_):
-        jax.debug.print(
-            "NaN in GP control output at timestamp {t}, active={active}, xs_nan={xs_nan}, ys_nan={ys_nan}, ctrl_nan={ctrl_nan}",
-            t=timestamp,
-            active=jnp.any(active),
-            xs_nan=jnp.isnan(gp_x_samples).any(),
-            ys_nan=jnp.isnan(gp_y_samples).any(),
-            ctrl_nan=nan_mask.any(),
-        )
-        return jnp.array(0, dtype=jnp.int32)
-
-    nan_mask = jnp.isnan(control)
-    control = jnp.where(nan_mask, original_control, control)
-
-    _ = jax.lax.cond(
-        nan_mask.any(),
-        _debug_nan,
-        lambda _: jnp.array(0, dtype=jnp.int32),
-        operand=None,
+    y0 = gp_y_samples[thruster_idx, idx0]
+    y1 = gp_y_samples[thruster_idx, idx1]
+    interp_control = y0 + frac * (y1 - y0)
+    interp_control = jnp.nan_to_num(
+        interp_control,
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
     )
+    control = jnp.where(active, interp_control, control)
+    control = jnp.where(jnp.isnan(control), original_control, control)
 
     max_force = state.max_thruster_force
     if max_force is not None:
