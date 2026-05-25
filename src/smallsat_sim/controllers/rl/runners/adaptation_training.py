@@ -4,6 +4,7 @@ import time
 import jax
 import jax.numpy as jnp
 from flax import nnx
+from mujoco import mjx
 import optax
 import wandb
 
@@ -30,6 +31,7 @@ from smallsat_sim.controllers.rl.runners.failure_scenarios import (
     apply_sampled_failure_scenario_split,
     build_failure_scenario_table,
     precompute_scenario_gp_samples,
+    targeted_pose_errors_from_scenarios,
 )
 from smallsat_sim.controllers.rl.runners.runner_utils import (
     load_trained_modules,
@@ -42,6 +44,59 @@ from smallsat_sim.utils.helpers_jax import (
     calc_lateral_tracking_error,
     train_val_split,
 )
+
+
+def _quat_from_neg_log_error(error: jnp.ndarray) -> jnp.ndarray:
+    rotvec = -error
+    angle = jnp.linalg.norm(rotvec, axis=1, keepdims=True)
+    axis = rotvec / (angle + 1e-6)
+    half = 0.5 * angle
+    quat_vec = axis * jnp.sin(half)
+    quat = jnp.concatenate([jnp.cos(half), quat_vec], axis=1)
+    return quat / (jnp.linalg.norm(quat, axis=1, keepdims=True) + 1e-6)
+
+
+def _with_scenario_targeted_initial_errors(
+    vec_state,
+    *,
+    step_config,
+    reference_waypoint: jnp.ndarray,
+    scenario_table: dict[str, jnp.ndarray] | None,
+    selected_envs: jnp.ndarray | None,
+    scenario_indices: jnp.ndarray | None,
+    distance: float,
+):
+    if (
+        scenario_table is None
+        or selected_envs is None
+        or scenario_indices is None
+        or int(scenario_indices.shape[0]) == 0
+    ):
+        return vec_state
+    offsets, attitude_errors = targeted_pose_errors_from_scenarios(
+        scenario_table,
+        scenario_indices,
+        distance=distance,
+    )
+    reference = jnp.asarray(reference_waypoint)
+    ref_pos = reference[0, :3] if reference.ndim == 2 else reference[:3]
+    selected_envs = jnp.asarray(selected_envs, dtype=jnp.int32)
+    qpos = vec_state.mjx_batch.qpos
+    qvel = vec_state.mjx_batch.qvel
+    qpos = qpos.at[selected_envs, :3].set(ref_pos[None, :] + offsets)
+    qpos = qpos.at[selected_envs, 3:7].set(
+        _quat_from_neg_log_error(attitude_errors).astype(qpos.dtype)
+    )
+    qvel = qvel.at[selected_envs].set(0.0)
+    mjx_batch = vec_state.mjx_batch.replace(qpos=qpos, qvel=qvel)
+    mjx_batch = jax.vmap(mjx.forward, in_axes=(None, 0))(
+        step_config.mjx_model,
+        mjx_batch,
+    )
+    return vec_state.replace(
+        mjx_batch=mjx_batch,
+        terminal_hold_counts=vec_state.terminal_hold_counts.at[selected_envs].set(0),
+    )
 
 
 def train_adaptation_module_on_policy_runner(self) -> None:
@@ -110,6 +165,9 @@ def train_adaptation_module_on_policy_runner(self) -> None:
     )
     failure_start_time_max = float(
         getattr(cfg, "curriculum_failure_start_time_max", 0.0)
+    )
+    targeted_start_distance = float(
+        getattr(cfg, "failure_scenario_targeted_start_distance", 2.0)
     )
     disturbance_start_time_min = float(
         getattr(cfg, "curriculum_disturbance_start_time_min", 0.0)
@@ -213,6 +271,8 @@ def train_adaptation_module_on_policy_runner(self) -> None:
         phase_distribution = uniform_failure_distribution(
             list(phase["active_failures"])
         )
+        active_scenario_envs = None
+        active_scenario_indices = None
         (
             perturb_key,
             disturb_key,
@@ -235,16 +295,19 @@ def train_adaptation_module_on_policy_runner(self) -> None:
                 and failure_scenario_table is not None
                 and curriculum_mode in ("authority", "difficulty")
             ):
-                apply_sampled_failure_scenario_split(
-                    self.env,
-                    key=perturb_key,
-                    table=failure_scenario_table,
-                    split_id=SPLIT_TRAIN,
-                    fraction_perturbed_envs=phase_failure_fraction,
-                    start_time=failure_start_time,
-                    difficulty_bin=phase_difficulty_bin,
-                    authority_regime=phase_authority_regime,
-                    task_feasibility_regime=phase_task_feasibility_regime,
+                _, active_scenario_envs, active_scenario_indices = (
+                    apply_sampled_failure_scenario_split(
+                        self.env,
+                        key=perturb_key,
+                        table=failure_scenario_table,
+                        split_id=SPLIT_TRAIN,
+                        fraction_perturbed_envs=phase_failure_fraction,
+                        start_time=failure_start_time,
+                        difficulty_bin=phase_difficulty_bin,
+                        authority_regime=phase_authority_regime,
+                        task_feasibility_regime=phase_task_feasibility_regime,
+                        return_selection=True,
+                    )
                 )
             else:
                 self.env.apply_random_perturbations(
@@ -262,6 +325,19 @@ def train_adaptation_module_on_policy_runner(self) -> None:
 
         step_config = self.env.build_step_config(max_episode_len=self.max_ep_len)
         vec_state = self.env.state_struct
+        if (
+            curriculum_mode == "authority"
+            and phase_task_feasibility_regime is not None
+        ):
+            vec_state = _with_scenario_targeted_initial_errors(
+                vec_state,
+                step_config=step_config,
+                reference_waypoint=self.reference_point,
+                scenario_table=failure_scenario_table,
+                selected_envs=active_scenario_envs,
+                scenario_indices=active_scenario_indices,
+                distance=targeted_start_distance,
+            )
         actor_state, critic_state = self.agent.actor_critic_state()
 
         def _prepare_policy_input(_step, states, residuals, carry_extra):

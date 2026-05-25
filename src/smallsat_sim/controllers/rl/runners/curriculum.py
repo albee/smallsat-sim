@@ -3,7 +3,6 @@ from __future__ import annotations
 import jax.numpy as jnp
 
 from smallsat_sim.controllers.rl.runners.failure_scenarios import (
-    TASK_REGIME_EASY_FEASIBLE,
     TASK_REGIME_HARD_FEASIBLE,
 )
 
@@ -169,15 +168,16 @@ def build_authority_regime_curriculum(
     fallback_epochs: int,
     nominal_epochs: int = 100,
     phase_epochs: int = 50,
-    failure_fraction: float = 0.4,
+    failure_fraction: float = 0.5,
     disturbance_fraction: float = 0.1,
 ) -> tuple[list[dict], int]:
     """
-    Build a curriculum over task-feasibility regimes.
+    Build the main task-relevant authority curriculum.
 
-    The scenario table may be dense or sparse. This curriculum does not care:
-    it samples scenarios by whether the targeted full-pose task wrench is easy
-    feasible or hard feasible under the damaged actuator bounds.
+    After the clean nominal phase, fine-tuning uses a 50/50 mixture by default:
+    clean environments and task-aligned hard-feasible failures. In the failed
+    environments, the task wrench is certified feasible but near the damaged
+    actuator boundary.
     """
     if not train_with_failures:
         return build_failure_curriculum(
@@ -201,33 +201,11 @@ def build_authority_regime_curriculum(
             "authority_regime": None,
         },
         {
-            "name": "easy_feasible",
-            "epochs": int(phase_epochs),
-            "active_failures": list(FAILURE_ORDER),
-            "failure_fraction": float(failure_fraction),
-            "disturbance_fraction": 0.0,
-            "new_failure": None,
-            "difficulty_bin": None,
-            "authority_regime": None,
-            "task_feasibility_regime": TASK_REGIME_EASY_FEASIBLE,
-        },
-        {
             "name": "hard_feasible",
             "epochs": int(phase_epochs),
             "active_failures": list(FAILURE_ORDER),
             "failure_fraction": float(failure_fraction),
             "disturbance_fraction": 0.0,
-            "new_failure": None,
-            "difficulty_bin": None,
-            "authority_regime": None,
-            "task_feasibility_regime": TASK_REGIME_HARD_FEASIBLE,
-        },
-        {
-            "name": "hard_feasible_disturbances",
-            "epochs": int(phase_epochs),
-            "active_failures": list(FAILURE_ORDER),
-            "failure_fraction": float(failure_fraction),
-            "disturbance_fraction": float(disturbance_fraction),
             "new_failure": None,
             "difficulty_bin": None,
             "authority_regime": None,
@@ -244,7 +222,7 @@ def build_sparse_authority_curriculum(
     fallback_epochs: int,
     nominal_epochs: int = 100,
     phase_epochs: int = 50,
-    failure_fraction: float = 0.4,
+    failure_fraction: float = 0.5,
     disturbance_fraction: float = 0.1,
 ) -> tuple[list[dict], int]:
     """

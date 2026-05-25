@@ -14,7 +14,6 @@ benchmarker.train_and_evaluate(
     use_adaptive_approach=False,
     sparse_active_thrusters=8,
     sparse_max_active_sets=8,
-    curriculum_failure_fraction=1.0,
 )
 
 benchmarker.deploy_and_test(
@@ -23,5 +22,4 @@ benchmarker.deploy_and_test(
     use_adaptive_approach=False,
     sparse_active_thrusters=8,
     sparse_max_active_sets=8,
-    curriculum_failure_fraction=1.0,
 )

@@ -15,7 +15,6 @@ benchmarker.train_and_evaluate(
     adaptive_context_mode="structured",
     sparse_active_thrusters=8,
     sparse_max_active_sets=8,
-    curriculum_failure_fraction=1.0,
     phase=1,
 )
 
@@ -26,6 +25,5 @@ benchmarker.deploy_and_test(
     adaptive_context_mode="structured",
     sparse_active_thrusters=8,
     sparse_max_active_sets=8,
-    curriculum_failure_fraction=1.0,
     phase=1,
 )

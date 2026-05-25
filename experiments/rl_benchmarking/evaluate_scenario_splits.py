@@ -28,6 +28,7 @@ from smallsat_sim.controllers.rl.runners.failure_scenarios import (
     scenario_split_counts,
     scenario_task_regime_counts,
     sample_scenario_indices,
+    targeted_pose_errors_from_scenarios,
 )
 from smallsat_sim.controllers.rl.runners.runner_utils import load_trained_modules
 from smallsat_sim.controllers.rl.runners.rollout import (
@@ -78,7 +79,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--episodes", type=int, default=3)
     parser.add_argument("--sparse-active-thrusters", type=int, default=None)
     parser.add_argument("--sparse-max-active-sets", type=int, default=None)
-    parser.add_argument("--failure-fraction", type=float, default=0.4)
+    parser.add_argument("--failure-fraction", type=float, default=0.5)
     parser.add_argument("--targeted-failure-fraction", type=float, default=1.0)
     parser.add_argument("--targeted-start-distance", type=float, default=2.0)
     parser.add_argument("--skip-targeted", action="store_true")
@@ -186,42 +187,6 @@ def _quat_from_neg_log_error(error: jnp.ndarray) -> jnp.ndarray:
     quat_vec = axis * jnp.sin(half)
     quat = jnp.concatenate([jnp.cos(half), quat_vec], axis=1)
     return quat / (jnp.linalg.norm(quat, axis=1, keepdims=True) + 1e-6)
-
-
-def _targeted_pose_errors_from_scenarios(
-    table: dict[str, jnp.ndarray],
-    scenario_indices: jnp.ndarray,
-    *,
-    distance: float,
-) -> tuple[jnp.ndarray, jnp.ndarray]:
-    wrenches = table["targeted_task_wrench"][scenario_indices]
-    translation = wrenches[:, :3]
-    torque = wrenches[:, 3:6]
-    translation_norm = jnp.linalg.norm(translation, axis=1, keepdims=True)
-    torque_norm = jnp.linalg.norm(torque, axis=1, keepdims=True)
-    translation_fallback = jnp.tile(
-        jnp.array([[1.0, 0.0, 0.0]], dtype=jnp.float32),
-        (translation.shape[0], 1),
-    )
-    torque_fallback = jnp.tile(
-        jnp.array([[0.0, 0.0, 1.0]], dtype=jnp.float32),
-        (torque.shape[0], 1),
-    )
-    translation_direction = jnp.where(
-        translation_norm > 1e-6,
-        translation / (translation_norm + 1e-6),
-        translation_fallback,
-    )
-    torque_direction = jnp.where(
-        torque_norm > 1e-6,
-        torque / (torque_norm + 1e-6),
-        torque_fallback,
-    )
-    # If the damaged scenario is weakest for +direction force, start at
-    # -direction so the setpoint controller must accelerate along +direction.
-    position_offset = -float(distance) * translation_direction
-    attitude_error = 0.8 * torque_direction
-    return position_offset, attitude_error
 
 
 def _with_targeted_initial_offsets(
@@ -621,7 +586,7 @@ def _evaluate_targeted_scenario(
             scenario_selection_payload(table, scenario_indices, prefix="scenario")
         )
 
-        offsets, attitude_errors = _targeted_pose_errors_from_scenarios(
+        offsets, attitude_errors = targeted_pose_errors_from_scenarios(
             table,
             scenario_indices,
             distance=start_distance,

@@ -985,6 +985,49 @@ def scenario_selection_payload(
     }
 
 
+def targeted_pose_errors_from_scenarios(
+    table: dict[str, jnp.ndarray],
+    scenario_indices: jnp.ndarray,
+    *,
+    distance: float,
+    attitude_scale: float = 0.8,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Convert each scenario's certified task wrench into a matching initial error.
+
+    The selected scenario task wrench is the wrench for which feasibility was
+    checked offline. Starting opposite the force direction makes the regulation
+    task demand that force direction. Starting with attitude error aligned to
+    the torque direction makes the attitude task demand that torque direction.
+    """
+    wrenches = table["targeted_task_wrench"][scenario_indices]
+    translation = wrenches[:, :3]
+    torque = wrenches[:, 3:6]
+    translation_norm = jnp.linalg.norm(translation, axis=1, keepdims=True)
+    torque_norm = jnp.linalg.norm(torque, axis=1, keepdims=True)
+    translation_fallback = jnp.tile(
+        jnp.array([[1.0, 0.0, 0.0]], dtype=jnp.float32),
+        (translation.shape[0], 1),
+    )
+    torque_fallback = jnp.tile(
+        jnp.array([[0.0, 0.0, 1.0]], dtype=jnp.float32),
+        (torque.shape[0], 1),
+    )
+    translation_direction = jnp.where(
+        translation_norm > 1e-6,
+        translation / (translation_norm + 1e-6),
+        translation_fallback,
+    )
+    torque_direction = jnp.where(
+        torque_norm > 1e-6,
+        torque / (torque_norm + 1e-6),
+        torque_fallback,
+    )
+    position_offset = -float(distance) * translation_direction
+    attitude_error = float(attitude_scale) * torque_direction
+    return position_offset, attitude_error
+
+
 def sample_scenario_indices(
     key: jnp.ndarray,
     table: dict[str, jnp.ndarray],
@@ -1205,13 +1248,18 @@ def apply_sampled_failure_scenario_split(
     difficulty_bin: int | None = None,
     authority_regime: int | None = None,
     task_feasibility_regime: int | None = None,
-) -> dict[str, float]:
+    return_selection: bool = False,
+) -> dict[str, float] | tuple[dict[str, float], jnp.ndarray, jnp.ndarray]:
     num_perturbed = int(env.num_envs * max(0.0, min(1.0, fraction_perturbed_envs)))
     if num_perturbed <= 0:
-        return scenario_selection_payload(
+        payload = scenario_selection_payload(
             table,
             jnp.empty((0,), dtype=jnp.int32),
         )
+        if return_selection:
+            empty = jnp.empty((0,), dtype=jnp.int32)
+            return payload, empty, empty
+        return payload
 
     select_key, scenario_key, apply_key = jax.random.split(key, 3)
     has_perturbation, has_disturbance = env._get_active_failure_masks()
@@ -1241,4 +1289,7 @@ def apply_sampled_failure_scenario_split(
         scenario_indices=scenario_indices,
         start_time=start_time,
     )
-    return scenario_selection_payload(table, scenario_indices)
+    payload = scenario_selection_payload(table, scenario_indices)
+    if return_selection:
+        return payload, selected_envs, scenario_indices
+    return payload

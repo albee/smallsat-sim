@@ -102,7 +102,7 @@ class EnvConfig(BaseEnvConfig):
 
             class PPO:
                 steps_per_epoch = 512
-                epochs = 1800  # 600 nominal + 5 failure phases + disturbance phase at 200 epochs each
+                epochs = 800  # Overridden by authority curriculum: 600 clean + 200 hard-feasible
                 max_ep_len = 512  # 25.6s at 20Hz; enough for 2m setpoint regulation without overlong episodes
                 gamma = 0.995
                 lam = 0.97
@@ -124,7 +124,7 @@ class EnvConfig(BaseEnvConfig):
             # Sequential failure curriculum knobs
             curriculum_nominal_epochs = 600
             curriculum_phase_epochs = 200
-            curriculum_failure_fraction = 0.4  # 60% nominal, 40% failures
+            curriculum_failure_fraction = 0.5  # Failure fine-tuning: 50% clean, 50% hard-feasible failures
             curriculum_disturbance_fraction = 0.1
             curriculum_failure_ramp_epochs = 1
             curriculum_disturbance_ramp_epochs = 1
@@ -141,6 +141,10 @@ class EnvConfig(BaseEnvConfig):
             # None keeps the default dense 12-thruster platform.
             failure_scenario_sparse_active_thrusters = None
             failure_scenario_sparse_max_active_sets = 32
+            # For task-feasibility curricula, align failed-env starts with the
+            # certified scenario wrench so "hard feasible" means hard for the
+            # actual rollout task, not only for an offline probe.
+            failure_scenario_targeted_start_distance = 2.0
             curriculum_critic_warmup_epochs = 15
             curriculum_critic_warmup_scale = 1.0 / 3.0
             curriculum_eval_interval = 20

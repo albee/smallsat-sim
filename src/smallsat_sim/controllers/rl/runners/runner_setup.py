@@ -43,6 +43,20 @@ def build_checkpoint_file_names(env) -> dict[str, str]:
         None,
     )
     sparse_tag = f"sparse{int(sparse_active)}" if sparse_active is not None else None
+    curriculum_mode = str(
+        getattr(env.env_cfg.control.RL, "failure_curriculum_mode", "type")
+    )
+    task_feasible_tag = (
+        "taskaligned"
+        if env.train_with_failures and curriculum_mode == "authority"
+        else None
+    )
+    failure_fraction_tag = None
+    if env.train_with_failures:
+        failure_fraction = float(
+            getattr(env.env_cfg.control.RL, "curriculum_failure_fraction", 0.0)
+        )
+        failure_fraction_tag = f"ff{int(round(100.0 * failure_fraction))}"
 
     def build_name(prefix: str) -> str:
         parts = [
@@ -53,6 +67,8 @@ def build_checkpoint_file_names(env) -> dict[str, str]:
             pretrained,
             task_tag,
             sparse_tag,
+            task_feasible_tag,
+            failure_fraction_tag,
             nominal,
         ]
         predictive_am = (

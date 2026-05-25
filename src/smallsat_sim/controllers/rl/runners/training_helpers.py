@@ -61,6 +61,12 @@ def evaluate_policy_checkpoint(
             mild_effectiveness=float(
                 getattr(cfg, "failure_scenario_mild_effectiveness", 0.5)
             ),
+            sparse_active_thrusters=getattr(
+                cfg, "failure_scenario_sparse_active_thrusters", None
+            ),
+            sparse_max_active_sets=int(
+                getattr(cfg, "failure_scenario_sparse_max_active_sets", 32)
+            ),
         )
 
     for ep_key in episode_keys:

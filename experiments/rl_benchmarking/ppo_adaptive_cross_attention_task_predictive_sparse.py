@@ -20,7 +20,6 @@ benchmarker.train_and_evaluate(
     am_predict_authority_weight=0.1,
     sparse_active_thrusters=8,
     sparse_max_active_sets=8,
-    curriculum_failure_fraction=1.0,
 )
 
 benchmarker.deploy_and_test(
@@ -35,5 +34,4 @@ benchmarker.deploy_and_test(
     am_predict_authority_weight=0.1,
     sparse_active_thrusters=8,
     sparse_max_active_sets=8,
-    curriculum_failure_fraction=1.0,
 )

@@ -69,12 +69,11 @@ export PYTHONPATH="$(pwd):${PYTHONPATH}"
 export SMALLSAT_ROLLOUT_BACKEND="${SMALLSAT_ROLLOUT_BACKEND:-freeflyer}"
 echo "Using RL rollout backend: ${SMALLSAT_ROLLOUT_BACKEND}"
 
-# The focused paper suite trains 600 nominal epochs, then advances through
-# task-feasibility regimes: easy_feasible as a sanity condition, hard_feasible
-# as the main challenge, and hard_feasible with disturbances. Sparse-authority
-# scripts only change how the scenario table is generated; they use the same
-# task-feasibility curriculum. Near-infeasible and infeasible rows are
-# evaluation/stress diagnostics.
+# The focused paper suite trains 600 clean nominal epochs, then fine-tunes for
+# 200 epochs on a 50/50 mixture of clean envs and task-aligned hard_feasible
+# actuator failures. Sparse-authority scripts only change how the scenario table
+# is generated; they use the same task-feasibility curriculum. easy_feasible,
+# near-infeasible, and infeasible rows are evaluation/stress diagnostics.
 # The older difficulty and failure-type curricula remain available by setting
 # failure_curriculum_mode to "difficulty" or "type" in
 # src/smallsat_sim/envs/astrobee_rl/cfg/config.py.
@@ -123,7 +122,7 @@ fi
 #     --predict-authority-weight 0.1
 #   python experiments/rl_benchmarking/evaluate_scenario_splits.py --headless --wandb \
 #     --run-name ppo_plain_sparse --sparse-active-thrusters 8 \
-#     --sparse-max-active-sets 8 --failure-fraction 1.0
+#     --sparse-max-active-sets 8 --failure-fraction 0.5
 # Targeted rows start each scenario from the position/attitude error that
 # requires its weakest force/torque authority with failures active from reset;
 # use --skip-targeted only for quick smoke tests.
