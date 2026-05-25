@@ -661,7 +661,9 @@ class VecEnv(BaseEnv):
             elif self.adaptive_context_mode == "residual_controllability":
                 self.ext_dim = 6 + 2
             else:
-                self.ext_dim = 6 + self.act_dim + 2
+                # structured: residual6 + bias6 + task_metrics3
+                # + compact_axis_authority2 + tracking_proxy3.
+                self.ext_dim = 20
         else:
             self.ext_dim = 0
         self.res_dim = self.ext_dim

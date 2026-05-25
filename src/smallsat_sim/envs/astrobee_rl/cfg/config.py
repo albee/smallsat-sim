@@ -72,7 +72,9 @@ class EnvConfig(BaseEnvConfig):
             # "residual" keeps the original 6D wrench residual.
             # "residual_effectiveness" appends per-thruster effectiveness.
             # "residual_controllability" appends compact authority metrics.
-            # "structured" appends both effectiveness and controllability metrics.
+            # "structured" uses an interpretable 20D task-authority context:
+            # residual wrench, persistent bias estimate, task authority errors,
+            # compact authority metrics, and wrench-norm tracking proxies.
             adaptive_context_mode = "structured"
 
             # Adaptation module architecture ("cnn" or "transformer")

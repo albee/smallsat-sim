@@ -41,13 +41,15 @@ classic_control_scripts=(
 
 if [ "${RUN_ONLY_SCENARIO_SPLIT_EVAL:-0}" = "1" ]; then
   scripts=("${scenario_split_eval_scripts[@]}")
+elif [ "${RUN_ONLY_SPARSE_AUTHORITY:-0}" = "1" ]; then
+  scripts=("${sparse_authority_scripts[@]}")
 else
   scripts=("${core_scripts[@]}")
 fi
 if [ "${RUN_OPTIONAL_CONTROLS:-0}" = "1" ]; then
   scripts+=("${optional_control_scripts[@]}")
 fi
-if [ "${RUN_SPARSE_AUTHORITY:-0}" = "1" ]; then
+if [ "${RUN_SPARSE_AUTHORITY:-0}" = "1" ] && [ "${RUN_ONLY_SPARSE_AUTHORITY:-0}" != "1" ]; then
   scripts+=("${sparse_authority_scripts[@]}")
 fi
 if [ "${RUN_CLASSIC_CONTROLS:-0}" = "1" ]; then
@@ -105,6 +107,7 @@ fi
 #   RUN_SCENARIO_SPLIT_EVAL=1 ./train_test_all.sh
 #   RUN_ONLY_SCENARIO_SPLIT_EVAL=1 ./train_test_all.sh
 #   RUN_SPARSE_AUTHORITY=1 ./train_test_all.sh
+#   RUN_ONLY_SPARSE_AUTHORITY=1 ./train_test_all.sh
 #
 # The scenario evaluator defaults to ppo_plain. To evaluate an adaptive
 # checkpoint on the same generic, targeted, and task-feasibility splits, run it

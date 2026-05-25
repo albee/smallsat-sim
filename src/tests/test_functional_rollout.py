@@ -557,7 +557,7 @@ def test_update_history_buffer_reports_full_before_reset() -> None:
     assert jnp.allclose(new_extra.history, jnp.zeros_like(new_extra.history))
 
 
-def test_structured_adaptive_context_includes_effectiveness_and_authority() -> None:
+def test_structured_adaptive_context_includes_bias_and_authority() -> None:
     commanded = jnp.array([[1.0, 1.0]], dtype=jnp.float32)
     applied = jnp.array([[0.5, 0.0]], dtype=jnp.float32)
     mixer_t = jnp.array(
@@ -584,8 +584,12 @@ def test_structured_adaptive_context_includes_effectiveness_and_authority() -> N
 
     assert context.shape == previous.shape
     assert jnp.allclose(context[:, :3], actual - desired)
-    assert jnp.allclose(context[:, 3:5], jnp.array([[0.5, 0.0]], dtype=jnp.float32))
-    assert jnp.isfinite(context[:, 5:]).all()
+    assert jnp.allclose(context[:, 3:6], 0.1 * (actual - desired))
+    expected_normalized_error = jnp.linalg.norm(actual - desired, axis=1) / (
+        jnp.linalg.norm(desired, axis=1) + 1e-6
+    )
+    assert jnp.allclose(context[:, 6], expected_normalized_error)
+    assert jnp.isfinite(context).all()
 
 
 def test_effectiveness_defaults_to_nominal_for_tiny_commands() -> None:

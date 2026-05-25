@@ -198,8 +198,15 @@ def build_adaptive_context(
     """
     Build the adaptive policy context.
 
-    The first six dimensions remain the wrench residual for RMA compatibility.
-    Extra dimensions encode per-thruster effectiveness and wrench authority.
+    The first six dimensions remain the instantaneous wrench residual for RMA
+    compatibility. In "structured" mode, the remaining dimensions form an
+    interpretable task-authority context:
+
+    [residual_wrench_6,
+     persistent_bias_wrench_6,
+     task_error/mismatch_3,
+     compact_axis_authority_2,
+     wrench_norm_tracking_proxies_3]
     """
     if not use_adaptive_approach:
         return previous_context
@@ -224,9 +231,35 @@ def build_adaptive_context(
             metrics = controllability_metrics(effectiveness, thruster_mixer_T)
             structured_context = jnp.concatenate([residual_wrench, metrics], axis=1)
         elif adaptive_context_mode == "structured":
-            metrics = controllability_metrics(effectiveness, thruster_mixer_T)
+            previous_bias = jnp.zeros_like(residual_wrench)
+            if previous_context.shape[-1] >= 12:
+                previous_bias = previous_context[:, 6:12]
+            # Persistent disturbance/fault bias proxy. Instantaneous residual is
+            # noisy and action-dependent; the EMA gives the actor a low-pass
+            # estimate of bias that must be cancelled.
+            bias_wrench = 0.90 * previous_bias + 0.10 * residual_wrench
+            task_metrics = task_authority_targets(
+                commanded_ctrl=commanded_ctrl,
+                applied_ctrl=applied_ctrl,
+                actual_wrench=actual_wrench,
+                desired_wrench=desired_wrench,
+            )
+            axis_metrics = controllability_metrics(effectiveness, thruster_mixer_T)
+            desired_norm = jnp.linalg.norm(desired_wrench, axis=1, keepdims=True)
+            actual_norm = jnp.linalg.norm(actual_wrench, axis=1, keepdims=True)
+            residual_norm = jnp.linalg.norm(residual_wrench, axis=1, keepdims=True)
+            tracking_proxies = jnp.concatenate(
+                [desired_norm, actual_norm, residual_norm],
+                axis=1,
+            )
             structured_context = jnp.concatenate(
-                [residual_wrench, effectiveness, metrics],
+                [
+                    residual_wrench,
+                    bias_wrench,
+                    task_metrics,
+                    axis_metrics,
+                    tracking_proxies,
+                ],
                 axis=1,
             )
 

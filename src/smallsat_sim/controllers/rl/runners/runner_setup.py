@@ -24,6 +24,11 @@ def build_checkpoint_file_names(env) -> dict[str, str]:
     """Create checkpoint/data filenames from the active RL configuration."""
     adaptive = "adaptive" if env.use_adaptive_approach else None
     context_mode = env.adaptive_context_mode if env.use_adaptive_approach else None
+    context_version = (
+        "authorityctx"
+        if env.use_adaptive_approach and env.adaptive_context_mode == "structured"
+        else None
+    )
     pretrained = "pretrained" if env.use_pretrained else None
     nominal = None if env.train_with_failures else "nominal"
     success_criterion = getattr(
@@ -40,7 +45,16 @@ def build_checkpoint_file_names(env) -> dict[str, str]:
     sparse_tag = f"sparse{int(sparse_active)}" if sparse_active is not None else None
 
     def build_name(prefix: str) -> str:
-        parts = [prefix, adaptive, context_mode, pretrained, task_tag, sparse_tag, nominal]
+        parts = [
+            prefix,
+            adaptive,
+            context_mode,
+            context_version,
+            pretrained,
+            task_tag,
+            sparse_tag,
+            nominal,
+        ]
         predictive_am = (
             env.use_task_conditioned_am
             or float(env.env_cfg.control.RL.am_predict_delta_weight) > 0.0

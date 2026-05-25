@@ -17,7 +17,6 @@ from smallsat_sim.controllers.rl.runners.rollout import (
 )
 from smallsat_sim.controllers.rl.runners.adaptive_context import (
     build_adaptation_query,
-    build_adaptive_context,
     task_authority_targets,
 )
 from smallsat_sim.controllers.rl.runners.curriculum import (
@@ -354,22 +353,9 @@ def train_adaptation_module_on_policy_runner(self) -> None:
             desired_wrench=step_outputs.desired_wrench.reshape(-1, 6),
             use_task_conditioned_am=self.env.use_task_conditioned_am,
         ).reshape(self.steps_per_epoch, num_envs, self.env.am_query_dim)
-        flat_context = build_adaptive_context(
-            commanded_ctrl=step_outputs.commanded_ctrl.reshape(-1, self.env.act_dim),
-            applied_ctrl=step_outputs.applied_ctrl.reshape(-1, self.env.act_dim),
-            actual_wrench=step_outputs.actual_wrench.reshape(-1, 6),
-            desired_wrench=step_outputs.desired_wrench.reshape(-1, 6),
-            previous_context=jnp.zeros(
-                (self.steps_per_epoch * num_envs, self.env.res_dim),
-                dtype=step_outputs.actual_wrench.dtype,
-            ),
-            use_adaptive_approach=True,
-            adaptive_context_mode=self.env.adaptive_context_mode,
-            thruster_mixer_T=self.env._thruster_mixer_T,
-        )
-        extrinsics = flat_context.reshape(
-            self.steps_per_epoch, num_envs, self.env.res_dim
-        )
+        # Train the AM to reproduce the exact context that phase-1 PPO consumed,
+        # including stateful terms such as the persistent bias estimate.
+        extrinsics = rollout_result.residuals
         delta_states = step_outputs.next_states - step_outputs.prev_states
         tracking_targets = calc_lateral_tracking_error(
             next_obs.reshape(-1, next_obs.shape[-1]), self.planner
