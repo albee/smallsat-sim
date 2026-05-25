@@ -52,6 +52,9 @@ class Benchmarker(object):
         am_predict_delta_weight: float | None = None,
         am_predict_tracking_weight: float | None = None,
         am_predict_authority_weight: float | None = None,
+        sparse_active_thrusters: int | None = None,
+        sparse_max_active_sets: int | None = None,
+        curriculum_failure_fraction: float | None = None,
         phase: int = 2,
         pretrain_only: bool = False,
     ) -> None:
@@ -71,6 +74,9 @@ class Benchmarker(object):
             am_predict_delta_weight=am_predict_delta_weight,
             am_predict_tracking_weight=am_predict_tracking_weight,
             am_predict_authority_weight=am_predict_authority_weight,
+            sparse_active_thrusters=sparse_active_thrusters,
+            sparse_max_active_sets=sparse_max_active_sets,
+            curriculum_failure_fraction=curriculum_failure_fraction,
         )
 
         # Create planner
@@ -117,6 +123,9 @@ class Benchmarker(object):
         am_predict_delta_weight: float | None = None,
         am_predict_tracking_weight: float | None = None,
         am_predict_authority_weight: float | None = None,
+        sparse_active_thrusters: int | None = None,
+        sparse_max_active_sets: int | None = None,
+        curriculum_failure_fraction: float | None = None,
         phase: int = 2,
         ckpt_name: str | None = None,
         test_pd: bool = False,
@@ -163,6 +172,9 @@ class Benchmarker(object):
             am_predict_delta_weight=am_predict_delta_weight,
             am_predict_tracking_weight=am_predict_tracking_weight,
             am_predict_authority_weight=am_predict_authority_weight,
+            sparse_active_thrusters=sparse_active_thrusters,
+            sparse_max_active_sets=sparse_max_active_sets,
+            curriculum_failure_fraction=curriculum_failure_fraction,
         )
 
         # Create planner

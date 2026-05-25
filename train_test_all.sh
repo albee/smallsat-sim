@@ -19,6 +19,12 @@ optional_control_scripts=(
   "experiments/rl_benchmarking/ppo_adaptive_cross_attention_residual_task_predictive.py"
 )
 
+sparse_authority_scripts=(
+  "experiments/rl_benchmarking/ppo_plain_sparse.py"
+  "experiments/rl_benchmarking/ppo_adaptive_sim_structured_sparse.py"
+  "experiments/rl_benchmarking/ppo_adaptive_cross_attention_task_predictive_sparse.py"
+)
+
 diagnostic_scripts=(
   "experiments/rl_benchmarking/counterfactual_demand_probe.py"
 )
@@ -40,6 +46,9 @@ else
 fi
 if [ "${RUN_OPTIONAL_CONTROLS:-0}" = "1" ]; then
   scripts+=("${optional_control_scripts[@]}")
+fi
+if [ "${RUN_SPARSE_AUTHORITY:-0}" = "1" ]; then
+  scripts+=("${sparse_authority_scripts[@]}")
 fi
 if [ "${RUN_CLASSIC_CONTROLS:-0}" = "1" ]; then
   scripts+=("${classic_control_scripts[@]}")
@@ -91,6 +100,7 @@ fi
 #   RUN_COUNTERFACTUAL_PROBE=1 ./train_test_all.sh
 #   RUN_SCENARIO_SPLIT_EVAL=1 ./train_test_all.sh
 #   RUN_ONLY_SCENARIO_SPLIT_EVAL=1 ./train_test_all.sh
+#   RUN_SPARSE_AUTHORITY=1 ./train_test_all.sh
 #
 # The scenario evaluator defaults to ppo_plain. To evaluate an adaptive
 # checkpoint on the same generic and targeted authority-regime/eval/stress
@@ -104,6 +114,9 @@ fi
 #     --adaptive-context-mode structured --task-conditioned --phase 2 \
 #     --predict-delta-weight 0.1 --predict-tracking-weight 0.1 \
 #     --predict-authority-weight 0.1
+#   python experiments/rl_benchmarking/evaluate_scenario_splits.py --headless --wandb \
+#     --run-name ppo_plain_sparse --sparse-active-thrusters 8 \
+#     --sparse-max-active-sets 8 --failure-fraction 1.0
 # Targeted rows start each scenario from the position/attitude error that
 # requires its weakest force/torque authority with failures active from reset;
 # use --skip-targeted only for quick smoke tests.

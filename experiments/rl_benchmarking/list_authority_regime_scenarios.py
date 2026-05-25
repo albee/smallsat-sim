@@ -46,6 +46,8 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--split", type=int, default=SPLIT_TRAIN)
     parser.add_argument("--limit", type=int, default=40)
+    parser.add_argument("--sparse-active-thrusters", type=int, default=None)
+    parser.add_argument("--sparse-max-active-sets", type=int, default=None)
     parser.add_argument(
         "--sort-by",
         choices=(
@@ -87,6 +89,16 @@ def main() -> None:
         stress_quantile=float(getattr(cfg, "failure_scenario_stress_quantile", 0.9)),
         mild_effectiveness=float(
             getattr(cfg, "failure_scenario_mild_effectiveness", 0.5)
+        ),
+        sparse_active_thrusters=(
+            args.sparse_active_thrusters
+            if args.sparse_active_thrusters is not None
+            else getattr(cfg, "failure_scenario_sparse_active_thrusters", None)
+        ),
+        sparse_max_active_sets=(
+            args.sparse_max_active_sets
+            if args.sparse_max_active_sets is not None
+            else int(getattr(cfg, "failure_scenario_sparse_max_active_sets", 32))
         ),
     )
 

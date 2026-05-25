@@ -32,9 +32,15 @@ def build_checkpoint_file_names(env) -> dict[str, str]:
         "full_pose",
     )
     task_tag = "full_pose" if success_criterion == "full_pose" else None
+    sparse_active = getattr(
+        env.env_cfg.control.RL,
+        "failure_scenario_sparse_active_thrusters",
+        None,
+    )
+    sparse_tag = f"sparse{int(sparse_active)}" if sparse_active is not None else None
 
     def build_name(prefix: str) -> str:
-        parts = [prefix, adaptive, context_mode, pretrained, task_tag, nominal]
+        parts = [prefix, adaptive, context_mode, pretrained, task_tag, sparse_tag, nominal]
         predictive_am = (
             env.use_task_conditioned_am
             or float(env.env_cfg.control.RL.am_predict_delta_weight) > 0.0

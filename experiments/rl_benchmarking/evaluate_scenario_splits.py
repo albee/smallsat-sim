@@ -98,6 +98,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--video", action="store_true")
     parser.add_argument("--num-envs", type=int, default=None)
     parser.add_argument("--episodes", type=int, default=3)
+    parser.add_argument("--sparse-active-thrusters", type=int, default=None)
+    parser.add_argument("--sparse-max-active-sets", type=int, default=None)
     parser.add_argument("--failure-fraction", type=float, default=0.4)
     parser.add_argument("--targeted-failure-fraction", type=float, default=1.0)
     parser.add_argument("--targeted-start-distance", type=float, default=2.0)
@@ -300,6 +302,21 @@ def _sample_start_time(key: jnp.ndarray, low: float, high: float) -> float:
     if high <= low:
         return low
     return float(jax.random.uniform(key, (), minval=low, maxval=high))
+
+
+def _scenario_filter_has_rows(
+    table: dict[str, jnp.ndarray],
+    *,
+    split_id: int,
+    difficulty_bin: int | None = None,
+    authority_regime: int | None = None,
+) -> bool:
+    mask = table["split"] == int(split_id)
+    if difficulty_bin is not None:
+        mask = jnp.logical_and(mask, table["difficulty_bin"] == int(difficulty_bin))
+    if authority_regime is not None:
+        mask = jnp.logical_and(mask, table["authority_regime"] == int(authority_regime))
+    return bool(jax.device_get(jnp.any(mask)))
 
 
 def _rollout_once(
@@ -700,6 +717,8 @@ def main() -> None:
         am_predict_tracking_weight=args.predict_tracking_weight,
         am_predict_authority_weight=args.predict_authority_weight,
         num_envs=args.num_envs,
+        sparse_active_thrusters=args.sparse_active_thrusters,
+        sparse_max_active_sets=args.sparse_max_active_sets,
     )
     planner = OraclePlannerRL(env, radius=0.0)
     runner = OnPolicyRunner(env, planner)
@@ -722,6 +741,12 @@ def main() -> None:
         mild_effectiveness=float(
             getattr(cfg, "failure_scenario_mild_effectiveness", 0.5)
         ),
+        sparse_active_thrusters=getattr(
+            cfg, "failure_scenario_sparse_active_thrusters", None
+        ),
+        sparse_max_active_sets=int(
+            getattr(cfg, "failure_scenario_sparse_max_active_sets", 32)
+        ),
     )
     print(
         "[Scenario Eval] Table counts "
@@ -733,6 +758,14 @@ def main() -> None:
 
     rows = []
     for scenario_name, split_id, difficulty_bin, authority_regime in SCENARIO_EVALS:
+        if not _scenario_filter_has_rows(
+            table,
+            split_id=split_id,
+            difficulty_bin=difficulty_bin,
+            authority_regime=authority_regime,
+        ):
+            print(f"[Scenario Eval] Skipping {scenario_name}: no matching scenarios")
+            continue
         rows.append(
             _evaluate_scenario(
                 runner,
@@ -749,6 +782,13 @@ def main() -> None:
         )
     if not args.skip_targeted:
         for scenario_name, split_id, authority_regime in TARGETED_SCENARIO_EVALS:
+            if not _scenario_filter_has_rows(
+                table,
+                split_id=split_id,
+                authority_regime=authority_regime,
+            ):
+                print(f"[Scenario Eval] Skipping {scenario_name}: no matching scenarios")
+                continue
             rows.append(
                 _evaluate_targeted_scenario(
                     runner,

@@ -24,6 +24,7 @@ from smallsat_sim.controllers.rl.runners.curriculum import (
     build_authority_regime_curriculum,
     build_difficulty_curriculum,
     build_failure_curriculum,
+    build_sparse_authority_curriculum,
     uniform_failure_distribution,
 )
 from smallsat_sim.controllers.rl.runners.failure_scenarios import (
@@ -136,10 +137,33 @@ def train_adaptation_module_on_policy_runner(self) -> None:
             mild_effectiveness=float(
                 getattr(cfg, "failure_scenario_mild_effectiveness", 0.5)
             ),
+            sparse_active_thrusters=getattr(
+                cfg, "failure_scenario_sparse_active_thrusters", None
+            ),
+            sparse_max_active_sets=int(
+                getattr(cfg, "failure_scenario_sparse_max_active_sets", 32)
+            ),
         )
         precompute_scenario_gp_samples(self.env, self._take_keys())
 
+    sparse_active_thrusters = getattr(
+        cfg, "failure_scenario_sparse_active_thrusters", None
+    )
     if (
+        sparse_active_thrusters is not None
+        and curriculum_mode == "authority"
+        and use_controllable_failure_scenarios
+        and failure_scenario_table is not None
+    ):
+        curriculum_phases, curriculum_total_epochs = build_sparse_authority_curriculum(
+            train_with_failures=bool(self.env.train_with_failures),
+            fallback_epochs=int(self.epochs),
+            nominal_epochs=int(cfg.curriculum_nominal_epochs),
+            phase_epochs=int(cfg.curriculum_phase_epochs),
+            failure_fraction=float(cfg.curriculum_failure_fraction),
+            disturbance_fraction=float(cfg.curriculum_disturbance_fraction),
+        )
+    elif (
         curriculum_mode == "authority"
         and use_controllable_failure_scenarios
         and failure_scenario_table is not None

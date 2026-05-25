@@ -111,6 +111,12 @@ def evaluate_runner(runner: Any, phase: int = 2) -> None:
             mild_effectiveness=float(
                 getattr(cfg, "failure_scenario_mild_effectiveness", 0.5)
             ),
+            sparse_active_thrusters=getattr(
+                cfg, "failure_scenario_sparse_active_thrusters", None
+            ),
+            sparse_max_active_sets=int(
+                getattr(cfg, "failure_scenario_sparse_max_active_sets", 32)
+            ),
         )
     authority_logging_max_samples = int(
         getattr(cfg, "authority_logging_max_samples", 8192)

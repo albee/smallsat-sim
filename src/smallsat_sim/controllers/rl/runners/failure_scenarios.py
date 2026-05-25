@@ -61,7 +61,7 @@ SCENARIO_FAILURE_STATUS = {
     4: PerturbationStatus.THRUST_INSTABILITY.value,
 }
 _GP_SAMPLE_BANK: dict[tuple, tuple[jnp.ndarray, jnp.ndarray]] = {}
-_SCENARIO_CACHE_VERSION = "full-pose-authority-target-v1"
+_SCENARIO_CACHE_VERSION = "full-pose-sparse-authority-target-v1"
 
 
 def _scenario_cache_dir() -> str:
@@ -90,6 +90,8 @@ def _scenario_cache_key(
     min_rank: int,
     stress_quantile: float,
     mild_effectiveness: float,
+    sparse_active_thrusters: int | None,
+    sparse_max_active_sets: int,
 ) -> str:
     digest = hashlib.sha256()
     digest.update(_SCENARIO_CACHE_VERSION.encode())
@@ -100,6 +102,8 @@ def _scenario_cache_key(
     digest.update(str(int(min_rank)).encode())
     digest.update(f"{float(stress_quantile):.8f}".encode())
     digest.update(f"{float(mild_effectiveness):.8f}".encode())
+    digest.update(str(None if sparse_active_thrusters is None else int(sparse_active_thrusters)).encode())
+    digest.update(str(int(sparse_max_active_sets)).encode())
     return digest.hexdigest()[:16]
 
 
@@ -337,6 +341,35 @@ def _scenario_metrics(
     )
 
 
+def _candidate_sparse_active_sets(
+    mixer_t: np.ndarray,
+    *,
+    active_count: int,
+    min_rank: int,
+    max_sets: int,
+) -> list[tuple[int, ...]]:
+    """
+    Select sparse actuator subsets that still span the requested wrench space.
+
+    The ranking favors high minimum singular value, i.e. sparse bases with the
+    largest worst-direction authority before adding extra failures.
+    """
+    n_thrusters = mixer_t.shape[0]
+    if active_count >= n_thrusters:
+        return [tuple(range(n_thrusters))]
+    candidates: list[tuple[float, tuple[int, ...]]] = []
+    for active in combinations(range(n_thrusters), active_count):
+        wrench_map = mixer_t[list(active), :].T
+        rank = int(np.linalg.matrix_rank(wrench_map, tol=1e-6))
+        if rank < min_rank:
+            continue
+        singular_values = np.linalg.svd(wrench_map, compute_uv=False)
+        min_sv = float(singular_values[-1]) if singular_values.size else 0.0
+        candidates.append((min_sv, tuple(active)))
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return [active for _, active in candidates[: max(1, int(max_sets))]]
+
+
 @lru_cache(maxsize=16)
 def _build_scenario_table_cached(
     mixer_t_bytes: bytes,
@@ -347,6 +380,8 @@ def _build_scenario_table_cached(
     min_rank: int,
     stress_quantile: float,
     mild_effectiveness: float,
+    sparse_active_thrusters: int | None,
+    sparse_max_active_sets: int,
 ) -> dict[str, np.ndarray]:
     mixer_t = np.frombuffer(mixer_t_bytes, dtype=np.float32).reshape(mixer_t_shape)
     ctrl_low = np.frombuffer(ctrl_low_bytes, dtype=np.float32).copy()
@@ -354,82 +389,117 @@ def _build_scenario_table_cached(
     task_wrenches = _task_wrench_samples(mixer_t, ctrl_high)
     targeted_task_wrenches = _targeted_task_wrench_samples(mixer_t, ctrl_high)
     n_thrusters = mixer_t.shape[0]
-    base_faults = [(failure_type, thruster) for failure_type in range(5) for thruster in range(n_thrusters)]
+    if sparse_active_thrusters is None or sparse_active_thrusters >= n_thrusters:
+        active_sets = [tuple(range(n_thrusters))]
+    else:
+        active_sets = _candidate_sparse_active_sets(
+            mixer_t,
+            active_count=int(sparse_active_thrusters),
+            min_rank=min_rank,
+            max_sets=int(sparse_max_active_sets),
+        )
+    if not active_sets:
+        active_sets = [tuple(range(n_thrusters))]
+    table_width = max(
+        max_faults,
+        max(n_thrusters - len(active_set) + max_faults for active_set in active_sets),
+    )
 
     scenario_rows = []
     p90_all = []
     train_candidate_indices = []
     deterministic_holdout = []
 
-    for n_faults in range(1, max_faults + 1):
-        for combo in combinations(base_faults, n_faults):
-            thrusters = tuple(item[1] for item in combo)
-            if len(set(thrusters)) != len(thrusters):
-                continue
-            failure_types = tuple(item[0] for item in combo)
-            (
-                rank,
-                min_sv,
-                condition_number,
-                mean_error,
-                p90_error,
-                bias_cancellation_error,
-                bias_wrench_norm,
-                p10_authority_margin,
-                mean_authority_margin,
-                authority_regime,
-                targeted_task_error,
-                targeted_task_margin,
-                targeted_task_wrench,
-            ) = _scenario_metrics(
-                failure_types,
-                thrusters,
-                mixer_t,
-                ctrl_low,
-                ctrl_high,
-                task_wrenches,
-                targeted_task_wrenches,
-                mild_effectiveness,
-            )
-            if rank < min_rank:
-                continue
-            scenario_rows.append(
-                {
-                    "failure_types": failure_types,
-                    "thrusters": thrusters,
-                    "n_faults": n_faults,
-                    "rank": rank,
-                    "min_sv": min_sv,
-                    "condition_number": condition_number,
-                    "mean_error": mean_error,
-                    "p90_error": p90_error,
-                    "bias_cancellation_error": bias_cancellation_error,
-                    "bias_wrench_norm": bias_wrench_norm,
-                    "p10_authority_margin": p10_authority_margin,
-                    "mean_authority_margin": mean_authority_margin,
-                    "authority_regime": authority_regime,
-                    "targeted_task_error": targeted_task_error,
-                    "targeted_task_margin": targeted_task_margin,
-                    "targeted_task_wrench": targeted_task_wrench,
-                }
-            )
-            p90_all.append(p90_error)
-            row_idx = len(scenario_rows) - 1
-            holdout_hash = (
-                sum((ft + 1) * 17 for ft in failure_types)
-                + sum((thr + 1) * 31 for thr in thrusters)
-                + n_faults * 13
-            ) % 10
-            deterministic_holdout.append(holdout_hash >= 8)
-            if holdout_hash < 8:
-                train_candidate_indices.append(row_idx)
+    for active_set_id, active_set in enumerate(active_sets):
+        active_thrusters = tuple(active_set)
+        inactive_thrusters = tuple(
+            thruster for thruster in range(n_thrusters) if thruster not in active_thrusters
+        )
+        sparse_base = tuple((0, thruster) for thruster in inactive_thrusters)
+        fault_pool = [
+            (failure_type, thruster)
+            for failure_type in range(5)
+            for thruster in active_thrusters
+        ]
+        min_extra_faults = 1 if len(inactive_thrusters) == 0 else 0
+        for n_extra_faults in range(min_extra_faults, max_faults + 1):
+            combos = combinations(fault_pool, n_extra_faults)
+            for extra_combo in combos:
+                extra_thrusters = tuple(item[1] for item in extra_combo)
+                if len(set(extra_thrusters)) != len(extra_thrusters):
+                    continue
+                combo = sparse_base + tuple(extra_combo)
+                thrusters = tuple(item[1] for item in combo)
+                failure_types = tuple(item[0] for item in combo)
+                n_faults = len(combo)
+                (
+                    rank,
+                    min_sv,
+                    condition_number,
+                    mean_error,
+                    p90_error,
+                    bias_cancellation_error,
+                    bias_wrench_norm,
+                    p10_authority_margin,
+                    mean_authority_margin,
+                    authority_regime,
+                    targeted_task_error,
+                    targeted_task_margin,
+                    targeted_task_wrench,
+                ) = _scenario_metrics(
+                    failure_types,
+                    thrusters,
+                    mixer_t,
+                    ctrl_low,
+                    ctrl_high,
+                    task_wrenches,
+                    targeted_task_wrenches,
+                    mild_effectiveness,
+                )
+                if rank < min_rank:
+                    continue
+                scenario_rows.append(
+                    {
+                        "failure_types": failure_types,
+                        "thrusters": thrusters,
+                        "n_faults": n_faults,
+                        "sparse_active_set_id": active_set_id,
+                        "sparse_active_count": len(active_thrusters),
+                        "rank": rank,
+                        "min_sv": min_sv,
+                        "condition_number": condition_number,
+                        "mean_error": mean_error,
+                        "p90_error": p90_error,
+                        "bias_cancellation_error": bias_cancellation_error,
+                        "bias_wrench_norm": bias_wrench_norm,
+                        "p10_authority_margin": p10_authority_margin,
+                        "mean_authority_margin": mean_authority_margin,
+                        "authority_regime": authority_regime,
+                        "targeted_task_error": targeted_task_error,
+                        "targeted_task_margin": targeted_task_margin,
+                        "targeted_task_wrench": targeted_task_wrench,
+                    }
+                )
+                p90_all.append(p90_error)
+                row_idx = len(scenario_rows) - 1
+                holdout_hash = (
+                    sum((ft + 1) * 17 for ft in failure_types)
+                    + sum((thr + 1) * 31 for thr in thrusters)
+                    + n_faults * 13
+                    + active_set_id * 19
+                ) % 10
+                deterministic_holdout.append(holdout_hash >= 8)
+                if holdout_hash < 8:
+                    train_candidate_indices.append(row_idx)
 
     if not scenario_rows:
-        empty_int = np.empty((0, max_faults), dtype=np.int32)
+        empty_int = np.empty((0, table_width), dtype=np.int32)
         return {
             "failure_types": empty_int,
             "thrusters": empty_int,
             "n_faults": np.empty((0,), dtype=np.int32),
+            "sparse_active_set_id": np.empty((0,), dtype=np.int32),
+            "sparse_active_count": np.empty((0,), dtype=np.int32),
             "split": np.empty((0,), dtype=np.int32),
             "difficulty_bin": np.empty((0,), dtype=np.int32),
             "rank": np.empty((0,), dtype=np.int32),
@@ -461,6 +531,8 @@ def _build_scenario_table_cached(
     failure_type_rows: list[list[int]] = []
     thruster_rows: list[list[int]] = []
     n_fault_rows: list[int] = []
+    sparse_active_set_rows: list[int] = []
+    sparse_active_count_rows: list[int] = []
     split_rows: list[int] = []
     rank_rows: list[int] = []
     min_sv_rows: list[float] = []
@@ -496,11 +568,13 @@ def _build_scenario_table_cached(
         else:
             difficulty_bin = BIN_HARD
 
-        padded_types = list(failure_types) + [-1] * (max_faults - n_faults)
-        padded_thrusters = list(thrusters) + [-1] * (max_faults - n_faults)
+        padded_types = list(failure_types) + [-1] * (table_width - n_faults)
+        padded_thrusters = list(thrusters) + [-1] * (table_width - n_faults)
         failure_type_rows.append(padded_types)
         thruster_rows.append(padded_thrusters)
         n_fault_rows.append(n_faults)
+        sparse_active_set_rows.append(row["sparse_active_set_id"])
+        sparse_active_count_rows.append(row["sparse_active_count"])
         split_rows.append(split)
         difficulty_bin_rows.append(difficulty_bin)
         rank_rows.append(row["rank"])
@@ -521,6 +595,8 @@ def _build_scenario_table_cached(
         "failure_types": np.asarray(failure_type_rows, dtype=np.int32),
         "thrusters": np.asarray(thruster_rows, dtype=np.int32),
         "n_faults": np.asarray(n_fault_rows, dtype=np.int32),
+        "sparse_active_set_id": np.asarray(sparse_active_set_rows, dtype=np.int32),
+        "sparse_active_count": np.asarray(sparse_active_count_rows, dtype=np.int32),
         "split": np.asarray(split_rows, dtype=np.int32),
         "difficulty_bin": np.asarray(difficulty_bin_rows, dtype=np.int32),
         "rank": np.asarray(rank_rows, dtype=np.int32),
@@ -552,6 +628,8 @@ def build_failure_scenario_table(
     min_rank: int = 6,
     stress_quantile: float = 0.9,
     mild_effectiveness: float = 0.5,
+    sparse_active_thrusters: int | None = None,
+    sparse_max_active_sets: int = 32,
 ) -> dict[str, jnp.ndarray]:
     mixer_t = np.asarray(jax.device_get(thruster_mixer_t), dtype=np.float32)
     ctrl_low_np = np.asarray(jax.device_get(ctrl_low), dtype=np.float32)
@@ -564,6 +642,8 @@ def build_failure_scenario_table(
         min_rank=min_rank,
         stress_quantile=stress_quantile,
         mild_effectiveness=mild_effectiveness,
+        sparse_active_thrusters=sparse_active_thrusters,
+        sparse_max_active_sets=sparse_max_active_sets,
     )
     cache_path = os.path.join(_scenario_cache_dir(), f"{cache_key}.npz")
     if os.path.isfile(cache_path):
@@ -573,7 +653,9 @@ def build_failure_scenario_table(
 
     print(
         "[Failure Scenarios] Building scenario table "
-        f"(max_faults={max_faults}, min_rank={min_rank}); this is cached after the first run.",
+        f"(max_faults={max_faults}, min_rank={min_rank}, "
+        f"sparse_active_thrusters={sparse_active_thrusters}); "
+        "this is cached after the first run.",
         flush=True,
     )
     table = _build_scenario_table_cached(
@@ -585,6 +667,8 @@ def build_failure_scenario_table(
         int(min_rank),
         float(stress_quantile),
         float(mild_effectiveness),
+        None if sparse_active_thrusters is None else int(sparse_active_thrusters),
+        int(sparse_max_active_sets),
     )
     np.savez_compressed(cache_path, **table)
     print(f"[Failure Scenarios] Cached scenario table: {cache_path}", flush=True)
@@ -633,6 +717,8 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
     failure_types = np.asarray(jax.device_get(table["failure_types"]))
     thrusters = np.asarray(jax.device_get(table["thrusters"]))
     n_faults = np.asarray(jax.device_get(table["n_faults"]))
+    sparse_active_set_id = np.asarray(jax.device_get(table["sparse_active_set_id"]))
+    sparse_active_count = np.asarray(jax.device_get(table["sparse_active_count"]))
     splits = np.asarray(jax.device_get(table["split"]))
     bins = np.asarray(jax.device_get(table["difficulty_bin"]))
     ranks = np.asarray(jax.device_get(table["rank"]))
@@ -655,6 +741,8 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
         "split",
         "difficulty_bin",
         "n_faults",
+        "sparse_active_set_id",
+        "sparse_active_count",
         "rank",
         "min_singular_value",
         "condition_number",
@@ -687,6 +775,8 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
                 "split": SPLIT_NAMES.get(int(splits[scenario_id]), "unknown"),
                 "difficulty_bin": BIN_NAMES.get(int(bins[scenario_id]), "unknown"),
                 "n_faults": int(n_faults[scenario_id]),
+                "sparse_active_set_id": int(sparse_active_set_id[scenario_id]),
+                "sparse_active_count": int(sparse_active_count[scenario_id]),
                 "rank": int(ranks[scenario_id]),
                 "min_singular_value": float(min_sv[scenario_id]),
                 "condition_number": float(cond[scenario_id]),
@@ -736,6 +826,9 @@ def scenario_selection_payload(
     bins = np.asarray(jax.device_get(table["difficulty_bin"]))[scenario_indices_np]
     splits = np.asarray(jax.device_get(table["split"]))[scenario_indices_np]
     n_faults = np.asarray(jax.device_get(table["n_faults"]))[scenario_indices_np]
+    sparse_active_count = np.asarray(jax.device_get(table["sparse_active_count"]))[
+        scenario_indices_np
+    ]
     p90_error = np.asarray(jax.device_get(table["p90_feasibility_error"]))[
         scenario_indices_np
     ]
@@ -778,6 +871,7 @@ def scenario_selection_payload(
         ),
         f"{prefix}/split_stress_fraction": float((splits == SPLIT_STRESS).sum() / denom),
         f"{prefix}/mean_num_faults": float(n_faults.mean()),
+        f"{prefix}/mean_sparse_active_count": float(sparse_active_count.mean()),
         f"{prefix}/mean_p90_feasibility_error": float(p90_error.mean()),
         f"{prefix}/max_p90_feasibility_error": float(p90_error.max()),
         f"{prefix}/mean_feasibility_error": float(mean_error.mean()),

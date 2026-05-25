@@ -16,6 +16,7 @@ from smallsat_sim.controllers.rl.runners.curriculum import (
     build_authority_regime_curriculum,
     build_difficulty_curriculum,
     build_failure_curriculum,
+    build_sparse_authority_curriculum,
     uniform_failure_distribution,
 )
 from smallsat_sim.controllers.rl.runners.failure_scenarios import (
@@ -101,7 +102,7 @@ def learn_runner(self) -> None:
         warm_start_candidates = (
             [plain_nominal_checkpoint_name, nominal_checkpoint_name]
             if self.env.use_adaptive_approach
-            else [nominal_checkpoint_name]
+            else [plain_nominal_checkpoint_name, nominal_checkpoint_name]
         )
         loaded_nominal_checkpoint_name = None
         for candidate in warm_start_candidates:
@@ -210,6 +211,12 @@ def learn_runner(self) -> None:
             mild_effectiveness=float(
                 getattr(cfg, "failure_scenario_mild_effectiveness", 0.5)
             ),
+            sparse_active_thrusters=getattr(
+                cfg, "failure_scenario_sparse_active_thrusters", None
+            ),
+            sparse_max_active_sets=int(
+                getattr(cfg, "failure_scenario_sparse_max_active_sets", 32)
+            ),
         )
         print(
             "[Failure Scenarios] Using controllability-filtered scenario table "
@@ -234,7 +241,24 @@ def learn_runner(self) -> None:
     # Keep evaluation lightweight relative to training rollouts.
     eval_episodes = max(1, min(self.n_evals, 3))
 
+    sparse_active_thrusters = getattr(
+        cfg, "failure_scenario_sparse_active_thrusters", None
+    )
     if (
+        sparse_active_thrusters is not None
+        and curriculum_mode == "authority"
+        and use_controllable_failure_scenarios
+        and failure_scenario_table is not None
+    ):
+        phases, total_epochs = build_sparse_authority_curriculum(
+            train_with_failures=bool(self.env.train_with_failures),
+            fallback_epochs=nominal_epochs,
+            nominal_epochs=nominal_epochs,
+            phase_epochs=phase_epochs,
+            failure_fraction=failure_fraction,
+            disturbance_fraction=disturbance_fraction,
+        )
+    elif (
         curriculum_mode == "authority"
         and use_controllable_failure_scenarios
         and failure_scenario_table is not None

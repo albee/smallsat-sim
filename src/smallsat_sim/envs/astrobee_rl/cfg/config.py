@@ -134,6 +134,11 @@ class EnvConfig(BaseEnvConfig):
             failure_scenario_min_rank = 6
             failure_scenario_stress_quantile = 0.9
             failure_scenario_mild_effectiveness = 0.5
+            # Optional sparse-authority regime: keep only N rank-feasible active
+            # thrusters as the nominal actuator set, then add failures on top.
+            # None keeps the default dense 12-thruster platform.
+            failure_scenario_sparse_active_thrusters = None
+            failure_scenario_sparse_max_active_sets = 32
             curriculum_critic_warmup_epochs = 15
             curriculum_critic_warmup_scale = 1.0 / 3.0
             curriculum_eval_interval = 20
