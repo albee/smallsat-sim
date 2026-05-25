@@ -61,6 +61,7 @@ SCENARIO_FAILURE_STATUS = {
     4: PerturbationStatus.THRUST_INSTABILITY.value,
 }
 _GP_SAMPLE_BANK: dict[tuple, tuple[jnp.ndarray, jnp.ndarray]] = {}
+_SCENARIO_CACHE_VERSION = "full-pose-authority-target-v1"
 
 
 def _scenario_cache_dir() -> str:
@@ -91,6 +92,7 @@ def _scenario_cache_key(
     mild_effectiveness: float,
 ) -> str:
     digest = hashlib.sha256()
+    digest.update(_SCENARIO_CACHE_VERSION.encode())
     digest.update(np.asarray(mixer_t, dtype=np.float32).tobytes())
     digest.update(np.asarray(ctrl_low, dtype=np.float32).tobytes())
     digest.update(np.asarray(ctrl_high, dtype=np.float32).tobytes())
@@ -124,13 +126,37 @@ def _task_wrench_samples(mixer_t: np.ndarray, ctrl_high: np.ndarray) -> np.ndarr
     return np.asarray(samples, dtype=np.float32)
 
 
+def _targeted_task_wrench_samples(
+    mixer_t: np.ndarray, ctrl_high: np.ndarray
+) -> np.ndarray:
+    nominal_map = mixer_t.T
+    positive = np.sum(np.maximum(nominal_map, 0.0) * ctrl_high[None, :], axis=1)
+    negative = np.sum(np.minimum(nominal_map, 0.0) * ctrl_high[None, :], axis=1)
+    axis_mag = 0.35 * np.minimum(np.abs(positive), np.abs(negative))
+    axis_mag = np.maximum(axis_mag, 1e-3)
+
+    samples: list[np.ndarray] = []
+    for axis in range(nominal_map.shape[0]):
+        unit = np.zeros((nominal_map.shape[0],), dtype=np.float32)
+        unit[axis] = axis_mag[axis]
+        samples.append(unit.copy())
+        samples.append(-unit.copy())
+    for first, second in ((0, 1), (0, 2), (1, 2), (3, 4), (3, 5), (4, 5)):
+        for sign_first, sign_second in ((1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)):
+            wrench = np.zeros((nominal_map.shape[0],), dtype=np.float32)
+            wrench[first] = sign_first * 0.5 * axis_mag[first]
+            wrench[second] = sign_second * 0.5 * axis_mag[second]
+            samples.append(wrench)
+    return np.asarray(samples, dtype=np.float32)
+
+
 def _projected_bounded_residual(
     wrench_map: np.ndarray,
     lower: np.ndarray,
     upper: np.ndarray,
     target_wrench: np.ndarray,
     *,
-    iterations: int = 64,
+    iterations: int = 32,
 ) -> float:
     u = np.clip(np.linalg.pinv(wrench_map) @ target_wrench, lower, upper)
     lipschitz = float(np.linalg.norm(wrench_map, ord=2) ** 2) + 1e-6
@@ -150,7 +176,7 @@ def _max_feasible_wrench_scale(
     *,
     tolerance: float = 0.05,
     high: float = 4.0,
-    iterations: int = 20,
+    iterations: int = 7,
 ) -> float:
     """
     Approximate the largest scale alpha such that alpha * target_wrench remains
@@ -165,7 +191,11 @@ def _max_feasible_wrench_scale(
 
     def feasible(scale: float) -> bool:
         residual = _projected_bounded_residual(
-            wrench_map, lower, upper, scale * target_wrench
+            wrench_map,
+            lower,
+            upper,
+            scale * target_wrench,
+            iterations=16,
         )
         return residual / (scale * target_norm + 1e-6) <= tolerance
 
@@ -214,8 +244,23 @@ def _scenario_metrics(
     ctrl_low: np.ndarray,
     ctrl_high: np.ndarray,
     task_wrenches: np.ndarray,
+    targeted_task_wrenches: np.ndarray,
     mild_effectiveness: float,
-) -> tuple[int, float, float, float, float, float, float, float, float, int]:
+) -> tuple[
+    int,
+    float,
+    float,
+    float,
+    float,
+    float,
+    float,
+    float,
+    float,
+    int,
+    float,
+    float,
+    np.ndarray,
+]:
     effectiveness, lower, upper = _scenario_bounds(
         failure_types,
         thrusters,
@@ -243,6 +288,20 @@ def _scenario_metrics(
         margins.append(feasible_scale - 1.0)
     errors_np = np.asarray(errors, dtype=np.float32)
     margins_np = np.asarray(margins, dtype=np.float32)
+    targeted_errors = []
+    targeted_margins = []
+    for wrench in targeted_task_wrenches:
+        residual = _projected_bounded_residual(wrench_map, lower, upper, wrench)
+        targeted_errors.append(residual / (float(np.linalg.norm(wrench)) + 1e-6))
+        feasible_scale = _max_feasible_wrench_scale(
+            wrench_map, lower, upper, wrench
+        )
+        targeted_margins.append(feasible_scale - 1.0)
+    targeted_errors_np = np.asarray(targeted_errors, dtype=np.float32)
+    targeted_margins_np = np.asarray(targeted_margins, dtype=np.float32)
+    target_score = targeted_errors_np - 0.05 * targeted_margins_np
+    target_idx = int(np.argmax(target_score))
+    targeted_wrench = targeted_task_wrenches[target_idx].astype(np.float32)
     zero_residual = _projected_bounded_residual(
         wrench_map, lower, upper, np.zeros((wrench_map.shape[0],), dtype=np.float32)
     )
@@ -272,6 +331,9 @@ def _scenario_metrics(
         p10_margin,
         mean_margin,
         authority_regime,
+        float(targeted_errors_np[target_idx]),
+        float(targeted_margins_np[target_idx]),
+        targeted_wrench,
     )
 
 
@@ -290,6 +352,7 @@ def _build_scenario_table_cached(
     ctrl_low = np.frombuffer(ctrl_low_bytes, dtype=np.float32).copy()
     ctrl_high = np.frombuffer(ctrl_high_bytes, dtype=np.float32).copy()
     task_wrenches = _task_wrench_samples(mixer_t, ctrl_high)
+    targeted_task_wrenches = _targeted_task_wrench_samples(mixer_t, ctrl_high)
     n_thrusters = mixer_t.shape[0]
     base_faults = [(failure_type, thruster) for failure_type in range(5) for thruster in range(n_thrusters)]
 
@@ -315,6 +378,9 @@ def _build_scenario_table_cached(
                 p10_authority_margin,
                 mean_authority_margin,
                 authority_regime,
+                targeted_task_error,
+                targeted_task_margin,
+                targeted_task_wrench,
             ) = _scenario_metrics(
                 failure_types,
                 thrusters,
@@ -322,6 +388,7 @@ def _build_scenario_table_cached(
                 ctrl_low,
                 ctrl_high,
                 task_wrenches,
+                targeted_task_wrenches,
                 mild_effectiveness,
             )
             if rank < min_rank:
@@ -341,6 +408,9 @@ def _build_scenario_table_cached(
                     "p10_authority_margin": p10_authority_margin,
                     "mean_authority_margin": mean_authority_margin,
                     "authority_regime": authority_regime,
+                    "targeted_task_error": targeted_task_error,
+                    "targeted_task_margin": targeted_task_margin,
+                    "targeted_task_wrench": targeted_task_wrench,
                 }
             )
             p90_all.append(p90_error)
@@ -372,6 +442,9 @@ def _build_scenario_table_cached(
             "p10_authority_margin": np.empty((0,), dtype=np.float32),
             "mean_authority_margin": np.empty((0,), dtype=np.float32),
             "authority_regime": np.empty((0,), dtype=np.int32),
+            "targeted_task_error": np.empty((0,), dtype=np.float32),
+            "targeted_task_margin": np.empty((0,), dtype=np.float32),
+            "targeted_task_wrench": np.empty((0, 6), dtype=np.float32),
         }
 
     p90_all_np = np.asarray(p90_all, dtype=np.float32)
@@ -400,6 +473,9 @@ def _build_scenario_table_cached(
     p10_margin_rows: list[float] = []
     mean_margin_rows: list[float] = []
     authority_regime_rows: list[int] = []
+    targeted_error_rows: list[float] = []
+    targeted_margin_rows: list[float] = []
+    targeted_wrench_rows: list[np.ndarray] = []
 
     for row_idx, row in enumerate(scenario_rows):
         failure_types = row["failure_types"]
@@ -437,6 +513,9 @@ def _build_scenario_table_cached(
         p10_margin_rows.append(row["p10_authority_margin"])
         mean_margin_rows.append(row["mean_authority_margin"])
         authority_regime_rows.append(row["authority_regime"])
+        targeted_error_rows.append(row["targeted_task_error"])
+        targeted_margin_rows.append(row["targeted_task_margin"])
+        targeted_wrench_rows.append(row["targeted_task_wrench"])
 
     return {
         "failure_types": np.asarray(failure_type_rows, dtype=np.int32),
@@ -454,6 +533,13 @@ def _build_scenario_table_cached(
         "p10_authority_margin": np.asarray(p10_margin_rows, dtype=np.float32),
         "mean_authority_margin": np.asarray(mean_margin_rows, dtype=np.float32),
         "authority_regime": np.asarray(authority_regime_rows, dtype=np.int32),
+        "targeted_task_error": np.asarray(targeted_error_rows, dtype=np.float32),
+        "targeted_task_margin": np.asarray(
+            targeted_margin_rows, dtype=np.float32
+        ),
+        "targeted_task_wrench": np.asarray(
+            targeted_wrench_rows, dtype=np.float32
+        ),
     }
 
 
@@ -481,9 +567,15 @@ def build_failure_scenario_table(
     )
     cache_path = os.path.join(_scenario_cache_dir(), f"{cache_key}.npz")
     if os.path.isfile(cache_path):
+        print(f"[Failure Scenarios] Loading cached scenario table: {cache_path}", flush=True)
         with np.load(cache_path) as cached:
             return {key: jnp.asarray(cached[key]) for key in cached.files}
 
+    print(
+        "[Failure Scenarios] Building scenario table "
+        f"(max_faults={max_faults}, min_rank={min_rank}); this is cached after the first run.",
+        flush=True,
+    )
     table = _build_scenario_table_cached(
         mixer_t.tobytes(),
         tuple(mixer_t.shape),
@@ -495,6 +587,7 @@ def build_failure_scenario_table(
         float(mild_effectiveness),
     )
     np.savez_compressed(cache_path, **table)
+    print(f"[Failure Scenarios] Cached scenario table: {cache_path}", flush=True)
     return {key: jnp.asarray(value) for key, value in table.items()}
 
 
@@ -552,6 +645,9 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
     p10_margin = np.asarray(jax.device_get(table["p10_authority_margin"]))
     mean_margin = np.asarray(jax.device_get(table["mean_authority_margin"]))
     authority_regime = np.asarray(jax.device_get(table["authority_regime"]))
+    targeted_error = np.asarray(jax.device_get(table["targeted_task_error"]))
+    targeted_margin = np.asarray(jax.device_get(table["targeted_task_margin"]))
+    targeted_wrench = np.asarray(jax.device_get(table["targeted_task_wrench"]))
 
     max_faults = failure_types.shape[1] if failure_types.ndim == 2 else 0
     fieldnames = [
@@ -569,7 +665,10 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
         "p10_authority_margin",
         "mean_authority_margin",
         "authority_regime",
+        "targeted_task_error",
+        "targeted_task_margin",
     ]
+    fieldnames.extend([f"targeted_wrench_{idx}" for idx in range(6)])
     for idx in range(max_faults):
         fieldnames.extend(
             [
@@ -600,7 +699,13 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
                 "authority_regime": AUTHORITY_REGIME_NAMES.get(
                     int(authority_regime[scenario_id]), "unknown"
                 ),
+                "targeted_task_error": float(targeted_error[scenario_id]),
+                "targeted_task_margin": float(targeted_margin[scenario_id]),
             }
+            for wrench_idx in range(6):
+                row[f"targeted_wrench_{wrench_idx}"] = float(
+                    targeted_wrench[scenario_id, wrench_idx]
+                )
             for fault_idx in range(max_faults):
                 failure_type = int(failure_types[scenario_id, fault_idx])
                 row[f"failure_type_{fault_idx}"] = failure_type
@@ -649,6 +754,12 @@ def scenario_selection_payload(
     mean_margin = np.asarray(jax.device_get(table["mean_authority_margin"]))[
         scenario_indices_np
     ]
+    targeted_error = np.asarray(jax.device_get(table["targeted_task_error"]))[
+        scenario_indices_np
+    ]
+    targeted_margin = np.asarray(jax.device_get(table["targeted_task_margin"]))[
+        scenario_indices_np
+    ]
     regimes = np.asarray(jax.device_get(table["authority_regime"]))[
         scenario_indices_np
     ]
@@ -674,6 +785,8 @@ def scenario_selection_payload(
         f"{prefix}/mean_bias_wrench_norm": float(bias_norm.mean()),
         f"{prefix}/mean_p10_authority_margin": float(p10_margin.mean()),
         f"{prefix}/mean_authority_margin": float(mean_margin.mean()),
+        f"{prefix}/mean_targeted_task_error": float(targeted_error.mean()),
+        f"{prefix}/mean_targeted_task_margin": float(targeted_margin.mean()),
         f"{prefix}/regime_redundant_fraction": float(
             (regimes == REGIME_REDUNDANT).sum() / denom
         ),

@@ -1574,14 +1574,11 @@ class VecEnv(BaseEnv):
 
     def _in_terminal_set(self, states: jnp.ndarray) -> jnp.ndarray:
         """
-        Returns one if position is inside the success terminal set.
-
-        Linear speed, attitude, and angular speed remain reward/diagnostic terms
-        but are not part of success termination. This keeps fault-recovery
-        success focused on translational setpoint capture and short holding.
+        Returns one if position and attitude are inside the success terminal set.
         """
         pos_ok = jnp.linalg.norm(states[0:3]) <= self.terminal_radius
-        return pos_ok
+        att_ok = jnp.linalg.norm(states[3:6]) <= self.terminal_max_att_error
+        return jnp.logical_and(pos_ok, att_ok)
 
     def _is_failure_state(self, states: jnp.ndarray) -> jnp.ndarray:
         pos_fail = jnp.linalg.norm(states[0:3]) > self.failure_max_position_error

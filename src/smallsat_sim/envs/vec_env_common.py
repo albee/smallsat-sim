@@ -196,9 +196,12 @@ def _compute_terminals(
     config: VecEnvStepConfig,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     radius = jnp.asarray(config.terminal_radius, dtype=states.dtype)
+    max_att_error = jnp.asarray(config.terminal_max_att_error, dtype=states.dtype)
     required_steps = max(int(config.terminal_hold_steps), 1)
     pos_ok = jnp.linalg.norm(states[:, 0:3], axis=1) <= radius
-    counts_next = jnp.where(pos_ok, terminal_hold_counts + 1, 0)
+    att_ok = jnp.linalg.norm(states[:, 3:6], axis=1) <= max_att_error
+    in_terminal_set = jnp.logical_and(pos_ok, att_ok)
+    counts_next = jnp.where(in_terminal_set, terminal_hold_counts + 1, 0)
     terminals = counts_next >= required_steps
     return terminals, counts_next
 

@@ -36,7 +36,14 @@ def mlp(
             nnx.Linear(
                 sizes[i],
                 sizes[i + 1],
-                kernel_init=nnx.initializers.orthogonal(current_std),
+                # Avoid QR/SVD-based initializers here: on some GPU/CUDA stacks
+                # cuSolver handle creation fails during startup. Variance scaling
+                # keeps the intended gain without invoking cuSolver.
+                kernel_init=jax.nn.initializers.variance_scaling(
+                    scale=float(current_std) ** 2,
+                    mode="fan_avg",
+                    distribution="uniform",
+                ),
                 bias_init=nnx.initializers.constant(0.0),
                 rngs=nnx.Rngs(params=0),
             ),

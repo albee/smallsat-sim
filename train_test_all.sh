@@ -93,17 +93,25 @@ fi
 #   RUN_ONLY_SCENARIO_SPLIT_EVAL=1 ./train_test_all.sh
 #
 # The scenario evaluator defaults to ppo_plain. To evaluate an adaptive
-# checkpoint on the same authority-regime/eval/stress splits, run it directly,
-# e.g.:
+# checkpoint on the same generic and targeted authority-regime/eval/stress
+# splits, run it directly, e.g.:
+#   python experiments/rl_benchmarking/evaluate_scenario_splits.py --headless --wandb \
+#     --run-name ppo_adaptive_sim_residual \
+#     --use-adaptive-approach --adaptive-context-mode residual --phase 1
 #   python experiments/rl_benchmarking/evaluate_scenario_splits.py --headless --wandb \
 #     --run-name ppo_adaptive_cross_attention_task_predictive \
 #     --use-adaptive-approach --am-architecture transformer_cross_attention \
-#     --adaptive-context-mode structured --task-conditioned \
+#     --adaptive-context-mode structured --task-conditioned --phase 2 \
 #     --predict-delta-weight 0.1 --predict-tracking-weight 0.1 \
 #     --predict-authority-weight 0.1
+# Targeted rows start each scenario from the position/attitude error that
+# requires its weakest force/torque authority with failures active from reset;
+# use --skip-targeted only for quick smoke tests.
 #
-# Existing checkpoints are reused by the Python runners. Remove the relevant
-# checkpoint files if you want to force retraining a variant.
+# Existing full-pose checkpoints are reused by the Python runners. Adaptive
+# variants warm-start from training_state_full_pose_nominal.pkl when it exists,
+# with extra context-input rows initialized to zero for fair comparison. Remove
+# the relevant checkpoint files if you want to force retraining a variant.
 COMMON_ARGS=(--headless)
 if [ "${RUN_WANDB:-1}" = "1" ]; then
   COMMON_ARGS+=(--wandb)

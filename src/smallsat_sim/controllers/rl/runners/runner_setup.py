@@ -26,9 +26,15 @@ def build_checkpoint_file_names(env) -> dict[str, str]:
     context_mode = env.adaptive_context_mode if env.use_adaptive_approach else None
     pretrained = "pretrained" if env.use_pretrained else None
     nominal = None if env.train_with_failures else "nominal"
+    success_criterion = getattr(
+        env.env_cfg.control.RL,
+        "success_criterion",
+        "full_pose",
+    )
+    task_tag = "full_pose" if success_criterion == "full_pose" else None
 
     def build_name(prefix: str) -> str:
-        parts = [prefix, adaptive, context_mode, pretrained, nominal]
+        parts = [prefix, adaptive, context_mode, pretrained, task_tag, nominal]
         predictive_am = (
             env.use_task_conditioned_am
             or float(env.env_cfg.control.RL.am_predict_delta_weight) > 0.0

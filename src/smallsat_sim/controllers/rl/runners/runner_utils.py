@@ -1,5 +1,6 @@
 from collections.abc import Mapping, Sequence
 from flax import nnx
+from flax.nnx.variablelib import VariableState
 from mujoco import mjx
 import jax
 import jax.numpy as jnp
@@ -169,3 +170,74 @@ def load_trained_modules(ckpt_dir: str, ckpt_filename: str):
     print(f"Checkpoint loaded from {ckpt_filename}")
 
     return restored_state
+
+
+def _copy_value_with_optional_input_expansion(
+    target_value: jnp.ndarray,
+    source_value: jnp.ndarray,
+) -> jnp.ndarray | None:
+    target = jnp.asarray(target_value)
+    source = jnp.asarray(source_value)
+    if target.shape == source.shape:
+        return source
+    if (
+        target.ndim == 2
+        and source.ndim == 2
+        and source.shape[0] <= target.shape[0]
+        and source.shape[1] == target.shape[1]
+    ):
+        expanded = jnp.zeros_like(target)
+        return expanded.at[: source.shape[0], :].set(source)
+    return None
+
+
+def align_checkpoint_state_to_model(target_state, source_state):
+    """
+    Align a checkpoint state to a model state.
+
+    This supports fair adaptive-policy warm starts from a state-only nominal
+    policy. Matching parameters are copied exactly; first-layer kernels with
+    extra adaptive-context input rows are copied in the state rows and zeroed in
+    the new context rows. Non-matching leaves keep their target initialization.
+    """
+    if isinstance(target_state, VariableState) and isinstance(
+        source_state, VariableState
+    ):
+        copied_value = _copy_value_with_optional_input_expansion(
+            target_state.value,
+            source_state.value,
+        )
+        if copied_value is None:
+            return target_state
+        return target_state.replace(value=copied_value)
+
+    if isinstance(target_state, Mapping) and isinstance(source_state, Mapping):
+        aligned_items = {}
+        for key, target_value in target_state.items():
+            if key in source_state:
+                aligned_items[key] = align_checkpoint_state_to_model(
+                    target_value,
+                    source_state[key],
+                )
+            else:
+                aligned_items[key] = target_value
+        return aligned_items
+
+    if isinstance(target_state, np.ndarray) or _is_jax_array(target_state):
+        if isinstance(source_state, np.ndarray) or _is_jax_array(source_state):
+            copied_value = _copy_value_with_optional_input_expansion(
+                target_state,
+                source_state,
+            )
+            if copied_value is not None:
+                return copied_value
+        return target_state
+
+    return source_state if type(target_state) is type(source_state) else target_state
+
+
+def update_module_from_checkpoint_state(module, checkpoint_state) -> None:
+    """Update ``module`` from checkpoint state, expanding first-layer inputs if needed."""
+    target_state = nnx.state(module)
+    aligned_state = align_checkpoint_state_to_model(target_state, checkpoint_state)
+    nnx.update(module, aligned_state)

@@ -163,7 +163,7 @@ class EnvConfig(BaseEnvConfig):
             lam_fuel_terminal = 5e-3
             terminal_bonus = 2e1
             terminal_radius = 0.25
-            terminal_hold_steps = 5  # 0.25s at 20Hz control; require settling without making termination unnecessarily rare
+            terminal_hold_steps = 5  # Full-pose hold for 0.25s at 20Hz control.
             terminal_max_speed = 0.15
             terminal_max_att_error = 0.25  # radians
             terminal_max_ang_speed = 0.05
@@ -179,6 +179,7 @@ class EnvConfig(BaseEnvConfig):
             lam_wrench_residual = 0.0  # Disregard wrench residual for now, minimizing it is implicitly encoded in the reward
             wrench_residual_tolerance = 1e-1
             wrench_residual_clip = 0.5
+            success_criterion = "full_pose"
 
             # Context window length for the adaptation module
             context_window_len = 50

@@ -48,6 +48,7 @@ from smallsat_sim.controllers.rl.runners.runner_utils import (
     load_trained_modules,
     save_training_data,
     save_trained_modules,
+    update_module_from_checkpoint_state,
 )
 from smallsat_sim.controllers.rl.storage.replay_buffer import ReplayBuffer
 from smallsat_sim.envs.vec_env import (
@@ -76,14 +77,8 @@ def learn_runner(self) -> None:
         restored_state = load_trained_modules(self.ckpt_dir, ckpt_filename)
         actor_state = restored_state["actor_model"]
         critic_state = restored_state["critic_model"]
-        if isinstance(actor_state, dict):
-            nnx.update(self.agent.actor, actor_state)
-        else:
-            nnx.update(self.agent.actor.mu_net, actor_state.mu_net)
-        if isinstance(critic_state, dict):
-            nnx.update(self.agent.critic, critic_state)
-        else:
-            nnx.update(self.agent.critic.v_net, critic_state.v_net)
+        update_module_from_checkpoint_state(self.agent.actor, actor_state)
+        update_module_from_checkpoint_state(self.agent.critic, critic_state)
         return True
 
     def _nominal_checkpoint_name(ckpt_filename: str) -> str:
@@ -102,16 +97,28 @@ def learn_runner(self) -> None:
     warm_started_from_nominal = False
     nominal_checkpoint_name = _nominal_checkpoint_name(self.training_state_file_name)
     if self.env.train_with_failures and not self.env.use_pretrained:
-        warm_started_from_nominal = _load_actor_critic_checkpoint(nominal_checkpoint_name)
+        plain_nominal_checkpoint_name = _nominal_checkpoint_name("training_state_full_pose.pkl")
+        warm_start_candidates = (
+            [plain_nominal_checkpoint_name, nominal_checkpoint_name]
+            if self.env.use_adaptive_approach
+            else [nominal_checkpoint_name]
+        )
+        loaded_nominal_checkpoint_name = None
+        for candidate in warm_start_candidates:
+            if _load_actor_critic_checkpoint(candidate):
+                loaded_nominal_checkpoint_name = candidate
+                warm_started_from_nominal = True
+                break
         if warm_started_from_nominal:
             print(
-                f"Loaded nominal checkpoint {nominal_checkpoint_name}; "
+                f"Loaded nominal checkpoint {loaded_nominal_checkpoint_name}; "
                 "skipping nominal curriculum phase.\n"
             )
         else:
             print(
-                f"No same-architecture nominal checkpoint found "
-                f"({nominal_checkpoint_name}); training nominal phase first.\n"
+                "No compatible nominal checkpoint found "
+                f"({', '.join(warm_start_candidates)}); "
+                "training nominal phase first.\n"
             )
 
     print("Training agent...\n")
