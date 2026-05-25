@@ -71,7 +71,7 @@ SCENARIO_FAILURE_STATUS = {
     4: PerturbationStatus.THRUST_INSTABILITY.value,
 }
 _GP_SAMPLE_BANK: dict[tuple, tuple[jnp.ndarray, jnp.ndarray]] = {}
-_SCENARIO_CACHE_VERSION = "full-pose-task-feasible-sparse-v1"
+_SCENARIO_CACHE_VERSION = "full-pose-task-feasible-boundary-v1"
 
 
 def _scenario_cache_dir() -> str:
@@ -313,8 +313,28 @@ def _scenario_metrics(
         targeted_margins.append(feasible_scale - 1.0)
     targeted_errors_np = np.asarray(targeted_errors, dtype=np.float32)
     targeted_margins_np = np.asarray(targeted_margins, dtype=np.float32)
-    target_score = targeted_errors_np - 0.05 * targeted_margins_np
-    target_idx = int(np.argmax(target_score))
+    feasible_mask = targeted_errors_np <= 0.10
+    hard_feasible_mask = np.logical_and(
+        feasible_mask,
+        np.logical_and(targeted_margins_np >= 0.0, targeted_margins_np <= 0.30),
+    )
+    if np.any(hard_feasible_mask):
+        # Pick the feasible query closest to the damaged wrench boundary.
+        scores = np.where(hard_feasible_mask, targeted_margins_np, np.inf)
+        target_idx = int(np.argmin(scores))
+    elif np.any(feasible_mask):
+        # Fall back to the smallest positive-margin feasible query. This becomes
+        # easy_feasible, not a fake hard case.
+        scores = np.where(
+            feasible_mask,
+            np.maximum(targeted_margins_np, 0.0),
+            np.inf,
+        )
+        target_idx = int(np.argmin(scores))
+    else:
+        # Only if no sampled query is feasible do we report an infeasible target.
+        scores = targeted_errors_np + 0.05 * np.abs(targeted_margins_np)
+        target_idx = int(np.argmin(scores))
     targeted_wrench = targeted_task_wrenches[target_idx].astype(np.float32)
     zero_residual = _projected_bounded_residual(
         wrench_map, lower, upper, np.zeros((wrench_map.shape[0],), dtype=np.float32)
