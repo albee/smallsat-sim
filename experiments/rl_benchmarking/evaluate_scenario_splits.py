@@ -1,12 +1,4 @@
-"""
-Evaluate a trained policy on authority-regime failure-scenario splits.
-
-This diagnostic tests whether a trained policy succeeds because failures are
-redundant/behaviorally irrelevant, or because it can handle marginal,
-authority-limited, bias-limited, held-out, and stress actuator-failure regimes.
-It defaults to ppo_plain, but can evaluate adaptive checkpoints by passing the
-matching architecture/context flags.
-"""
+"""Evaluate a trained policy on task-feasibility failure-scenario splits."""
 
 from __future__ import annotations
 
@@ -24,24 +16,17 @@ from flax import nnx
 from mujoco import mjx
 
 from smallsat_sim.controllers.rl.runners.failure_scenarios import (
-    BIN_EASY,
-    BIN_HARD,
-    BIN_MEDIUM,
-    REGIME_AUTHORITY_LIMITED,
-    REGIME_BIAS_LIMITED,
-    REGIME_MARGINAL,
-    REGIME_REDUNDANT,
-    SPLIT_EVAL_ID,
-    SPLIT_EVAL_OOD,
-    SPLIT_STRESS,
     SPLIT_TRAIN,
+    TASK_REGIME_EASY_FEASIBLE,
+    TASK_REGIME_HARD_FEASIBLE,
+    TASK_REGIME_INFEASIBLE,
+    TASK_REGIME_NEAR_INFEASIBLE,
     apply_failure_scenarios,
     apply_sampled_failure_scenario_split,
     build_failure_scenario_table,
-    scenario_authority_regime_counts,
-    scenario_bin_counts,
     scenario_selection_payload,
     scenario_split_counts,
+    scenario_task_regime_counts,
     sample_scenario_indices,
 )
 from smallsat_sim.controllers.rl.runners.runner_utils import load_trained_modules
@@ -68,25 +53,18 @@ from smallsat_sim.controllers.rl.runners.on_policy_runner import OnPolicyRunner
 from smallsat_sim.planners.oracle.oracle_rl import OraclePlannerRL
 
 
-SCENARIO_EVALS = (
-    ("train_redundant", SPLIT_TRAIN, None, REGIME_REDUNDANT),
-    ("train_marginal", SPLIT_TRAIN, None, REGIME_MARGINAL),
-    ("train_authority_limited", SPLIT_TRAIN, None, REGIME_AUTHORITY_LIMITED),
-    ("train_bias_limited", SPLIT_TRAIN, None, REGIME_BIAS_LIMITED),
-    ("train_easy", SPLIT_TRAIN, BIN_EASY, None),
-    ("train_medium", SPLIT_TRAIN, BIN_MEDIUM, None),
-    ("train_hard", SPLIT_TRAIN, BIN_HARD, None),
-    ("eval_id", SPLIT_EVAL_ID, None, None),
-    ("eval_ood", SPLIT_EVAL_OOD, None, None),
-    ("stress", SPLIT_STRESS, None, None),
+TASK_FEASIBLE_SCENARIO_EVALS = (
+    ("task_easy_feasible", SPLIT_TRAIN, TASK_REGIME_EASY_FEASIBLE),
+    ("task_hard_feasible", SPLIT_TRAIN, TASK_REGIME_HARD_FEASIBLE),
+    ("task_near_infeasible", SPLIT_TRAIN, TASK_REGIME_NEAR_INFEASIBLE),
+    ("task_infeasible_stress", SPLIT_TRAIN, TASK_REGIME_INFEASIBLE),
 )
 
-TARGETED_SCENARIO_EVALS = (
-    ("targeted_redundant", SPLIT_TRAIN, REGIME_REDUNDANT),
-    ("targeted_marginal", SPLIT_TRAIN, REGIME_MARGINAL),
-    ("targeted_authority_limited", SPLIT_TRAIN, REGIME_AUTHORITY_LIMITED),
-    ("targeted_bias_limited", SPLIT_TRAIN, REGIME_BIAS_LIMITED),
-    ("targeted_stress", SPLIT_STRESS, None),
+TARGETED_TASK_FEASIBLE_SCENARIO_EVALS = (
+    ("targeted_easy_feasible", SPLIT_TRAIN, TASK_REGIME_EASY_FEASIBLE),
+    ("targeted_hard_feasible", SPLIT_TRAIN, TASK_REGIME_HARD_FEASIBLE),
+    ("targeted_near_infeasible", SPLIT_TRAIN, TASK_REGIME_NEAR_INFEASIBLE),
+    ("targeted_infeasible_stress", SPLIT_TRAIN, TASK_REGIME_INFEASIBLE),
 )
 
 
@@ -308,14 +286,13 @@ def _scenario_filter_has_rows(
     table: dict[str, jnp.ndarray],
     *,
     split_id: int,
-    difficulty_bin: int | None = None,
-    authority_regime: int | None = None,
+    task_feasibility_regime: int | None = None,
 ) -> bool:
     mask = table["split"] == int(split_id)
-    if difficulty_bin is not None:
-        mask = jnp.logical_and(mask, table["difficulty_bin"] == int(difficulty_bin))
-    if authority_regime is not None:
-        mask = jnp.logical_and(mask, table["authority_regime"] == int(authority_regime))
+    if task_feasibility_regime is not None:
+        mask = jnp.logical_and(
+            mask, table["task_feasibility_regime"] == int(task_feasibility_regime)
+        )
     return bool(jax.device_get(jnp.any(mask)))
 
 
@@ -516,8 +493,7 @@ def _evaluate_scenario(
     *,
     scenario_name: str,
     split_id: int,
-    difficulty_bin: int | None,
-    authority_regime: int | None,
+    task_feasibility_regime: int | None,
     episodes: int,
     failure_fraction: float,
     disturbance_fraction: float,
@@ -557,8 +533,7 @@ def _evaluate_scenario(
             key=perturb_key,
             table=table,
             split_id=split_id,
-            difficulty_bin=difficulty_bin,
-            authority_regime=authority_regime,
+            task_feasibility_regime=task_feasibility_regime,
             fraction_perturbed_envs=failure_fraction,
             start_time=failure_start_time,
         )
@@ -579,8 +554,7 @@ def _evaluate_scenario(
     aggregate: dict[str, float | str | int | None] = {
         "scenario": scenario_name,
         "split_id": split_id,
-        "difficulty_bin": difficulty_bin,
-        "authority_regime": authority_regime,
+        "task_feasibility_regime": task_feasibility_regime,
         "episodes": episodes,
         "failure_fraction": failure_fraction,
         "disturbance_fraction": disturbance_fraction,
@@ -601,7 +575,7 @@ def _evaluate_targeted_scenario(
     *,
     scenario_name: str,
     split_id: int,
-    authority_regime: int | None,
+    task_feasibility_regime: int | None,
     episodes: int,
     failure_fraction: float,
     start_distance: float,
@@ -633,7 +607,7 @@ def _evaluate_targeted_scenario(
             table,
             split_id=split_id,
             count=num_perturbed,
-            authority_regime=authority_regime,
+            task_feasibility_regime=task_feasibility_regime,
         )
         apply_failure_scenarios(
             runner.env,
@@ -685,8 +659,7 @@ def _evaluate_targeted_scenario(
     aggregate: dict[str, float | str | int | None] = {
         "scenario": scenario_name,
         "split_id": split_id,
-        "difficulty_bin": None,
-        "authority_regime": authority_regime,
+        "task_feasibility_regime": task_feasibility_regime,
         "episodes": episodes,
         "failure_fraction": failure_fraction,
         "disturbance_fraction": 0.0,
@@ -751,18 +724,16 @@ def main() -> None:
     print(
         "[Scenario Eval] Table counts "
         f"splits={scenario_split_counts(table)} "
-        f"train_bins={scenario_bin_counts(table, SPLIT_TRAIN)} "
-        f"train_regimes={scenario_authority_regime_counts(table, SPLIT_TRAIN)}",
+        f"train_task_regimes={scenario_task_regime_counts(table, SPLIT_TRAIN)}",
         flush=True,
     )
 
     rows = []
-    for scenario_name, split_id, difficulty_bin, authority_regime in SCENARIO_EVALS:
+    for scenario_name, split_id, task_regime in TASK_FEASIBLE_SCENARIO_EVALS:
         if not _scenario_filter_has_rows(
             table,
             split_id=split_id,
-            difficulty_bin=difficulty_bin,
-            authority_regime=authority_regime,
+            task_feasibility_regime=task_regime,
         ):
             print(f"[Scenario Eval] Skipping {scenario_name}: no matching scenarios")
             continue
@@ -772,8 +743,7 @@ def main() -> None:
                 table,
                 scenario_name=scenario_name,
                 split_id=split_id,
-                difficulty_bin=difficulty_bin,
-                authority_regime=authority_regime,
+                task_feasibility_regime=task_regime,
                 episodes=max(1, int(args.episodes)),
                 failure_fraction=float(args.failure_fraction),
                 disturbance_fraction=float(args.disturbance_fraction),
@@ -781,11 +751,11 @@ def main() -> None:
             )
         )
     if not args.skip_targeted:
-        for scenario_name, split_id, authority_regime in TARGETED_SCENARIO_EVALS:
+        for scenario_name, split_id, task_regime in TARGETED_TASK_FEASIBLE_SCENARIO_EVALS:
             if not _scenario_filter_has_rows(
                 table,
                 split_id=split_id,
-                authority_regime=authority_regime,
+                task_feasibility_regime=task_regime,
             ):
                 print(f"[Scenario Eval] Skipping {scenario_name}: no matching scenarios")
                 continue
@@ -795,7 +765,7 @@ def main() -> None:
                     table,
                     scenario_name=scenario_name,
                     split_id=split_id,
-                    authority_regime=authority_regime,
+                    task_feasibility_regime=task_regime,
                     episodes=max(1, int(args.episodes)),
                     failure_fraction=float(args.targeted_failure_fraction),
                     start_distance=float(args.targeted_start_distance),

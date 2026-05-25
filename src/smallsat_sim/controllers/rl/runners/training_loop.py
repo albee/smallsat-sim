@@ -16,7 +16,6 @@ from smallsat_sim.controllers.rl.runners.curriculum import (
     build_authority_regime_curriculum,
     build_difficulty_curriculum,
     build_failure_curriculum,
-    build_sparse_authority_curriculum,
     uniform_failure_distribution,
 )
 from smallsat_sim.controllers.rl.runners.failure_scenarios import (
@@ -30,6 +29,7 @@ from smallsat_sim.controllers.rl.runners.failure_scenarios import (
     scenario_authority_regime_counts,
     scenario_bin_counts,
     scenario_split_counts,
+    scenario_task_regime_counts,
     save_scenario_table_csv,
 )
 from smallsat_sim.controllers.rl.runners.runner_timing import (
@@ -224,7 +224,9 @@ def learn_runner(self) -> None:
             f"training split={failure_scenario_train_split}; "
             f"train bins={scenario_bin_counts(failure_scenario_table)}; "
             f"train authority regimes="
-            f"{scenario_authority_regime_counts(failure_scenario_table, SPLIT_TRAIN)}"
+            f"{scenario_authority_regime_counts(failure_scenario_table, SPLIT_TRAIN)}; "
+            f"train task regimes="
+            f"{scenario_task_regime_counts(failure_scenario_table, SPLIT_TRAIN)}"
         )
         scenario_table_path = os.path.join(
             self.ckpt_dir,
@@ -241,24 +243,7 @@ def learn_runner(self) -> None:
     # Keep evaluation lightweight relative to training rollouts.
     eval_episodes = max(1, min(self.n_evals, 3))
 
-    sparse_active_thrusters = getattr(
-        cfg, "failure_scenario_sparse_active_thrusters", None
-    )
     if (
-        sparse_active_thrusters is not None
-        and curriculum_mode == "authority"
-        and use_controllable_failure_scenarios
-        and failure_scenario_table is not None
-    ):
-        phases, total_epochs = build_sparse_authority_curriculum(
-            train_with_failures=bool(self.env.train_with_failures),
-            fallback_epochs=nominal_epochs,
-            nominal_epochs=nominal_epochs,
-            phase_epochs=phase_epochs,
-            failure_fraction=failure_fraction,
-            disturbance_fraction=disturbance_fraction,
-        )
-    elif (
         curriculum_mode == "authority"
         and use_controllable_failure_scenarios
         and failure_scenario_table is not None
@@ -326,6 +311,12 @@ def learn_runner(self) -> None:
         current_authority_regime = (
             -1 if phase_authority_regime is None else int(phase_authority_regime)
         )
+        phase_task_feasibility_regime = phase.get("task_feasibility_regime")
+        current_task_feasibility_regime = (
+            -1
+            if phase_task_feasibility_regime is None
+            else int(phase_task_feasibility_regime)
+        )
         phase_uses_perturbations = bool(active_failures) and phase_failure_fraction > 0.0
         phase_uses_disturbances = phase_disturbance_fraction > 0.0
         phase_uses_effects = phase_uses_perturbations or phase_uses_disturbances
@@ -384,7 +375,7 @@ def learn_runner(self) -> None:
                         if (
                             use_controllable_failure_scenarios
                             and failure_scenario_table is not None
-                            and curriculum_mode == "difficulty"
+                            and curriculum_mode in ("difficulty", "authority")
                         ):
                             active_scenario_payload = apply_sampled_failure_scenario_split(
                                 self.env,
@@ -395,6 +386,7 @@ def learn_runner(self) -> None:
                                 start_time=failure_start_time,
                                 difficulty_bin=phase_difficulty_bin,
                                 authority_regime=phase_authority_regime,
+                                task_feasibility_regime=phase_task_feasibility_regime,
                             )
                         else:
                             self.env.apply_random_perturbations(
@@ -963,6 +955,7 @@ def learn_runner(self) -> None:
                     current_disturbance_fraction=float(applied_disturbance_fraction),
                     current_difficulty_bin=current_difficulty_bin,
                     current_authority_regime=current_authority_regime,
+                    current_task_feasibility_regime=current_task_feasibility_regime,
                     median_final_position_error=float(
                         median_final_pos_error_epoch
                     ),

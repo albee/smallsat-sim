@@ -29,6 +29,10 @@ REGIME_REDUNDANT = 0
 REGIME_MARGINAL = 1
 REGIME_AUTHORITY_LIMITED = 2
 REGIME_BIAS_LIMITED = 3
+TASK_REGIME_EASY_FEASIBLE = 0
+TASK_REGIME_HARD_FEASIBLE = 1
+TASK_REGIME_NEAR_INFEASIBLE = 2
+TASK_REGIME_INFEASIBLE = 3
 FAILURE_TYPE_NAMES = {
     0: "stuck_off",
     1: "stuck_on",
@@ -53,6 +57,12 @@ AUTHORITY_REGIME_NAMES = {
     REGIME_AUTHORITY_LIMITED: "authority_limited",
     REGIME_BIAS_LIMITED: "bias_limited",
 }
+TASK_REGIME_NAMES = {
+    TASK_REGIME_EASY_FEASIBLE: "easy_feasible",
+    TASK_REGIME_HARD_FEASIBLE: "hard_feasible",
+    TASK_REGIME_NEAR_INFEASIBLE: "near_infeasible",
+    TASK_REGIME_INFEASIBLE: "infeasible",
+}
 SCENARIO_FAILURE_STATUS = {
     0: PerturbationStatus.STUCK_OFF.value,
     1: PerturbationStatus.STUCK_ON.value,
@@ -61,7 +71,7 @@ SCENARIO_FAILURE_STATUS = {
     4: PerturbationStatus.THRUST_INSTABILITY.value,
 }
 _GP_SAMPLE_BANK: dict[tuple, tuple[jnp.ndarray, jnp.ndarray]] = {}
-_SCENARIO_CACHE_VERSION = "full-pose-sparse-authority-target-v1"
+_SCENARIO_CACHE_VERSION = "full-pose-task-feasible-sparse-v1"
 
 
 def _scenario_cache_dir() -> str:
@@ -370,6 +380,16 @@ def _candidate_sparse_active_sets(
     return [active for _, active in candidates[: max(1, int(max_sets))]]
 
 
+def _task_feasibility_regime(targeted_error: float, targeted_margin: float) -> int:
+    if targeted_error > 0.25 or targeted_margin < -0.20:
+        return TASK_REGIME_INFEASIBLE
+    if targeted_margin < 0.0:
+        return TASK_REGIME_NEAR_INFEASIBLE
+    if targeted_margin <= 0.30 and targeted_error <= 0.10:
+        return TASK_REGIME_HARD_FEASIBLE
+    return TASK_REGIME_EASY_FEASIBLE
+
+
 @lru_cache(maxsize=16)
 def _build_scenario_table_cached(
     mixer_t_bytes: bytes,
@@ -512,6 +532,7 @@ def _build_scenario_table_cached(
             "p10_authority_margin": np.empty((0,), dtype=np.float32),
             "mean_authority_margin": np.empty((0,), dtype=np.float32),
             "authority_regime": np.empty((0,), dtype=np.int32),
+            "task_feasibility_regime": np.empty((0,), dtype=np.int32),
             "targeted_task_error": np.empty((0,), dtype=np.float32),
             "targeted_task_margin": np.empty((0,), dtype=np.float32),
             "targeted_task_wrench": np.empty((0, 6), dtype=np.float32),
@@ -545,6 +566,7 @@ def _build_scenario_table_cached(
     p10_margin_rows: list[float] = []
     mean_margin_rows: list[float] = []
     authority_regime_rows: list[int] = []
+    task_feasibility_regime_rows: list[int] = []
     targeted_error_rows: list[float] = []
     targeted_margin_rows: list[float] = []
     targeted_wrench_rows: list[np.ndarray] = []
@@ -587,6 +609,12 @@ def _build_scenario_table_cached(
         p10_margin_rows.append(row["p10_authority_margin"])
         mean_margin_rows.append(row["mean_authority_margin"])
         authority_regime_rows.append(row["authority_regime"])
+        task_feasibility_regime_rows.append(
+            _task_feasibility_regime(
+                float(row["targeted_task_error"]),
+                float(row["targeted_task_margin"]),
+            )
+        )
         targeted_error_rows.append(row["targeted_task_error"])
         targeted_margin_rows.append(row["targeted_task_margin"])
         targeted_wrench_rows.append(row["targeted_task_wrench"])
@@ -609,6 +637,9 @@ def _build_scenario_table_cached(
         "p10_authority_margin": np.asarray(p10_margin_rows, dtype=np.float32),
         "mean_authority_margin": np.asarray(mean_margin_rows, dtype=np.float32),
         "authority_regime": np.asarray(authority_regime_rows, dtype=np.int32),
+        "task_feasibility_regime": np.asarray(
+            task_feasibility_regime_rows, dtype=np.int32
+        ),
         "targeted_task_error": np.asarray(targeted_error_rows, dtype=np.float32),
         "targeted_task_margin": np.asarray(
             targeted_margin_rows, dtype=np.float32
@@ -712,6 +743,22 @@ def scenario_authority_regime_counts(
     }
 
 
+def scenario_task_regime_counts(
+    table: dict[str, jnp.ndarray],
+    split_id: int | None = None,
+) -> dict[str, int]:
+    regimes = np.asarray(jax.device_get(table["task_feasibility_regime"]))
+    if split_id is None:
+        mask = np.ones_like(regimes, dtype=bool)
+    else:
+        split = np.asarray(jax.device_get(table["split"]))
+        mask = split == int(split_id)
+    return {
+        name: int(np.logical_and(mask, regimes == regime_id).sum())
+        for regime_id, name in TASK_REGIME_NAMES.items()
+    }
+
+
 def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     failure_types = np.asarray(jax.device_get(table["failure_types"]))
@@ -731,6 +778,9 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
     p10_margin = np.asarray(jax.device_get(table["p10_authority_margin"]))
     mean_margin = np.asarray(jax.device_get(table["mean_authority_margin"]))
     authority_regime = np.asarray(jax.device_get(table["authority_regime"]))
+    task_feasibility_regime = np.asarray(
+        jax.device_get(table["task_feasibility_regime"])
+    )
     targeted_error = np.asarray(jax.device_get(table["targeted_task_error"]))
     targeted_margin = np.asarray(jax.device_get(table["targeted_task_margin"]))
     targeted_wrench = np.asarray(jax.device_get(table["targeted_task_wrench"]))
@@ -753,6 +803,7 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
         "p10_authority_margin",
         "mean_authority_margin",
         "authority_regime",
+        "task_feasibility_regime",
         "targeted_task_error",
         "targeted_task_margin",
     ]
@@ -788,6 +839,9 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
                 "mean_authority_margin": float(mean_margin[scenario_id]),
                 "authority_regime": AUTHORITY_REGIME_NAMES.get(
                     int(authority_regime[scenario_id]), "unknown"
+                ),
+                "task_feasibility_regime": TASK_REGIME_NAMES.get(
+                    int(task_feasibility_regime[scenario_id]), "unknown"
                 ),
                 "targeted_task_error": float(targeted_error[scenario_id]),
                 "targeted_task_margin": float(targeted_margin[scenario_id]),
@@ -856,6 +910,9 @@ def scenario_selection_payload(
     regimes = np.asarray(jax.device_get(table["authority_regime"]))[
         scenario_indices_np
     ]
+    task_regimes = np.asarray(jax.device_get(table["task_feasibility_regime"]))[
+        scenario_indices_np
+    ]
     denom = float(max(scenario_indices_np.size, 1))
     return {
         f"{prefix}/num_selected": float(scenario_indices_np.size),
@@ -893,6 +950,18 @@ def scenario_selection_payload(
         f"{prefix}/regime_bias_limited_fraction": float(
             (regimes == REGIME_BIAS_LIMITED).sum() / denom
         ),
+        f"{prefix}/task_regime_easy_feasible_fraction": float(
+            (task_regimes == TASK_REGIME_EASY_FEASIBLE).sum() / denom
+        ),
+        f"{prefix}/task_regime_hard_feasible_fraction": float(
+            (task_regimes == TASK_REGIME_HARD_FEASIBLE).sum() / denom
+        ),
+        f"{prefix}/task_regime_near_infeasible_fraction": float(
+            (task_regimes == TASK_REGIME_NEAR_INFEASIBLE).sum() / denom
+        ),
+        f"{prefix}/task_regime_infeasible_fraction": float(
+            (task_regimes == TASK_REGIME_INFEASIBLE).sum() / denom
+        ),
     }
 
 
@@ -904,6 +973,7 @@ def sample_scenario_indices(
     count: int,
     difficulty_bin: int | None = None,
     authority_regime: int | None = None,
+    task_feasibility_regime: int | None = None,
 ) -> jnp.ndarray:
     split = table["split"]
     mask = split == int(split_id)
@@ -915,6 +985,11 @@ def sample_scenario_indices(
             mask, table["authority_regime"] == int(authority_regime)
         )
         mask = jnp.where(jnp.any(regime_mask), regime_mask, mask)
+    if task_feasibility_regime is not None:
+        task_mask = jnp.logical_and(
+            mask, table["task_feasibility_regime"] == int(task_feasibility_regime)
+        )
+        mask = jnp.where(jnp.any(task_mask), task_mask, mask)
     logits = jnp.where(mask, 0.0, -jnp.inf)
     sampled = jax.random.categorical(key, logits, shape=(count,))
     return sampled.astype(jnp.int32)
@@ -1109,6 +1184,7 @@ def apply_sampled_failure_scenario_split(
     start_time: float | None,
     difficulty_bin: int | None = None,
     authority_regime: int | None = None,
+    task_feasibility_regime: int | None = None,
 ) -> dict[str, float]:
     num_perturbed = int(env.num_envs * max(0.0, min(1.0, fraction_perturbed_envs)))
     if num_perturbed <= 0:
@@ -1135,6 +1211,7 @@ def apply_sampled_failure_scenario_split(
         count=num_perturbed,
         difficulty_bin=difficulty_bin,
         authority_regime=authority_regime,
+        task_feasibility_regime=task_feasibility_regime,
     )
     apply_failure_scenarios(
         env,

@@ -24,7 +24,6 @@ from smallsat_sim.controllers.rl.runners.curriculum import (
     build_authority_regime_curriculum,
     build_difficulty_curriculum,
     build_failure_curriculum,
-    build_sparse_authority_curriculum,
     uniform_failure_distribution,
 )
 from smallsat_sim.controllers.rl.runners.failure_scenarios import (
@@ -146,24 +145,7 @@ def train_adaptation_module_on_policy_runner(self) -> None:
         )
         precompute_scenario_gp_samples(self.env, self._take_keys())
 
-    sparse_active_thrusters = getattr(
-        cfg, "failure_scenario_sparse_active_thrusters", None
-    )
     if (
-        sparse_active_thrusters is not None
-        and curriculum_mode == "authority"
-        and use_controllable_failure_scenarios
-        and failure_scenario_table is not None
-    ):
-        curriculum_phases, curriculum_total_epochs = build_sparse_authority_curriculum(
-            train_with_failures=bool(self.env.train_with_failures),
-            fallback_epochs=int(self.epochs),
-            nominal_epochs=int(cfg.curriculum_nominal_epochs),
-            phase_epochs=int(cfg.curriculum_phase_epochs),
-            failure_fraction=float(cfg.curriculum_failure_fraction),
-            disturbance_fraction=float(cfg.curriculum_disturbance_fraction),
-        )
-    elif (
         curriculum_mode == "authority"
         and use_controllable_failure_scenarios
         and failure_scenario_table is not None
@@ -228,6 +210,7 @@ def train_adaptation_module_on_policy_runner(self) -> None:
         phase_disturbance_fraction = float(phase["disturbance_fraction"])
         phase_difficulty_bin = phase.get("difficulty_bin")
         phase_authority_regime = phase.get("authority_regime")
+        phase_task_feasibility_regime = phase.get("task_feasibility_regime")
         phase_distribution = uniform_failure_distribution(
             list(phase["active_failures"])
         )
@@ -262,6 +245,7 @@ def train_adaptation_module_on_policy_runner(self) -> None:
                     start_time=failure_start_time,
                     difficulty_bin=phase_difficulty_bin,
                     authority_regime=phase_authority_regime,
+                    task_feasibility_regime=phase_task_feasibility_regime,
                 )
             else:
                 self.env.apply_random_perturbations(

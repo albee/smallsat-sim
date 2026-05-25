@@ -20,8 +20,14 @@ from smallsat_sim.controllers.rl.runners.failure_scenarios import (
     REGIME_REDUNDANT,
     SPLIT_NAMES,
     SPLIT_TRAIN,
+    TASK_REGIME_NAMES,
+    TASK_REGIME_EASY_FEASIBLE,
+    TASK_REGIME_HARD_FEASIBLE,
+    TASK_REGIME_INFEASIBLE,
+    TASK_REGIME_NEAR_INFEASIBLE,
     build_failure_scenario_table,
     scenario_authority_regime_counts,
+    scenario_task_regime_counts,
 )
 
 
@@ -30,6 +36,14 @@ REGIME_BY_NAME = {
     "marginal": REGIME_MARGINAL,
     "authority_limited": REGIME_AUTHORITY_LIMITED,
     "bias_limited": REGIME_BIAS_LIMITED,
+}
+
+TASK_REGIME_BY_NAME = {
+    "any": None,
+    "easy_feasible": TASK_REGIME_EASY_FEASIBLE,
+    "hard_feasible": TASK_REGIME_HARD_FEASIBLE,
+    "near_infeasible": TASK_REGIME_NEAR_INFEASIBLE,
+    "infeasible": TASK_REGIME_INFEASIBLE,
 }
 
 
@@ -43,6 +57,11 @@ def _parse_args() -> argparse.Namespace:
         "--regime",
         choices=tuple(REGIME_BY_NAME),
         default="authority_limited",
+    )
+    parser.add_argument(
+        "--task-regime",
+        choices=tuple(TASK_REGIME_BY_NAME),
+        default="any",
     )
     parser.add_argument("--split", type=int, default=SPLIT_TRAIN)
     parser.add_argument("--limit", type=int, default=40)
@@ -108,6 +127,12 @@ def main() -> None:
         arrays["split"] == int(args.split),
         arrays["authority_regime"] == int(regime_id),
     )
+    task_regime_id = TASK_REGIME_BY_NAME[args.task_regime]
+    if task_regime_id is not None:
+        mask = np.logical_and(
+            mask,
+            arrays["task_feasibility_regime"] == int(task_regime_id),
+        )
     indices = np.nonzero(mask)[0]
     order = np.argsort(arrays[args.sort_by][indices])
     if args.descending:
@@ -117,8 +142,13 @@ def main() -> None:
     print("[Authority Scenario Table]")
     print(f"split counts by regime: {scenario_authority_regime_counts(table, args.split)}")
     print(
+        f"split counts by task feasibility: "
+        f"{scenario_task_regime_counts(table, args.split)}"
+    )
+    print(
         f"selected regime={args.regime} split={SPLIT_NAMES.get(args.split, args.split)} "
-        f"count={int(mask.sum())} showing={len(indices)} sort_by={args.sort_by}"
+        f"task_regime={args.task_regime} count={int(mask.sum())} "
+        f"showing={len(indices)} sort_by={args.sort_by}"
     )
     print()
 
@@ -134,6 +164,7 @@ def main() -> None:
         print(
             f"id={scenario_id:04d} "
             f"regime={AUTHORITY_REGIME_NAMES[int(arrays['authority_regime'][scenario_id])]} "
+            f"task_regime={TASK_REGIME_NAMES[int(arrays['task_feasibility_regime'][scenario_id])]} "
             f"split={SPLIT_NAMES[int(arrays['split'][scenario_id])]} "
             f"rank={int(arrays['rank'][scenario_id])} "
             f"min_sv={arrays['min_singular_value'][scenario_id]:.4f} "

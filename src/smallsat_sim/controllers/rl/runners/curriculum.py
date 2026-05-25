@@ -3,10 +3,8 @@ from __future__ import annotations
 import jax.numpy as jnp
 
 from smallsat_sim.controllers.rl.runners.failure_scenarios import (
-    REGIME_AUTHORITY_LIMITED,
-    REGIME_BIAS_LIMITED,
-    REGIME_MARGINAL,
-    REGIME_REDUNDANT,
+    TASK_REGIME_EASY_FEASIBLE,
+    TASK_REGIME_HARD_FEASIBLE,
 )
 
 # VecEnv distribution order:
@@ -175,10 +173,11 @@ def build_authority_regime_curriculum(
     disturbance_fraction: float = 0.1,
 ) -> tuple[list[dict], int]:
     """
-    Build a curriculum over control-authority regimes.
+    Build a curriculum over task-feasibility regimes.
 
-    Regimes are assigned in `failure_scenarios.py` from bounded wrench
-    allocation margins, not from failure count or hand-picked failure type.
+    The scenario table may be dense or sparse. This curriculum does not care:
+    it samples scenarios by whether the targeted full-pose task wrench is easy
+    feasible or hard feasible under the damaged actuator bounds.
     """
     if not train_with_failures:
         return build_failure_curriculum(
@@ -202,44 +201,37 @@ def build_authority_regime_curriculum(
             "authority_regime": None,
         },
         {
-            "name": "authority_redundant",
+            "name": "easy_feasible",
             "epochs": int(phase_epochs),
             "active_failures": list(FAILURE_ORDER),
             "failure_fraction": float(failure_fraction),
             "disturbance_fraction": 0.0,
             "new_failure": None,
             "difficulty_bin": None,
-            "authority_regime": REGIME_REDUNDANT,
+            "authority_regime": None,
+            "task_feasibility_regime": TASK_REGIME_EASY_FEASIBLE,
         },
         {
-            "name": "authority_marginal",
+            "name": "hard_feasible",
             "epochs": int(phase_epochs),
             "active_failures": list(FAILURE_ORDER),
             "failure_fraction": float(failure_fraction),
             "disturbance_fraction": 0.0,
             "new_failure": None,
             "difficulty_bin": None,
-            "authority_regime": REGIME_MARGINAL,
+            "authority_regime": None,
+            "task_feasibility_regime": TASK_REGIME_HARD_FEASIBLE,
         },
         {
-            "name": "authority_limited",
-            "epochs": int(phase_epochs),
-            "active_failures": list(FAILURE_ORDER),
-            "failure_fraction": float(failure_fraction),
-            "disturbance_fraction": 0.0,
-            "new_failure": None,
-            "difficulty_bin": None,
-            "authority_regime": REGIME_AUTHORITY_LIMITED,
-        },
-        {
-            "name": "bias_limited_disturbances",
+            "name": "hard_feasible_disturbances",
             "epochs": int(phase_epochs),
             "active_failures": list(FAILURE_ORDER),
             "failure_fraction": float(failure_fraction),
             "disturbance_fraction": float(disturbance_fraction),
             "new_failure": None,
             "difficulty_bin": None,
-            "authority_regime": REGIME_BIAS_LIMITED,
+            "authority_regime": None,
+            "task_feasibility_regime": TASK_REGIME_HARD_FEASIBLE,
         },
     ]
     total_epochs = sum(int(phase["epochs"]) for phase in phases)
@@ -256,54 +248,16 @@ def build_sparse_authority_curriculum(
     disturbance_fraction: float = 0.1,
 ) -> tuple[list[dict], int]:
     """
-    Curriculum for sparse-authority scenario tables.
+    Backward-compatible alias.
 
-    Sparse tables intentionally remove actuator redundancy before adding extra
-    failures, so they usually contain authority-limited and bias-limited rows
-    rather than redundant/marginal rows. Training therefore focuses on the two
-    regimes where adaptation is expected to matter.
+    Sparse is only a scenario-table generation option. The curriculum itself is
+    task-feasibility based for both dense and sparse tables.
     """
-    if not train_with_failures:
-        return build_failure_curriculum(
-            train_with_failures=False,
-            fallback_epochs=fallback_epochs,
-            nominal_epochs=nominal_epochs,
-            phase_epochs=phase_epochs,
-            failure_fraction=failure_fraction,
-            disturbance_fraction=disturbance_fraction,
-        )
-
-    phases = [
-        {
-            "name": "nominal",
-            "epochs": int(nominal_epochs),
-            "active_failures": [],
-            "failure_fraction": 0.0,
-            "disturbance_fraction": 0.0,
-            "new_failure": None,
-            "difficulty_bin": None,
-            "authority_regime": None,
-        },
-        {
-            "name": "sparse_authority_limited",
-            "epochs": int(phase_epochs),
-            "active_failures": list(FAILURE_ORDER),
-            "failure_fraction": float(failure_fraction),
-            "disturbance_fraction": 0.0,
-            "new_failure": None,
-            "difficulty_bin": None,
-            "authority_regime": REGIME_AUTHORITY_LIMITED,
-        },
-        {
-            "name": "sparse_bias_limited_disturbances",
-            "epochs": int(phase_epochs),
-            "active_failures": list(FAILURE_ORDER),
-            "failure_fraction": float(failure_fraction),
-            "disturbance_fraction": float(disturbance_fraction),
-            "new_failure": None,
-            "difficulty_bin": None,
-            "authority_regime": REGIME_BIAS_LIMITED,
-        },
-    ]
-    total_epochs = sum(int(phase["epochs"]) for phase in phases)
-    return phases, total_epochs
+    return build_authority_regime_curriculum(
+        train_with_failures=train_with_failures,
+        fallback_epochs=fallback_epochs,
+        nominal_epochs=nominal_epochs,
+        phase_epochs=phase_epochs,
+        failure_fraction=failure_fraction,
+        disturbance_fraction=disturbance_fraction,
+    )

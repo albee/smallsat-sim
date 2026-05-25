@@ -68,10 +68,14 @@ export SMALLSAT_ROLLOUT_BACKEND="${SMALLSAT_ROLLOUT_BACKEND:-freeflyer}"
 echo "Using RL rollout backend: ${SMALLSAT_ROLLOUT_BACKEND}"
 
 # The focused paper suite trains 600 nominal epochs, then advances through
-# control-theoretic authority regimes: redundant, marginal, authority-limited,
-# and bias-limited/disturbance. The older difficulty and failure-type curricula
-# remain available by setting failure_curriculum_mode to "difficulty" or "type"
-# in src/smallsat_sim/envs/astrobee_rl/cfg/config.py.
+# task-feasibility regimes: easy_feasible as a sanity condition, hard_feasible
+# as the main challenge, and hard_feasible with disturbances. Sparse-authority
+# scripts only change how the scenario table is generated; they use the same
+# task-feasibility curriculum. Near-infeasible and infeasible rows are
+# evaluation/stress diagnostics.
+# The older difficulty and failure-type curricula remain available by setting
+# failure_curriculum_mode to "difficulty" or "type" in
+# src/smallsat_sim/envs/astrobee_rl/cfg/config.py.
 
 # Deployment runs compile a separate controller/deployment graph and execute many
 # stress-test scenarios. Skip them by default for training/tuning sweeps.
@@ -103,8 +107,8 @@ fi
 #   RUN_SPARSE_AUTHORITY=1 ./train_test_all.sh
 #
 # The scenario evaluator defaults to ppo_plain. To evaluate an adaptive
-# checkpoint on the same generic and targeted authority-regime/eval/stress
-# splits, run it directly, e.g.:
+# checkpoint on the same generic, targeted, and task-feasibility splits, run it
+# directly, e.g.:
 #   python experiments/rl_benchmarking/evaluate_scenario_splits.py --headless --wandb \
 #     --run-name ppo_adaptive_sim_residual \
 #     --use-adaptive-approach --adaptive-context-mode residual --phase 1
