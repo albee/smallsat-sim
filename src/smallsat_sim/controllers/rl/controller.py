@@ -87,9 +87,15 @@ class RLController(object):
     ) -> None:
         """
         Control the agent using the previously trained RL controller.
-        If phase == 1, use extrinsics computed in sim.
-        If phase == 2, use extrinsics computed by adaptation module.
+
+        Adaptive deployment uses phase 2: the policy context is produced by the
+        adaptation module from measured state/requested-command history.
         """
+        if self.env.use_adaptive_approach and int(phase) != 2:
+            raise ValueError(
+                "Adaptive deployment must use phase=2. Phase 1 consumes privileged "
+                "simulator force/wrench labels and is not realistic at runtime."
+            )
         if not test_pd:
             # Check if trained actor, critic and adaptation modules are available and load them
             file_path = os.path.join(self.ckpt_dir, self.ckpt_filename)

@@ -16,6 +16,8 @@ from flax import nnx
 from mujoco import mjx
 
 from smallsat_sim.controllers.rl.runners.failure_scenarios import (
+    BIN_NAMES,
+    FAILURE_TYPE_NAMES,
     SPLIT_TRAIN,
     TASK_REGIME_EASY_FEASIBLE,
     TASK_REGIME_HARD_FEASIBLE,
@@ -28,6 +30,7 @@ from smallsat_sim.controllers.rl.runners.failure_scenarios import (
     scenario_split_counts,
     scenario_task_regime_counts,
     sample_scenario_indices,
+    task_wrench_from_state_features,
     targeted_pose_errors_from_scenarios,
 )
 from smallsat_sim.controllers.rl.runners.runner_utils import load_trained_modules
@@ -45,6 +48,7 @@ from smallsat_sim.controllers.rl.runners.adaptive_context import (
 )
 from smallsat_sim.envs.astrobee_rl.env import AstrobeeEnvVectorized
 from smallsat_sim.envs.vec_env import (
+    _compute_state_features,
     _compute_freeflyer_state_features,
     freeflyer_reset_masked,
     vecenv_step_freeflyer,
@@ -77,8 +81,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--video", action="store_true")
     parser.add_argument("--num-envs", type=int, default=None)
     parser.add_argument("--episodes", type=int, default=3)
-    parser.add_argument("--sparse-active-thrusters", type=int, default=None)
-    parser.add_argument("--sparse-max-active-sets", type=int, default=None)
     parser.add_argument("--failure-fraction", type=float, default=0.5)
     parser.add_argument("--targeted-failure-fraction", type=float, default=1.0)
     parser.add_argument("--targeted-start-distance", type=float, default=2.0)
@@ -92,11 +94,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--phase",
         type=int,
-        default=1,
+        default=2,
         choices=(1, 2),
         help=(
-            "Adaptive evaluation phase. Phase 1 uses privileged/oracle context "
-            "from the simulator; phase 2 uses a trained adaptation module."
+            "Adaptive evaluation phase. Use phase 2 for deployable AM inputs. "
+            "Phase 1 is rejected for adaptive runs because it uses privileged labels."
         ),
     )
     parser.add_argument("--use-adaptive-approach", action="store_true")
@@ -159,6 +161,11 @@ def _load_modules(runner: OnPolicyRunner, checkpoint: str | None, phase: int) ->
         nnx.update(runner.agent.critic, critic_state)
     else:
         nnx.update(runner.agent.critic.v_net, critic_state.v_net)
+    if runner.env.use_adaptive_approach and phase != 2:
+        raise ValueError(
+            "Adaptive scenario evaluation must use phase=2. Phase 1 consumes "
+            "privileged simulator force/wrench labels."
+        )
     if runner.env.use_adaptive_approach and phase == 2:
         am_path = os.path.join(runner.ckpt_dir, runner.adaptation_module_file_name)
         if not os.path.isfile(am_path):
@@ -170,12 +177,6 @@ def _load_modules(runner: OnPolicyRunner, checkpoint: str | None, phase: int) ->
             runner.ckpt_dir, runner.adaptation_module_file_name
         )["am_model"]
         nnx.update(runner.am, am_state)
-    elif runner.env.use_adaptive_approach and phase == 1:
-        print(
-            "[Scenario Eval] Adaptive phase=1: using privileged simulator context, "
-            "not a learned adaptation module.",
-            flush=True,
-        )
     return ckpt_name
 
 
@@ -252,11 +253,19 @@ def _scenario_filter_has_rows(
     *,
     split_id: int,
     task_feasibility_regime: int | None = None,
+    difficulty_bin: int | None = None,
+    failure_type: int | None = None,
 ) -> bool:
     mask = table["split"] == int(split_id)
     if task_feasibility_regime is not None:
         mask = jnp.logical_and(
             mask, table["task_feasibility_regime"] == int(task_feasibility_regime)
+        )
+    if difficulty_bin is not None:
+        mask = jnp.logical_and(mask, table["difficulty_bin"] == int(difficulty_bin))
+    if failure_type is not None:
+        mask = jnp.logical_and(
+            mask, jnp.any(table["failure_types"] == int(failure_type), axis=1)
         )
     return bool(jax.device_get(jnp.any(mask)))
 
@@ -463,6 +472,8 @@ def _evaluate_scenario(
     failure_fraction: float,
     disturbance_fraction: float,
     phase: int,
+    difficulty_bin: int | None = None,
+    failure_type: int | None = None,
 ) -> dict[str, float | str | int | None]:
     cfg = runner.env.env_cfg.control.RL
     failure_start_min = float(getattr(cfg, "curriculum_failure_start_time_min", 0.0))
@@ -493,12 +504,29 @@ def _evaluate_scenario(
         failure_start_time = _sample_start_time(
             failure_start_key, failure_start_min, failure_start_max
         )
+        task_wrenches = None
+        if bool(getattr(cfg, "use_task_conditioned_failure_sampling", True)):
+            states = _compute_state_features(
+                runner.env.state_struct.mjx_batch,
+                runner.reference_point,
+            )
+            pd_gains = runner.env.env_cfg.control.PD.gains
+            task_wrenches = task_wrench_from_state_features(
+                states,
+                kp_pos=float(getattr(pd_gains, "Kp_x", 0.2)),
+                kd_pos=float(getattr(pd_gains, "Kd_x", 1.0)),
+                kp_att=float(getattr(pd_gains, "Kp_q", 3.0)),
+                kd_att=float(getattr(pd_gains, "Kd_q", 5.0)),
+            )
         scenario_payload = apply_sampled_failure_scenario_split(
             runner.env,
             key=perturb_key,
             table=table,
             split_id=split_id,
+            difficulty_bin=difficulty_bin,
             task_feasibility_regime=task_feasibility_regime,
+            failure_type=failure_type,
+            task_wrenches=task_wrenches,
             fraction_perturbed_envs=failure_fraction,
             start_time=failure_start_time,
         )
@@ -520,6 +548,8 @@ def _evaluate_scenario(
         "scenario": scenario_name,
         "split_id": split_id,
         "task_feasibility_regime": task_feasibility_regime,
+        "difficulty_bin": difficulty_bin,
+        "failure_type": failure_type,
         "episodes": episodes,
         "failure_fraction": failure_fraction,
         "disturbance_fraction": disturbance_fraction,
@@ -655,8 +685,6 @@ def main() -> None:
         am_predict_tracking_weight=args.predict_tracking_weight,
         am_predict_authority_weight=args.predict_authority_weight,
         num_envs=args.num_envs,
-        sparse_active_thrusters=args.sparse_active_thrusters,
-        sparse_max_active_sets=args.sparse_max_active_sets,
     )
     planner = OraclePlannerRL(env, radius=0.0)
     runner = OnPolicyRunner(env, planner)
@@ -678,12 +706,6 @@ def main() -> None:
         stress_quantile=float(getattr(cfg, "failure_scenario_stress_quantile", 0.9)),
         mild_effectiveness=float(
             getattr(cfg, "failure_scenario_mild_effectiveness", 0.5)
-        ),
-        sparse_active_thrusters=getattr(
-            cfg, "failure_scenario_sparse_active_thrusters", None
-        ),
-        sparse_max_active_sets=int(
-            getattr(cfg, "failure_scenario_sparse_max_active_sets", 32)
         ),
     )
     print(
@@ -709,6 +731,52 @@ def main() -> None:
                 scenario_name=scenario_name,
                 split_id=split_id,
                 task_feasibility_regime=task_regime,
+                episodes=max(1, int(args.episodes)),
+                failure_fraction=float(args.failure_fraction),
+                disturbance_fraction=float(args.disturbance_fraction),
+                phase=int(args.phase),
+            )
+        )
+    for difficulty_bin, difficulty_name in BIN_NAMES.items():
+        scenario_name = f"difficulty_{difficulty_name}"
+        if not _scenario_filter_has_rows(
+            table,
+            split_id=SPLIT_TRAIN,
+            difficulty_bin=difficulty_bin,
+        ):
+            print(f"[Scenario Eval] Skipping {scenario_name}: no matching scenarios")
+            continue
+        rows.append(
+            _evaluate_scenario(
+                runner,
+                table,
+                scenario_name=scenario_name,
+                split_id=SPLIT_TRAIN,
+                task_feasibility_regime=None,
+                difficulty_bin=difficulty_bin,
+                episodes=max(1, int(args.episodes)),
+                failure_fraction=float(args.failure_fraction),
+                disturbance_fraction=float(args.disturbance_fraction),
+                phase=int(args.phase),
+            )
+        )
+    for failure_type, failure_name in FAILURE_TYPE_NAMES.items():
+        scenario_name = f"failure_{failure_name}"
+        if not _scenario_filter_has_rows(
+            table,
+            split_id=SPLIT_TRAIN,
+            failure_type=failure_type,
+        ):
+            print(f"[Scenario Eval] Skipping {scenario_name}: no matching scenarios")
+            continue
+        rows.append(
+            _evaluate_scenario(
+                runner,
+                table,
+                scenario_name=scenario_name,
+                split_id=SPLIT_TRAIN,
+                task_feasibility_regime=None,
+                failure_type=failure_type,
                 episodes=max(1, int(args.episodes)),
                 failure_fraction=float(args.failure_fraction),
                 disturbance_fraction=float(args.disturbance_fraction),

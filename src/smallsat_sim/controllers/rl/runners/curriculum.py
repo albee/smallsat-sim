@@ -215,27 +215,3 @@ def build_authority_regime_curriculum(
     total_epochs = sum(int(phase["epochs"]) for phase in phases)
     return phases, total_epochs
 
-
-def build_sparse_authority_curriculum(
-    *,
-    train_with_failures: bool,
-    fallback_epochs: int,
-    nominal_epochs: int = 100,
-    phase_epochs: int = 50,
-    failure_fraction: float = 0.5,
-    disturbance_fraction: float = 0.1,
-) -> tuple[list[dict], int]:
-    """
-    Backward-compatible alias.
-
-    Sparse is only a scenario-table generation option. The curriculum itself is
-    task-feasibility based for both dense and sparse tables.
-    """
-    return build_authority_regime_curriculum(
-        train_with_failures=train_with_failures,
-        fallback_epochs=fallback_epochs,
-        nominal_epochs=nominal_epochs,
-        phase_epochs=phase_epochs,
-        failure_fraction=failure_fraction,
-        disturbance_fraction=disturbance_fraction,
-    )

@@ -37,12 +37,6 @@ def build_checkpoint_file_names(env) -> dict[str, str]:
         "full_pose",
     )
     task_tag = "full_pose" if success_criterion == "full_pose" else None
-    sparse_active = getattr(
-        env.env_cfg.control.RL,
-        "failure_scenario_sparse_active_thrusters",
-        None,
-    )
-    sparse_tag = f"sparse{int(sparse_active)}" if sparse_active is not None else None
     curriculum_mode = str(
         getattr(env.env_cfg.control.RL, "failure_curriculum_mode", "type")
     )
@@ -66,7 +60,6 @@ def build_checkpoint_file_names(env) -> dict[str, str]:
             context_version,
             pretrained,
             task_tag,
-            sparse_tag,
             task_feasible_tag,
             failure_fraction_tag,
             nominal,

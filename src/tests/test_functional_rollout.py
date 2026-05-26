@@ -7,6 +7,7 @@ import pytest
 
 from smallsat_sim.controllers.rl.runners import rollout as ru
 from smallsat_sim.controllers.rl.runners.adaptive_context import (
+    build_adaptation_query,
     build_adaptive_context,
     estimate_thruster_effectiveness,
 )
@@ -555,6 +556,41 @@ def test_update_history_buffer_reports_full_before_reset() -> None:
     assert jnp.allclose(history, jnp.zeros_like(history))
     assert jnp.allclose(counts, jnp.zeros_like(counts))
     assert jnp.allclose(new_extra.history, jnp.zeros_like(new_extra.history))
+
+
+def test_am_history_contains_only_state_and_requested_action() -> None:
+    extra = ru.AdaptationRolloutExtra(
+        history=jnp.zeros((1, 3, 4), dtype=jnp.float32),
+        counts=jnp.array([0], dtype=jnp.int32),
+    )
+    prev_states = jnp.array([[1.0, 2.0]], dtype=jnp.float32)
+    requested_actions = jnp.array([[3.0, 4.0]], dtype=jnp.float32)
+
+    history, _, _, _ = ru.update_history_buffer(
+        carry_extra=extra,
+        prev_states=prev_states,
+        actions=requested_actions,
+        reset_flag=jnp.array([False]),
+        history_len=3,
+    )
+
+    assert jnp.allclose(
+        history[:, -1, :],
+        jnp.concatenate([prev_states, requested_actions], axis=1),
+    )
+
+
+def test_am_query_contains_only_state_and_requested_wrench() -> None:
+    states = jnp.array([[1.0, 2.0]], dtype=jnp.float32)
+    requested_wrench = jnp.array([[3.0, 4.0, 5.0]], dtype=jnp.float32)
+
+    query = build_adaptation_query(
+        states=states,
+        desired_wrench=requested_wrench,
+        use_task_conditioned_am=True,
+    )
+
+    assert jnp.allclose(query, jnp.concatenate([states, requested_wrench], axis=1))
 
 
 def test_structured_adaptive_context_includes_bias_and_authority() -> None:

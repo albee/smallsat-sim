@@ -4,6 +4,12 @@ import jax
 import jax.numpy as jnp
 
 from smallsat_sim.envs.disturbances import DisturbanceState, DisturbanceStatus
+from smallsat_sim.controllers.rl.runners.failure_scenarios import (
+    SPLIT_TRAIN,
+    TASK_REGIME_HARD_FEASIBLE,
+    sample_task_conditioned_scenario_indices,
+    task_wrench_from_state_features,
+)
 from smallsat_sim.envs.perturbations_rl import Perturbation, PerturbationStatus
 from smallsat_sim.envs.vec_env import VecEnv
 
@@ -215,3 +221,58 @@ def test_random_failures_forward_start_times() -> None:
     )
 
     assert disturbance_recorder.start_times[-1] == 7.25
+
+
+def test_task_wrench_from_state_uses_full_pose_and_rates() -> None:
+    states = jnp.array(
+        [[1.0, -2.0, 0.5, 0.1, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, -0.8, 0.9]],
+        dtype=jnp.float32,
+    )
+
+    wrench = task_wrench_from_state_features(
+        states,
+        kp_pos=2.0,
+        kd_pos=3.0,
+        kp_att=5.0,
+        kd_att=7.0,
+    )
+
+    expected = jnp.array(
+        [[-3.2, 5.5, -2.8, -4.4, 4.6, -4.8]],
+        dtype=jnp.float32,
+    )
+    assert jnp.allclose(wrench, expected)
+
+
+def test_task_conditioned_scenario_sampling_prefers_aligned_weak_direction() -> None:
+    table = {
+        "split": jnp.array([SPLIT_TRAIN, SPLIT_TRAIN], dtype=jnp.int32),
+        "difficulty_bin": jnp.array([2, 2], dtype=jnp.int32),
+        "authority_regime": jnp.array([1, 1], dtype=jnp.int32),
+        "task_feasibility_regime": jnp.array(
+            [TASK_REGIME_HARD_FEASIBLE, TASK_REGIME_HARD_FEASIBLE],
+            dtype=jnp.int32,
+        ),
+        "targeted_task_wrench": jnp.array(
+            [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0, 0.0, 0.0]],
+            dtype=jnp.float32,
+        ),
+        "targeted_task_direction": jnp.array(
+            [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0, 0.0, 0.0]],
+            dtype=jnp.float32,
+        ),
+    }
+    task_wrenches = jnp.tile(
+        jnp.array([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]], dtype=jnp.float32),
+        (512, 1),
+    )
+
+    sampled = sample_task_conditioned_scenario_indices(
+        jax.random.PRNGKey(123),
+        table,
+        split_id=SPLIT_TRAIN,
+        task_wrenches=task_wrenches,
+        alignment_temperature=12.0,
+    )
+
+    assert float(jnp.mean(sampled == 0)) > 0.95

@@ -676,12 +676,10 @@ def main():
         "nn_controller_adaptive",
         "ppo_nominal",
         "ppo_plain",
-        "ppo_adaptive_sim",
         "ppo_adaptive_cnn",
         "ppo_adaptive_transformer",
         "pretrained_ppo_nominal",
         "pretrained_ppo",
-        "pretrained_ppo_adaptive_sim",
         "pretrained_ppo_adaptive_cnn",
         "pretrained_ppo_adaptive_transformer",
     ]:

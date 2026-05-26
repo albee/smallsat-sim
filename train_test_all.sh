@@ -3,13 +3,11 @@
 core_scripts=(
   "experiments/rl_benchmarking/ppo_nominal.py"
   "experiments/rl_benchmarking/ppo_plain.py"
-  "experiments/rl_benchmarking/ppo_adaptive_sim_residual.py"
   "experiments/rl_benchmarking/ppo_adaptive_transformer_residual.py"
   "experiments/rl_benchmarking/ppo_adaptive_cross_attention_task_predictive.py"
 )
 
 optional_control_scripts=(
-  "experiments/rl_benchmarking/ppo_adaptive_sim_structured.py"
   "experiments/rl_benchmarking/ppo_adaptive_cnn_residual.py"
   "experiments/rl_benchmarking/ppo_adaptive_cnn_structured.py"
   "experiments/rl_benchmarking/ppo_adaptive_transformer_residual_task_predictive.py"
@@ -17,12 +15,6 @@ optional_control_scripts=(
   "experiments/rl_benchmarking/ppo_adaptive_transformer_task_predictive.py"
   "experiments/rl_benchmarking/ppo_adaptive_cross_attention_structured.py"
   "experiments/rl_benchmarking/ppo_adaptive_cross_attention_residual_task_predictive.py"
-)
-
-sparse_authority_scripts=(
-  "experiments/rl_benchmarking/ppo_plain_sparse.py"
-  "experiments/rl_benchmarking/ppo_adaptive_sim_structured_sparse.py"
-  "experiments/rl_benchmarking/ppo_adaptive_cross_attention_task_predictive_sparse.py"
 )
 
 diagnostic_scripts=(
@@ -41,16 +33,11 @@ classic_control_scripts=(
 
 if [ "${RUN_ONLY_SCENARIO_SPLIT_EVAL:-0}" = "1" ]; then
   scripts=("${scenario_split_eval_scripts[@]}")
-elif [ "${RUN_ONLY_SPARSE_AUTHORITY:-0}" = "1" ]; then
-  scripts=("${sparse_authority_scripts[@]}")
 else
   scripts=("${core_scripts[@]}")
 fi
 if [ "${RUN_OPTIONAL_CONTROLS:-0}" = "1" ]; then
   scripts+=("${optional_control_scripts[@]}")
-fi
-if [ "${RUN_SPARSE_AUTHORITY:-0}" = "1" ] && [ "${RUN_ONLY_SPARSE_AUTHORITY:-0}" != "1" ]; then
-  scripts+=("${sparse_authority_scripts[@]}")
 fi
 if [ "${RUN_CLASSIC_CONTROLS:-0}" = "1" ]; then
   scripts+=("${classic_control_scripts[@]}")
@@ -71,9 +58,10 @@ echo "Using RL rollout backend: ${SMALLSAT_ROLLOUT_BACKEND}"
 
 # The focused paper suite trains 600 clean nominal epochs, then fine-tunes for
 # 200 epochs on a 50/50 mixture of clean envs and task-aligned hard_feasible
-# actuator failures. Sparse-authority scripts only change how the scenario table
-# is generated; they use the same task-feasibility curriculum. easy_feasible,
-# near-infeasible, and infeasible rows are evaluation/stress diagnostics.
+# actuator failures. Sparse effective-authority cases are sampled from the
+# same task-conditioned failure library rather than through separate sparse
+# experiment scripts. easy_feasible, near-infeasible, and infeasible rows are
+# evaluation/stress diagnostics.
 # The older difficulty and failure-type curricula remain available by setting
 # failure_curriculum_mode to "difficulty" or "type" in
 # src/smallsat_sim/envs/astrobee_rl/cfg/config.py.
@@ -105,24 +93,16 @@ fi
 #   RUN_COUNTERFACTUAL_PROBE=1 ./train_test_all.sh
 #   RUN_SCENARIO_SPLIT_EVAL=1 ./train_test_all.sh
 #   RUN_ONLY_SCENARIO_SPLIT_EVAL=1 ./train_test_all.sh
-#   RUN_SPARSE_AUTHORITY=1 ./train_test_all.sh
-#   RUN_ONLY_SPARSE_AUTHORITY=1 ./train_test_all.sh
 #
 # The scenario evaluator defaults to ppo_plain. To evaluate an adaptive
 # checkpoint on the same generic, targeted, and task-feasibility splits, run it
 # directly, e.g.:
-#   python experiments/rl_benchmarking/evaluate_scenario_splits.py --headless --wandb \
-#     --run-name ppo_adaptive_sim_residual \
-#     --use-adaptive-approach --adaptive-context-mode residual --phase 1
 #   python experiments/rl_benchmarking/evaluate_scenario_splits.py --headless --wandb \
 #     --run-name ppo_adaptive_cross_attention_task_predictive \
 #     --use-adaptive-approach --am-architecture transformer_cross_attention \
 #     --adaptive-context-mode structured --task-conditioned --phase 2 \
 #     --predict-delta-weight 0.1 --predict-tracking-weight 0.1 \
 #     --predict-authority-weight 0.1
-#   python experiments/rl_benchmarking/evaluate_scenario_splits.py --headless --wandb \
-#     --run-name ppo_plain_sparse --sparse-active-thrusters 8 \
-#     --sparse-max-active-sets 8 --failure-fraction 0.5
 # Targeted rows start each scenario from the position/attitude error that
 # requires its weakest force/torque authority with failures active from reset;
 # use --skip-targeted only for quick smoke tests.

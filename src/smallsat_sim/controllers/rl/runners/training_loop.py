@@ -5,7 +5,6 @@ from collections.abc import Mapping
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from mujoco import mjx
 import wandb
 
 from smallsat_sim.controllers.rl.runners.rollout import (
@@ -33,7 +32,7 @@ from smallsat_sim.controllers.rl.runners.failure_scenarios import (
     scenario_split_counts,
     scenario_task_regime_counts,
     save_scenario_table_csv,
-    targeted_pose_errors_from_scenarios,
+    task_wrench_from_state_features,
 )
 from smallsat_sim.controllers.rl.runners.runner_timing import (
     EpochTiming,
@@ -63,7 +62,6 @@ from smallsat_sim.envs.vec_env import (
     vecenv_step_training,
     vecenv_step_training_freeflyer,
 )
-from smallsat_sim.envs.vec_env_types import FreeFlyerVecEnvState, VecEnvState
 
 
 def _context_input_weight_norm(module, obs_dim: int, res_dim: int) -> float:
@@ -98,80 +96,6 @@ def _context_input_weight_norm(module, obs_dim: int, res_dim: int) -> float:
     if not norms:
         return 0.0
     return float(jnp.max(jnp.stack(norms)))
-
-
-def _quat_from_neg_log_error(error: jnp.ndarray) -> jnp.ndarray:
-    rotvec = -error
-    angle = jnp.linalg.norm(rotvec, axis=1, keepdims=True)
-    axis = rotvec / (angle + 1e-6)
-    half = 0.5 * angle
-    quat_vec = axis * jnp.sin(half)
-    quat = jnp.concatenate([jnp.cos(half), quat_vec], axis=1)
-    return quat / (jnp.linalg.norm(quat, axis=1, keepdims=True) + 1e-6)
-
-
-def _with_scenario_targeted_initial_errors(
-    initial_state,
-    *,
-    step_config,
-    reference_waypoint: jnp.ndarray,
-    scenario_table: dict[str, jnp.ndarray] | None,
-    selected_envs: jnp.ndarray | None,
-    scenario_indices: jnp.ndarray | None,
-    distance: float,
-):
-    if (
-        scenario_table is None
-        or selected_envs is None
-        or scenario_indices is None
-        or int(scenario_indices.shape[0]) == 0
-    ):
-        return initial_state
-
-    offsets, attitude_errors = targeted_pose_errors_from_scenarios(
-        scenario_table,
-        scenario_indices,
-        distance=distance,
-    )
-    reference = jnp.asarray(reference_waypoint)
-    ref_pos = reference[0, :3] if reference.ndim == 2 else reference[:3]
-    selected_envs = jnp.asarray(selected_envs, dtype=jnp.int32)
-    quat = _quat_from_neg_log_error(attitude_errors).astype(offsets.dtype)
-
-    if isinstance(initial_state, FreeFlyerVecEnvState):
-        qpos = initial_state.qpos
-        qpos = qpos.at[selected_envs, :3].set(ref_pos[None, :] + offsets)
-        qpos = qpos.at[selected_envs, 3:7].set(quat.astype(qpos.dtype))
-        vel_body = initial_state.vel_body.at[selected_envs].set(0.0)
-        omega = initial_state.omega.at[selected_envs].set(0.0)
-        return initial_state.replace(
-            qpos=qpos,
-            vel_body=vel_body,
-            omega=omega,
-            terminal_hold_counts=initial_state.terminal_hold_counts.at[
-                selected_envs
-            ].set(0),
-        )
-
-    if isinstance(initial_state, VecEnvState):
-        qpos = initial_state.mjx_batch.qpos
-        qvel = initial_state.mjx_batch.qvel
-        qpos = qpos.at[selected_envs, :3].set(ref_pos[None, :] + offsets)
-        qpos = qpos.at[selected_envs, 3:7].set(quat.astype(qpos.dtype))
-        qvel = qvel.at[selected_envs].set(0.0)
-        mjx_batch = initial_state.mjx_batch.replace(qpos=qpos, qvel=qvel)
-        mjx_batch = jax.vmap(mjx.forward, in_axes=(None, 0))(
-            step_config.mjx_model,
-            mjx_batch,
-        )
-        return initial_state.replace(
-            mjx_batch=mjx_batch,
-            terminal_hold_counts=initial_state.terminal_hold_counts.at[
-                selected_envs
-            ].set(0),
-        )
-
-    return initial_state
 
 
 def learn_runner(self) -> None:
@@ -279,9 +203,6 @@ def learn_runner(self) -> None:
     failure_start_time_max = float(
         getattr(cfg, "curriculum_failure_start_time_max", 0.0)
     )
-    targeted_start_distance = float(
-        getattr(cfg, "failure_scenario_targeted_start_distance", 2.0)
-    )
     disturbance_start_time_min = float(
         getattr(cfg, "curriculum_disturbance_start_time_min", 0.0)
     )
@@ -313,6 +234,9 @@ def learn_runner(self) -> None:
         failure_scenario_train_split, SPLIT_TRAIN
     )
     failure_scenario_table = None
+    use_task_conditioned_failure_sampling = bool(
+        getattr(cfg, "use_task_conditioned_failure_sampling", True)
+    )
     if use_controllable_failure_scenarios:
         failure_scenario_table = build_failure_scenario_table(
             self.env._thruster_mixer_T,
@@ -325,12 +249,6 @@ def learn_runner(self) -> None:
             ),
             mild_effectiveness=float(
                 getattr(cfg, "failure_scenario_mild_effectiveness", 0.5)
-            ),
-            sparse_active_thrusters=getattr(
-                cfg, "failure_scenario_sparse_active_thrusters", None
-            ),
-            sparse_max_active_sets=int(
-                getattr(cfg, "failure_scenario_sparse_max_active_sets", 32)
             ),
         )
         print(
@@ -438,8 +356,6 @@ def learn_runner(self) -> None:
         applied_failure_fraction = 0.0
         applied_disturbance_fraction = 0.0
         active_scenario_payload: dict[str, float] = {}
-        active_scenario_envs = None
-        active_scenario_indices = None
 
         print(
             f"[Curriculum] Phase {phase_idx + 1}/{len(phases)}: {phase_name} "
@@ -494,10 +410,24 @@ def learn_runner(self) -> None:
                             and failure_scenario_table is not None
                             and curriculum_mode in ("difficulty", "authority")
                         ):
+                            current_task_wrenches = None
+                            if use_task_conditioned_failure_sampling:
+                                current_states = _compute_state_features(
+                                    self.env.state_struct.mjx_batch,
+                                    self.reference_point,
+                                )
+                                pd_gains = self.env.env_cfg.control.PD.gains
+                                current_task_wrenches = task_wrench_from_state_features(
+                                    current_states,
+                                    kp_pos=float(getattr(pd_gains, "Kp_x", 0.2)),
+                                    kd_pos=float(getattr(pd_gains, "Kd_x", 1.0)),
+                                    kp_att=float(getattr(pd_gains, "Kp_q", 3.0)),
+                                    kd_att=float(getattr(pd_gains, "Kd_q", 5.0)),
+                                )
                             (
                                 active_scenario_payload,
-                                active_scenario_envs,
-                                active_scenario_indices,
+                                _selected_envs,
+                                _scenario_indices,
                             ) = apply_sampled_failure_scenario_split(
                                 self.env,
                                 key=perturb_key,
@@ -508,11 +438,10 @@ def learn_runner(self) -> None:
                                 difficulty_bin=phase_difficulty_bin,
                                 authority_regime=phase_authority_regime,
                                 task_feasibility_regime=phase_task_feasibility_regime,
+                                task_wrenches=current_task_wrenches,
                                 return_selection=True,
                             )
                         else:
-                            active_scenario_envs = None
-                            active_scenario_indices = None
                             self.env.apply_random_perturbations(
                                 key=perturb_key,
                                 fraction_perturbed_envs=applied_failure_fraction,
@@ -551,19 +480,6 @@ def learn_runner(self) -> None:
                 rollout_step_fn = vecenv_step_training
                 rollout_reset_fn = None
                 rollout_state_features_fn = _compute_state_features
-            if (
-                curriculum_mode == "authority"
-                and phase_task_feasibility_regime is not None
-            ):
-                initial_state = _with_scenario_targeted_initial_errors(
-                    initial_state,
-                    step_config=step_config,
-                    reference_waypoint=self.reference_point,
-                    scenario_table=failure_scenario_table,
-                    selected_envs=active_scenario_envs,
-                    scenario_indices=active_scenario_indices,
-                    distance=targeted_start_distance,
-                )
             actor_state, critic_state = self.agent.actor_critic_state()
 
             # Residuals are the adaptation signal; keep shape consistent even when disabled

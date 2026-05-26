@@ -65,6 +65,8 @@ def vecenv_reset(
     init_qvel: jnp.ndarray,
     num_envs: int,
     max_start_offset: float,
+    max_start_linear_velocity: float = 0.0,
+    max_start_angular_velocity: float = 0.0,
 ) -> VecEnvState:
     """
     Functional reset helper mirroring VecEnv.reset.
@@ -75,7 +77,7 @@ def vecenv_reset(
     base_data = mjx_data_template.replace(qpos=init_qpos[0], qvel=init_qvel[0])
 
     def _randomize_state(rng_key):
-        pos_key, quat_key = jax.random.split(rng_key)
+        pos_key, quat_key, linvel_key, angvel_key = jax.random.split(rng_key, 4)
         base_pos = base_data.qpos[:3]
         # Uniform disk in XY; keep Z fixed.
         u = jax.random.uniform(pos_key, (2,))
@@ -85,11 +87,34 @@ def vecenv_reset(
         dy = r * jnp.sin(theta)
         random_pos = jnp.array([base_pos[0] + dx, base_pos[1] + dy, base_pos[2]])
         random_quat = _sample_random_quat(quat_key)
-        return base_data.replace(qpos=jnp.concatenate([random_pos, random_quat]))
+        linvel = jax.random.uniform(
+            linvel_key,
+            (3,),
+            minval=-float(max_start_linear_velocity),
+            maxval=float(max_start_linear_velocity),
+        )
+        angvel = jax.random.uniform(
+            angvel_key,
+            (3,),
+            minval=-float(max_start_angular_velocity),
+            maxval=float(max_start_angular_velocity),
+        )
+        random_qvel = base_data.qvel
+        if base_data.qvel.shape[0] >= 3:
+            random_qvel = random_qvel.at[:3].set(linvel)
+        if base_data.qvel.shape[0] >= 6:
+            random_qvel = random_qvel.at[3:6].set(angvel)
+        return base_data.replace(
+            qpos=jnp.concatenate([random_pos, random_quat]),
+            qvel=random_qvel,
+        )
 
     randomized_batch = jax.vmap(_randomize_state)(env_keys)
 
-    batch = mjx_batch_template.replace(qpos=randomized_batch.qpos, qvel=init_qvel)
+    batch = mjx_batch_template.replace(
+        qpos=randomized_batch.qpos,
+        qvel=randomized_batch.qvel,
+    )
     batch = jax.vmap(mjx.forward, in_axes=(None, 0))(mjx_model, batch)
 
     return VecEnvState(
@@ -121,6 +146,8 @@ def vecenv_reset_masked(
         init_qvel=config.init_qvel,
         num_envs=config.num_envs,
         max_start_offset=config.max_start_offset,
+        max_start_linear_velocity=config.max_start_linear_velocity,
+        max_start_angular_velocity=config.max_start_angular_velocity,
     )
     def _merge_batched_leaf(reset_leaf, current_leaf):
         if not hasattr(reset_leaf, "shape") or len(reset_leaf.shape) == 0:
@@ -580,6 +607,8 @@ def vecenv_reset_to_config(
             init_qvel=config.init_qvel,
             num_envs=config.num_envs,
             max_start_offset=config.max_start_offset,
+            max_start_linear_velocity=config.max_start_linear_velocity,
+            max_start_angular_velocity=config.max_start_angular_velocity,
         )
         return reset_state.replace(
             disturbance_states=config.base_disturbance_states,
@@ -674,6 +703,12 @@ class VecEnv(BaseEnv):
 
         # Max. offset from the initial position at the start
         self.max_start_offset = self.env_cfg.Bodies.max_start_offset
+        self.max_start_linear_velocity = float(
+            getattr(self.env_cfg.Bodies, "max_start_linear_velocity", 0.0)
+        )
+        self.max_start_angular_velocity = float(
+            getattr(self.env_cfg.Bodies, "max_start_angular_velocity", 0.0)
+        )
 
         # Load mission tolerances, reward weights, and penalty weights
         self._load_vec_env_hyperparams()
@@ -724,6 +759,8 @@ class VecEnv(BaseEnv):
             init_qvel=self.init_qvel,
             num_envs=self.num_envs,
             max_start_offset=self.max_start_offset,
+            max_start_linear_velocity=self.max_start_linear_velocity,
+            max_start_angular_velocity=self.max_start_angular_velocity,
         )
         self._rng = new_state.rng
         self.mjx_batch = new_state.mjx_batch
@@ -1162,6 +1199,8 @@ class VecEnv(BaseEnv):
             init_qvel=self.init_qvel,
             num_envs=self.num_envs,
             max_start_offset=self.max_start_offset,
+            max_start_linear_velocity=self.max_start_linear_velocity,
+            max_start_angular_velocity=self.max_start_angular_velocity,
             control_decimation=int(self.env_cfg.control.RL.control_decimation),
             sigma_pos=float(self.sigma_pos),
             sigma_vel=float(self.sigma_vel),

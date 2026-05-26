@@ -4,7 +4,6 @@ import time
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from mujoco import mjx
 import optax
 import wandb
 
@@ -31,7 +30,7 @@ from smallsat_sim.controllers.rl.runners.failure_scenarios import (
     apply_sampled_failure_scenario_split,
     build_failure_scenario_table,
     precompute_scenario_gp_samples,
-    targeted_pose_errors_from_scenarios,
+    task_wrench_from_state_features,
 )
 from smallsat_sim.controllers.rl.runners.runner_utils import (
     load_trained_modules,
@@ -44,59 +43,6 @@ from smallsat_sim.utils.helpers_jax import (
     calc_lateral_tracking_error,
     train_val_split,
 )
-
-
-def _quat_from_neg_log_error(error: jnp.ndarray) -> jnp.ndarray:
-    rotvec = -error
-    angle = jnp.linalg.norm(rotvec, axis=1, keepdims=True)
-    axis = rotvec / (angle + 1e-6)
-    half = 0.5 * angle
-    quat_vec = axis * jnp.sin(half)
-    quat = jnp.concatenate([jnp.cos(half), quat_vec], axis=1)
-    return quat / (jnp.linalg.norm(quat, axis=1, keepdims=True) + 1e-6)
-
-
-def _with_scenario_targeted_initial_errors(
-    vec_state,
-    *,
-    step_config,
-    reference_waypoint: jnp.ndarray,
-    scenario_table: dict[str, jnp.ndarray] | None,
-    selected_envs: jnp.ndarray | None,
-    scenario_indices: jnp.ndarray | None,
-    distance: float,
-):
-    if (
-        scenario_table is None
-        or selected_envs is None
-        or scenario_indices is None
-        or int(scenario_indices.shape[0]) == 0
-    ):
-        return vec_state
-    offsets, attitude_errors = targeted_pose_errors_from_scenarios(
-        scenario_table,
-        scenario_indices,
-        distance=distance,
-    )
-    reference = jnp.asarray(reference_waypoint)
-    ref_pos = reference[0, :3] if reference.ndim == 2 else reference[:3]
-    selected_envs = jnp.asarray(selected_envs, dtype=jnp.int32)
-    qpos = vec_state.mjx_batch.qpos
-    qvel = vec_state.mjx_batch.qvel
-    qpos = qpos.at[selected_envs, :3].set(ref_pos[None, :] + offsets)
-    qpos = qpos.at[selected_envs, 3:7].set(
-        _quat_from_neg_log_error(attitude_errors).astype(qpos.dtype)
-    )
-    qvel = qvel.at[selected_envs].set(0.0)
-    mjx_batch = vec_state.mjx_batch.replace(qpos=qpos, qvel=qvel)
-    mjx_batch = jax.vmap(mjx.forward, in_axes=(None, 0))(
-        step_config.mjx_model,
-        mjx_batch,
-    )
-    return vec_state.replace(
-        mjx_batch=mjx_batch,
-        terminal_hold_counts=vec_state.terminal_hold_counts.at[selected_envs].set(0),
-    )
 
 
 def train_adaptation_module_on_policy_runner(self) -> None:
@@ -166,9 +112,6 @@ def train_adaptation_module_on_policy_runner(self) -> None:
     failure_start_time_max = float(
         getattr(cfg, "curriculum_failure_start_time_max", 0.0)
     )
-    targeted_start_distance = float(
-        getattr(cfg, "failure_scenario_targeted_start_distance", 2.0)
-    )
     disturbance_start_time_min = float(
         getattr(cfg, "curriculum_disturbance_start_time_min", 0.0)
     )
@@ -180,6 +123,9 @@ def train_adaptation_module_on_policy_runner(self) -> None:
         getattr(cfg, "use_controllable_failure_scenarios", False)
     )
     failure_scenario_table = None
+    use_task_conditioned_failure_sampling = bool(
+        getattr(cfg, "use_task_conditioned_failure_sampling", True)
+    )
     if use_controllable_failure_scenarios:
         failure_scenario_table = build_failure_scenario_table(
             self.env._thruster_mixer_T,
@@ -192,12 +138,6 @@ def train_adaptation_module_on_policy_runner(self) -> None:
             ),
             mild_effectiveness=float(
                 getattr(cfg, "failure_scenario_mild_effectiveness", 0.5)
-            ),
-            sparse_active_thrusters=getattr(
-                cfg, "failure_scenario_sparse_active_thrusters", None
-            ),
-            sparse_max_active_sets=int(
-                getattr(cfg, "failure_scenario_sparse_max_active_sets", 32)
             ),
         )
         precompute_scenario_gp_samples(self.env, self._take_keys())
@@ -271,8 +211,6 @@ def train_adaptation_module_on_policy_runner(self) -> None:
         phase_distribution = uniform_failure_distribution(
             list(phase["active_failures"])
         )
-        active_scenario_envs = None
-        active_scenario_indices = None
         (
             perturb_key,
             disturb_key,
@@ -295,19 +233,31 @@ def train_adaptation_module_on_policy_runner(self) -> None:
                 and failure_scenario_table is not None
                 and curriculum_mode in ("authority", "difficulty")
             ):
-                _, active_scenario_envs, active_scenario_indices = (
-                    apply_sampled_failure_scenario_split(
-                        self.env,
-                        key=perturb_key,
-                        table=failure_scenario_table,
-                        split_id=SPLIT_TRAIN,
-                        fraction_perturbed_envs=phase_failure_fraction,
-                        start_time=failure_start_time,
-                        difficulty_bin=phase_difficulty_bin,
-                        authority_regime=phase_authority_regime,
-                        task_feasibility_regime=phase_task_feasibility_regime,
-                        return_selection=True,
+                current_task_wrenches = None
+                if use_task_conditioned_failure_sampling:
+                    current_states = _compute_state_features(
+                        self.env.state_struct.mjx_batch,
+                        self.reference_point,
                     )
+                    pd_gains = self.env.env_cfg.control.PD.gains
+                    current_task_wrenches = task_wrench_from_state_features(
+                        current_states,
+                        kp_pos=float(getattr(pd_gains, "Kp_x", 0.2)),
+                        kd_pos=float(getattr(pd_gains, "Kd_x", 1.0)),
+                        kp_att=float(getattr(pd_gains, "Kp_q", 3.0)),
+                        kd_att=float(getattr(pd_gains, "Kd_q", 5.0)),
+                    )
+                apply_sampled_failure_scenario_split(
+                    self.env,
+                    key=perturb_key,
+                    table=failure_scenario_table,
+                    split_id=SPLIT_TRAIN,
+                    fraction_perturbed_envs=phase_failure_fraction,
+                    start_time=failure_start_time,
+                    difficulty_bin=phase_difficulty_bin,
+                    authority_regime=phase_authority_regime,
+                    task_feasibility_regime=phase_task_feasibility_regime,
+                    task_wrenches=current_task_wrenches,
                 )
             else:
                 self.env.apply_random_perturbations(
@@ -325,19 +275,6 @@ def train_adaptation_module_on_policy_runner(self) -> None:
 
         step_config = self.env.build_step_config(max_episode_len=self.max_ep_len)
         vec_state = self.env.state_struct
-        if (
-            curriculum_mode == "authority"
-            and phase_task_feasibility_regime is not None
-        ):
-            vec_state = _with_scenario_targeted_initial_errors(
-                vec_state,
-                step_config=step_config,
-                reference_waypoint=self.reference_point,
-                scenario_table=failure_scenario_table,
-                selected_envs=active_scenario_envs,
-                scenario_indices=active_scenario_indices,
-                distance=targeted_start_distance,
-            )
         actor_state, critic_state = self.agent.actor_critic_state()
 
         def _prepare_policy_input(_step, states, residuals, carry_extra):
@@ -429,8 +366,9 @@ def train_adaptation_module_on_policy_runner(self) -> None:
             desired_wrench=step_outputs.desired_wrench.reshape(-1, 6),
             use_task_conditioned_am=self.env.use_task_conditioned_am,
         ).reshape(self.steps_per_epoch, num_envs, self.env.am_query_dim)
-        # Train the AM to reproduce the exact context that phase-1 PPO consumed,
-        # including stateful terms such as the persistent bias estimate.
+        # Actual/applied force information is used only to build supervised
+        # target labels. The AM input remains measured state, requested action,
+        # and requested task wrench.
         extrinsics = rollout_result.residuals
         delta_states = step_outputs.next_states - step_outputs.prev_states
         tracking_targets = calc_lateral_tracking_error(
@@ -446,8 +384,6 @@ def train_adaptation_module_on_policy_runner(self) -> None:
             [extrinsics, query_data, delta_states, tracking_targets, authority_targets],
             axis=2,
         )
-        actual_wrench = step_outputs.actual_wrench
-
         state_action_data, am_targets = self._build_sliding_windows(
             state_action_data,
             am_targets,
@@ -472,7 +408,7 @@ def train_adaptation_module_on_policy_runner(self) -> None:
 
         def _history_scan(carry, scan_inputs):
             history, counts = carry
-            step_idx, prev_states_step, actions_step, actual_step, desired_step, done_step = (
+            step_idx, prev_states_step, actions_step, desired_step, done_step = (
                 scan_inputs
             )
 
@@ -493,8 +429,11 @@ def train_adaptation_module_on_policy_runner(self) -> None:
                 extrinsic_est_raw,
                 jnp.zeros_like(extrinsic_est_raw),
             )
-            estimated_wrench = extrinsic_est[:, :6] + desired_step
-            extrinsic_err = calc_extrinsic_error(estimated_wrench, actual_step)
+            target_context_step = rollout_result.residuals[step_idx]
+            extrinsic_err = calc_extrinsic_error(
+                target_context_step,
+                extrinsic_est[:, : self.env.res_dim],
+            )
             mask_f = history_full.astype(extrinsic_err.dtype)
             extrinsic_mean = (extrinsic_err * mask_f).sum() / jnp.maximum(
                 mask_f.sum(), 1.0
@@ -517,7 +456,6 @@ def train_adaptation_module_on_policy_runner(self) -> None:
             jnp.arange(self.steps_per_epoch, dtype=jnp.int32),
             step_outputs.prev_states,
             actions_traj,
-            actual_wrench,
             step_outputs.desired_wrench,
             done_masks,
         )

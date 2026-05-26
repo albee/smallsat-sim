@@ -12,6 +12,7 @@ from smallsat_sim.controllers.rl.runners.failure_scenarios import (
     SPLIT_EVAL_ID,
     apply_sampled_failure_scenario_split,
     build_failure_scenario_table,
+    task_wrench_from_state_features,
 )
 from smallsat_sim.controllers.rl.runners.rollout import (
     FunctionalRolloutCallbacks,
@@ -21,6 +22,7 @@ from smallsat_sim.controllers.rl.runners.rollout import (
     run_functional_rollout,
 )
 from smallsat_sim.envs.vec_env import (
+    _compute_state_features,
     _compute_freeflyer_state_features,
     freeflyer_reset_masked,
     vecenv_step_freeflyer,
@@ -61,12 +63,6 @@ def evaluate_policy_checkpoint(
             mild_effectiveness=float(
                 getattr(cfg, "failure_scenario_mild_effectiveness", 0.5)
             ),
-            sparse_active_thrusters=getattr(
-                cfg, "failure_scenario_sparse_active_thrusters", None
-            ),
-            sparse_max_active_sets=int(
-                getattr(cfg, "failure_scenario_sparse_max_active_sets", 32)
-            ),
         )
 
     for ep_key in episode_keys:
@@ -77,6 +73,20 @@ def evaluate_policy_checkpoint(
 
         if fraction_perturbed_envs > 0.0:
             if scenario_table is not None:
+                task_wrenches = None
+                if bool(getattr(cfg, "use_task_conditioned_failure_sampling", True)):
+                    states = _compute_state_features(
+                        runner.env.state_struct.mjx_batch,
+                        runner.reference_point,
+                    )
+                    pd_gains = runner.env.env_cfg.control.PD.gains
+                    task_wrenches = task_wrench_from_state_features(
+                        states,
+                        kp_pos=float(getattr(pd_gains, "Kp_x", 0.2)),
+                        kd_pos=float(getattr(pd_gains, "Kd_x", 1.0)),
+                        kp_att=float(getattr(pd_gains, "Kp_q", 3.0)),
+                        kd_att=float(getattr(pd_gains, "Kd_q", 5.0)),
+                    )
                 apply_sampled_failure_scenario_split(
                     runner.env,
                     key=ep_key,
@@ -84,6 +94,7 @@ def evaluate_policy_checkpoint(
                     split_id=SPLIT_EVAL_ID,
                     fraction_perturbed_envs=float(fraction_perturbed_envs),
                     start_time=None,
+                    task_wrenches=task_wrenches,
                 )
             else:
                 runner.env.apply_random_perturbations(

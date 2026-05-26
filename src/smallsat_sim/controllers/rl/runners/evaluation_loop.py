@@ -24,10 +24,12 @@ from smallsat_sim.controllers.rl.runners.failure_scenarios import (
     SPLIT_EVAL_ID,
     apply_sampled_failure_scenario_split,
     build_failure_scenario_table,
+    task_wrench_from_state_features,
 )
 from smallsat_sim.controllers.rl.runners.runner_utils import load_trained_modules
 from smallsat_sim.controllers.rl.runners.training_helpers import hold_quality_payload
 from smallsat_sim.envs.vec_env import (
+    _compute_state_features,
     _compute_freeflyer_state_features,
     freeflyer_to_mjx_state,
     vecenv_step_freeflyer,
@@ -44,9 +46,14 @@ def evaluate_runner(runner: Any, phase: int = 2) -> None:
     """
     Evaluate the runner policy.
 
-    If ``phase == 1``, evaluate the base policy before training adaptation.
-    If ``phase == 2``, evaluate with adaptation residual estimates enabled.
+    Adaptive evaluation must use ``phase == 2`` so runtime inputs come from
+    measured state history and requested commands, not simulator force labels.
     """
+    if runner.env.use_adaptive_approach and int(phase) != 2:
+        raise ValueError(
+            "Adaptive evaluation must use phase=2. Phase 1 consumes privileged "
+            "simulator force/wrench labels and is not a deployable input path."
+        )
     file_path = os.path.join(runner.ckpt_dir, runner.training_state_file_name)
     if os.path.isfile(file_path):
         restored_state = load_trained_modules(
@@ -111,12 +118,6 @@ def evaluate_runner(runner: Any, phase: int = 2) -> None:
             mild_effectiveness=float(
                 getattr(cfg, "failure_scenario_mild_effectiveness", 0.5)
             ),
-            sparse_active_thrusters=getattr(
-                cfg, "failure_scenario_sparse_active_thrusters", None
-            ),
-            sparse_max_active_sets=int(
-                getattr(cfg, "failure_scenario_sparse_max_active_sets", 32)
-            ),
         )
     authority_logging_max_samples = int(
         getattr(cfg, "authority_logging_max_samples", 8192)
@@ -159,6 +160,20 @@ def evaluate_runner(runner: Any, phase: int = 2) -> None:
                 disturbance_start_time_max,
             )
             if scenario_table is not None:
+                task_wrenches = None
+                if bool(getattr(cfg, "use_task_conditioned_failure_sampling", True)):
+                    states = _compute_state_features(
+                        runner.env.state_struct.mjx_batch,
+                        runner.reference_point,
+                    )
+                    pd_gains = runner.env.env_cfg.control.PD.gains
+                    task_wrenches = task_wrench_from_state_features(
+                        states,
+                        kp_pos=float(getattr(pd_gains, "Kp_x", 0.2)),
+                        kd_pos=float(getattr(pd_gains, "Kd_x", 1.0)),
+                        kp_att=float(getattr(pd_gains, "Kp_q", 3.0)),
+                        kd_att=float(getattr(pd_gains, "Kd_q", 5.0)),
+                    )
                 apply_sampled_failure_scenario_split(
                     runner.env,
                     key=perturb_key,
@@ -166,6 +181,7 @@ def evaluate_runner(runner: Any, phase: int = 2) -> None:
                     split_id=SPLIT_EVAL_ID,
                     fraction_perturbed_envs=0.4,
                     start_time=failure_start_time,
+                    task_wrenches=task_wrenches,
                 )
             else:
                 runner.env.apply_random_perturbations(

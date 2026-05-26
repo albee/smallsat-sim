@@ -19,6 +19,6 @@ benchmarker.deploy_and_test(
     train_with_failures=True,
     use_pretrained=True,
     use_adaptive_approach=True,
-    phase=1,
+    phase=2,
     ckpt_name="pretraining_state_adaptive.pkl",
 )

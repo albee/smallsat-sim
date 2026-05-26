@@ -52,8 +52,6 @@ class Benchmarker(object):
         am_predict_delta_weight: float | None = None,
         am_predict_tracking_weight: float | None = None,
         am_predict_authority_weight: float | None = None,
-        sparse_active_thrusters: int | None = None,
-        sparse_max_active_sets: int | None = None,
         curriculum_failure_fraction: float | None = None,
         phase: int = 2,
         pretrain_only: bool = False,
@@ -61,6 +59,11 @@ class Benchmarker(object):
         """
         Train and evaluate the RL controller.
         """
+        if use_adaptive_approach and int(phase) != 2:
+            raise ValueError(
+                "Adaptive benchmark runs must use phase=2. Phase 1 uses privileged "
+                "simulator force/wrench labels as runtime context."
+            )
         # Create environment
         env = AstrobeeEnvVectorized(
             args=self.args,
@@ -74,8 +77,6 @@ class Benchmarker(object):
             am_predict_delta_weight=am_predict_delta_weight,
             am_predict_tracking_weight=am_predict_tracking_weight,
             am_predict_authority_weight=am_predict_authority_weight,
-            sparse_active_thrusters=sparse_active_thrusters,
-            sparse_max_active_sets=sparse_max_active_sets,
             curriculum_failure_fraction=curriculum_failure_fraction,
         )
 
@@ -123,8 +124,6 @@ class Benchmarker(object):
         am_predict_delta_weight: float | None = None,
         am_predict_tracking_weight: float | None = None,
         am_predict_authority_weight: float | None = None,
-        sparse_active_thrusters: int | None = None,
-        sparse_max_active_sets: int | None = None,
         curriculum_failure_fraction: float | None = None,
         phase: int = 2,
         ckpt_name: str | None = None,
@@ -133,6 +132,11 @@ class Benchmarker(object):
         """
         Deploy and test the RL controller.
         """
+        if use_adaptive_approach and int(phase) != 2:
+            raise ValueError(
+                "Adaptive deployment must use phase=2. Phase 1 uses privileged "
+                "simulator force/wrench labels as runtime context."
+            )
         if os.environ.get("SMALLSAT_SKIP_DEPLOY", "0") == "1":
             print(
                 "Skipping deployment because SMALLSAT_SKIP_DEPLOY=1. "
@@ -172,8 +176,6 @@ class Benchmarker(object):
             am_predict_delta_weight=am_predict_delta_weight,
             am_predict_tracking_weight=am_predict_tracking_weight,
             am_predict_authority_weight=am_predict_authority_weight,
-            sparse_active_thrusters=sparse_active_thrusters,
-            sparse_max_active_sets=sparse_max_active_sets,
             curriculum_failure_fraction=curriculum_failure_fraction,
         )
 

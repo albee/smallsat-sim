@@ -31,6 +31,8 @@ class EnvConfig(BaseEnvConfig):
             bodies_list.append(Body(name=f"body{i}", pos=[i, 0.0, 10.17]))
 
         max_start_offset = 2.0  # Maximum offset from the initial position at each reset
+        max_start_linear_velocity = 0.10
+        max_start_angular_velocity = 0.10
 
     # Holds all information for the controller in use
     class control:
@@ -131,20 +133,12 @@ class EnvConfig(BaseEnvConfig):
             curriculum_resample_effects_interval = 5
             failure_curriculum_mode = "authority"  # "authority", "difficulty", or backup "type"
             use_controllable_failure_scenarios = True
+            use_task_conditioned_failure_sampling = True
             failure_scenario_max_faults = 2
             failure_scenario_train_split = "train"
             failure_scenario_min_rank = 6
             failure_scenario_stress_quantile = 0.9
             failure_scenario_mild_effectiveness = 0.5
-            # Optional sparse-authority regime: keep only N rank-feasible active
-            # thrusters as the nominal actuator set, then add failures on top.
-            # None keeps the default dense 12-thruster platform.
-            failure_scenario_sparse_active_thrusters = None
-            failure_scenario_sparse_max_active_sets = 32
-            # For task-feasibility curricula, align failed-env starts with the
-            # certified scenario wrench so "hard feasible" means hard for the
-            # actual rollout task, not only for an offline probe.
-            failure_scenario_targeted_start_distance = 2.0
             curriculum_critic_warmup_epochs = 15
             curriculum_critic_warmup_scale = 1.0 / 3.0
             curriculum_eval_interval = 20

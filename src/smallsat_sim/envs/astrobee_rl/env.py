@@ -30,8 +30,6 @@ class AstrobeeEnvVectorized(VecEnv):
         am_predict_tracking_weight: float | None = None,
         am_predict_authority_weight: float | None = None,
         num_envs: int | None = None,
-        sparse_active_thrusters: int | None = None,
-        sparse_max_active_sets: int | None = None,
         curriculum_failure_fraction: float | None = None,
     ) -> None:
         # Run name for logging
@@ -69,14 +67,6 @@ class AstrobeeEnvVectorized(VecEnv):
             )
         if num_envs is not None:
             self.env_cfg.control.RL.num_envs = int(num_envs)
-        if sparse_active_thrusters is not None:
-            self.env_cfg.control.RL.failure_scenario_sparse_active_thrusters = int(
-                sparse_active_thrusters
-            )
-        if sparse_max_active_sets is not None:
-            self.env_cfg.control.RL.failure_scenario_sparse_max_active_sets = int(
-                sparse_max_active_sets
-            )
         if curriculum_failure_fraction is not None:
             self.env_cfg.control.RL.curriculum_failure_fraction = float(
                 curriculum_failure_fraction

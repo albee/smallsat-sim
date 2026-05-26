@@ -25,6 +25,7 @@ SPLIT_STRESS = 3
 BIN_EASY = 0
 BIN_MEDIUM = 1
 BIN_HARD = 2
+BIN_NEAR_BOUNDARY = 3
 REGIME_REDUNDANT = 0
 REGIME_MARGINAL = 1
 REGIME_AUTHORITY_LIMITED = 2
@@ -50,6 +51,7 @@ BIN_NAMES = {
     BIN_EASY: "easy",
     BIN_MEDIUM: "medium",
     BIN_HARD: "hard",
+    BIN_NEAR_BOUNDARY: "near_boundary",
 }
 AUTHORITY_REGIME_NAMES = {
     REGIME_REDUNDANT: "redundant",
@@ -71,7 +73,27 @@ SCENARIO_FAILURE_STATUS = {
     4: PerturbationStatus.THRUST_INSTABILITY.value,
 }
 _GP_SAMPLE_BANK: dict[tuple, tuple[jnp.ndarray, jnp.ndarray]] = {}
-_SCENARIO_CACHE_VERSION = "full-pose-task-feasible-boundary-v1"
+_SCENARIO_CACHE_VERSION = "task-conditioned-utilization-v1"
+
+
+def task_wrench_from_state_features(
+    states: jnp.ndarray,
+    *,
+    kp_pos: float = 0.2,
+    kd_pos: float = 1.0,
+    kp_att: float = 3.0,
+    kd_att: float = 5.0,
+) -> jnp.ndarray:
+    """
+    PD-like regulation wrench used only for task-conditioned failure selection.
+
+    ``states`` follows the environment convention:
+    [p - p_ref, attitude_log_error, body_linear_velocity, body_angular_velocity].
+    """
+    states = jnp.asarray(states)
+    force = -float(kp_pos) * states[..., 0:3] - float(kd_pos) * states[..., 6:9]
+    torque = float(kp_att) * states[..., 3:6] - float(kd_att) * states[..., 9:12]
+    return jnp.concatenate([force, torque], axis=-1)
 
 
 def _scenario_cache_dir() -> str:
@@ -100,8 +122,6 @@ def _scenario_cache_key(
     min_rank: int,
     stress_quantile: float,
     mild_effectiveness: float,
-    sparse_active_thrusters: int | None,
-    sparse_max_active_sets: int,
 ) -> str:
     digest = hashlib.sha256()
     digest.update(_SCENARIO_CACHE_VERSION.encode())
@@ -112,8 +132,6 @@ def _scenario_cache_key(
     digest.update(str(int(min_rank)).encode())
     digest.update(f"{float(stress_quantile):.8f}".encode())
     digest.update(f"{float(mild_effectiveness):.8f}".encode())
-    digest.update(str(None if sparse_active_thrusters is None else int(sparse_active_thrusters)).encode())
-    digest.update(str(int(sparse_max_active_sets)).encode())
     return digest.hexdigest()[:16]
 
 
@@ -274,6 +292,8 @@ def _scenario_metrics(
     float,
     float,
     np.ndarray,
+    float,
+    np.ndarray,
 ]:
     effectiveness, lower, upper = _scenario_bounds(
         failure_types,
@@ -336,6 +356,10 @@ def _scenario_metrics(
         scores = targeted_errors_np + 0.05 * np.abs(targeted_margins_np)
         target_idx = int(np.argmin(scores))
     targeted_wrench = targeted_task_wrenches[target_idx].astype(np.float32)
+    targeted_norm = float(np.linalg.norm(targeted_wrench))
+    targeted_direction = targeted_wrench / max(targeted_norm, 1e-6)
+    targeted_authority_scale = max(1.0 + float(targeted_margins_np[target_idx]), 1e-6)
+    targeted_utilization = float(1.0 / targeted_authority_scale)
     zero_residual = _projected_bounded_residual(
         wrench_map, lower, upper, np.zeros((wrench_map.shape[0],), dtype=np.float32)
     )
@@ -368,36 +392,9 @@ def _scenario_metrics(
         float(targeted_errors_np[target_idx]),
         float(targeted_margins_np[target_idx]),
         targeted_wrench,
+        targeted_utilization,
+        targeted_direction.astype(np.float32),
     )
-
-
-def _candidate_sparse_active_sets(
-    mixer_t: np.ndarray,
-    *,
-    active_count: int,
-    min_rank: int,
-    max_sets: int,
-) -> list[tuple[int, ...]]:
-    """
-    Select sparse actuator subsets that still span the requested wrench space.
-
-    The ranking favors high minimum singular value, i.e. sparse bases with the
-    largest worst-direction authority before adding extra failures.
-    """
-    n_thrusters = mixer_t.shape[0]
-    if active_count >= n_thrusters:
-        return [tuple(range(n_thrusters))]
-    candidates: list[tuple[float, tuple[int, ...]]] = []
-    for active in combinations(range(n_thrusters), active_count):
-        wrench_map = mixer_t[list(active), :].T
-        rank = int(np.linalg.matrix_rank(wrench_map, tol=1e-6))
-        if rank < min_rank:
-            continue
-        singular_values = np.linalg.svd(wrench_map, compute_uv=False)
-        min_sv = float(singular_values[-1]) if singular_values.size else 0.0
-        candidates.append((min_sv, tuple(active)))
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    return [active for _, active in candidates[: max(1, int(max_sets))]]
 
 
 def _task_feasibility_regime(targeted_error: float, targeted_margin: float) -> int:
@@ -420,8 +417,6 @@ def _build_scenario_table_cached(
     min_rank: int,
     stress_quantile: float,
     mild_effectiveness: float,
-    sparse_active_thrusters: int | None,
-    sparse_max_active_sets: int,
 ) -> dict[str, np.ndarray]:
     mixer_t = np.frombuffer(mixer_t_bytes, dtype=np.float32).reshape(mixer_t_shape)
     ctrl_low = np.frombuffer(ctrl_low_bytes, dtype=np.float32).copy()
@@ -429,108 +424,89 @@ def _build_scenario_table_cached(
     task_wrenches = _task_wrench_samples(mixer_t, ctrl_high)
     targeted_task_wrenches = _targeted_task_wrench_samples(mixer_t, ctrl_high)
     n_thrusters = mixer_t.shape[0]
-    if sparse_active_thrusters is None or sparse_active_thrusters >= n_thrusters:
-        active_sets = [tuple(range(n_thrusters))]
-    else:
-        active_sets = _candidate_sparse_active_sets(
-            mixer_t,
-            active_count=int(sparse_active_thrusters),
-            min_rank=min_rank,
-            max_sets=int(sparse_max_active_sets),
-        )
-    if not active_sets:
-        active_sets = [tuple(range(n_thrusters))]
-    table_width = max(
-        max_faults,
-        max(n_thrusters - len(active_set) + max_faults for active_set in active_sets),
-    )
+    table_width = int(max_faults)
 
     scenario_rows = []
     p90_all = []
-    train_candidate_indices = []
     deterministic_holdout = []
 
-    for active_set_id, active_set in enumerate(active_sets):
-        active_thrusters = tuple(active_set)
-        inactive_thrusters = tuple(
-            thruster for thruster in range(n_thrusters) if thruster not in active_thrusters
-        )
-        sparse_base = tuple((0, thruster) for thruster in inactive_thrusters)
-        fault_pool = [
-            (failure_type, thruster)
-            for failure_type in range(5)
-            for thruster in active_thrusters
-        ]
-        min_extra_faults = 1 if len(inactive_thrusters) == 0 else 0
-        for n_extra_faults in range(min_extra_faults, max_faults + 1):
-            combos = combinations(fault_pool, n_extra_faults)
-            for extra_combo in combos:
-                extra_thrusters = tuple(item[1] for item in extra_combo)
-                if len(set(extra_thrusters)) != len(extra_thrusters):
-                    continue
-                combo = sparse_base + tuple(extra_combo)
-                thrusters = tuple(item[1] for item in combo)
-                failure_types = tuple(item[0] for item in combo)
-                n_faults = len(combo)
-                (
-                    rank,
-                    min_sv,
-                    condition_number,
-                    mean_error,
-                    p90_error,
-                    bias_cancellation_error,
-                    bias_wrench_norm,
-                    p10_authority_margin,
-                    mean_authority_margin,
-                    authority_regime,
-                    targeted_task_error,
-                    targeted_task_margin,
-                    targeted_task_wrench,
-                ) = _scenario_metrics(
-                    failure_types,
-                    thrusters,
-                    mixer_t,
-                    ctrl_low,
-                    ctrl_high,
-                    task_wrenches,
-                    targeted_task_wrenches,
-                    mild_effectiveness,
-                )
-                if rank < min_rank:
-                    continue
-                scenario_rows.append(
-                    {
-                        "failure_types": failure_types,
-                        "thrusters": thrusters,
-                        "n_faults": n_faults,
-                        "sparse_active_set_id": active_set_id,
-                        "sparse_active_count": len(active_thrusters),
-                        "rank": rank,
-                        "min_sv": min_sv,
-                        "condition_number": condition_number,
-                        "mean_error": mean_error,
-                        "p90_error": p90_error,
-                        "bias_cancellation_error": bias_cancellation_error,
-                        "bias_wrench_norm": bias_wrench_norm,
-                        "p10_authority_margin": p10_authority_margin,
-                        "mean_authority_margin": mean_authority_margin,
-                        "authority_regime": authority_regime,
-                        "targeted_task_error": targeted_task_error,
-                        "targeted_task_margin": targeted_task_margin,
-                        "targeted_task_wrench": targeted_task_wrench,
-                    }
-                )
-                p90_all.append(p90_error)
-                row_idx = len(scenario_rows) - 1
-                holdout_hash = (
-                    sum((ft + 1) * 17 for ft in failure_types)
-                    + sum((thr + 1) * 31 for thr in thrusters)
-                    + n_faults * 13
-                    + active_set_id * 19
-                ) % 10
-                deterministic_holdout.append(holdout_hash >= 8)
-                if holdout_hash < 8:
-                    train_candidate_indices.append(row_idx)
+    fault_pool = [
+        (failure_type, thruster)
+        for failure_type in range(5)
+        for thruster in range(n_thrusters)
+    ]
+    for n_faults in range(1, max_faults + 1):
+        combos = combinations(fault_pool, n_faults)
+        for combo in combos:
+            thrusters = tuple(item[1] for item in combo)
+            if len(set(thrusters)) != len(thrusters):
+                continue
+            failure_types = tuple(item[0] for item in combo)
+            (
+                rank,
+                min_sv,
+                condition_number,
+                mean_error,
+                p90_error,
+                bias_cancellation_error,
+                bias_wrench_norm,
+                p10_authority_margin,
+                mean_authority_margin,
+                authority_regime,
+                targeted_task_error,
+                targeted_task_margin,
+                targeted_task_wrench,
+                targeted_task_utilization,
+                targeted_task_direction,
+            ) = _scenario_metrics(
+                failure_types,
+                thrusters,
+                mixer_t,
+                ctrl_low,
+                ctrl_high,
+                task_wrenches,
+                targeted_task_wrenches,
+                mild_effectiveness,
+            )
+            if rank < min_rank:
+                continue
+            task_feasibility_regime = _task_feasibility_regime(
+                targeted_task_error,
+                targeted_task_margin,
+            )
+            if task_feasibility_regime == TASK_REGIME_INFEASIBLE:
+                continue
+            scenario_rows.append(
+                {
+                    "failure_types": failure_types,
+                    "thrusters": thrusters,
+                    "n_faults": n_faults,
+                    "active_thruster_count": n_thrusters - n_faults,
+                    "rank": rank,
+                    "min_sv": min_sv,
+                    "condition_number": condition_number,
+                    "mean_error": mean_error,
+                    "p90_error": p90_error,
+                    "bias_cancellation_error": bias_cancellation_error,
+                    "bias_wrench_norm": bias_wrench_norm,
+                    "p10_authority_margin": p10_authority_margin,
+                    "mean_authority_margin": mean_authority_margin,
+                    "authority_regime": authority_regime,
+                    "targeted_task_error": targeted_task_error,
+                    "targeted_task_margin": targeted_task_margin,
+                    "targeted_task_wrench": targeted_task_wrench,
+                    "targeted_task_utilization": targeted_task_utilization,
+                    "targeted_task_direction": targeted_task_direction,
+                    "task_feasibility_regime": task_feasibility_regime,
+                }
+            )
+            p90_all.append(p90_error)
+            holdout_hash = (
+                sum((ft + 1) * 17 for ft in failure_types)
+                + sum((thr + 1) * 31 for thr in thrusters)
+                + n_faults * 13
+            ) % 10
+            deterministic_holdout.append(holdout_hash >= 8)
 
     if not scenario_rows:
         empty_int = np.empty((0, table_width), dtype=np.int32)
@@ -538,8 +514,7 @@ def _build_scenario_table_cached(
             "failure_types": empty_int,
             "thrusters": empty_int,
             "n_faults": np.empty((0,), dtype=np.int32),
-            "sparse_active_set_id": np.empty((0,), dtype=np.int32),
-            "sparse_active_count": np.empty((0,), dtype=np.int32),
+            "active_thruster_count": np.empty((0,), dtype=np.int32),
             "split": np.empty((0,), dtype=np.int32),
             "difficulty_bin": np.empty((0,), dtype=np.int32),
             "rank": np.empty((0,), dtype=np.int32),
@@ -556,24 +531,17 @@ def _build_scenario_table_cached(
             "targeted_task_error": np.empty((0,), dtype=np.float32),
             "targeted_task_margin": np.empty((0,), dtype=np.float32),
             "targeted_task_wrench": np.empty((0, 6), dtype=np.float32),
+            "targeted_task_utilization": np.empty((0,), dtype=np.float32),
+            "targeted_task_direction": np.empty((0, 6), dtype=np.float32),
         }
 
     p90_all_np = np.asarray(p90_all, dtype=np.float32)
     stress_threshold = float(np.quantile(p90_all_np, stress_quantile))
-    train_p90 = np.asarray(
-        [scenario_rows[idx]["p90_error"] for idx in train_candidate_indices],
-        dtype=np.float32,
-    )
-    if train_p90.size == 0:
-        train_p90 = p90_all_np
-    easy_threshold = float(np.quantile(train_p90, 1.0 / 3.0))
-    medium_threshold = float(np.quantile(train_p90, 2.0 / 3.0))
 
     failure_type_rows: list[list[int]] = []
     thruster_rows: list[list[int]] = []
     n_fault_rows: list[int] = []
-    sparse_active_set_rows: list[int] = []
-    sparse_active_count_rows: list[int] = []
+    active_thruster_count_rows: list[int] = []
     split_rows: list[int] = []
     rank_rows: list[int] = []
     min_sv_rows: list[float] = []
@@ -590,6 +558,8 @@ def _build_scenario_table_cached(
     targeted_error_rows: list[float] = []
     targeted_margin_rows: list[float] = []
     targeted_wrench_rows: list[np.ndarray] = []
+    targeted_utilization_rows: list[float] = []
+    targeted_direction_rows: list[np.ndarray] = []
 
     for row_idx, row in enumerate(scenario_rows):
         failure_types = row["failure_types"]
@@ -603,20 +573,22 @@ def _build_scenario_table_cached(
         else:
             split = SPLIT_TRAIN
 
-        if p90_error <= easy_threshold:
+        utilization = float(row["targeted_task_utilization"])
+        if utilization < 0.30:
             difficulty_bin = BIN_EASY
-        elif p90_error <= medium_threshold:
+        elif utilization < 0.60:
             difficulty_bin = BIN_MEDIUM
-        else:
+        elif utilization < 0.90:
             difficulty_bin = BIN_HARD
+        else:
+            difficulty_bin = BIN_NEAR_BOUNDARY
 
         padded_types = list(failure_types) + [-1] * (table_width - n_faults)
         padded_thrusters = list(thrusters) + [-1] * (table_width - n_faults)
         failure_type_rows.append(padded_types)
         thruster_rows.append(padded_thrusters)
         n_fault_rows.append(n_faults)
-        sparse_active_set_rows.append(row["sparse_active_set_id"])
-        sparse_active_count_rows.append(row["sparse_active_count"])
+        active_thruster_count_rows.append(row["active_thruster_count"])
         split_rows.append(split)
         difficulty_bin_rows.append(difficulty_bin)
         rank_rows.append(row["rank"])
@@ -629,22 +601,20 @@ def _build_scenario_table_cached(
         p10_margin_rows.append(row["p10_authority_margin"])
         mean_margin_rows.append(row["mean_authority_margin"])
         authority_regime_rows.append(row["authority_regime"])
-        task_feasibility_regime_rows.append(
-            _task_feasibility_regime(
-                float(row["targeted_task_error"]),
-                float(row["targeted_task_margin"]),
-            )
-        )
+        task_feasibility_regime_rows.append(row["task_feasibility_regime"])
         targeted_error_rows.append(row["targeted_task_error"])
         targeted_margin_rows.append(row["targeted_task_margin"])
         targeted_wrench_rows.append(row["targeted_task_wrench"])
+        targeted_utilization_rows.append(row["targeted_task_utilization"])
+        targeted_direction_rows.append(row["targeted_task_direction"])
 
     return {
         "failure_types": np.asarray(failure_type_rows, dtype=np.int32),
         "thrusters": np.asarray(thruster_rows, dtype=np.int32),
         "n_faults": np.asarray(n_fault_rows, dtype=np.int32),
-        "sparse_active_set_id": np.asarray(sparse_active_set_rows, dtype=np.int32),
-        "sparse_active_count": np.asarray(sparse_active_count_rows, dtype=np.int32),
+        "active_thruster_count": np.asarray(
+            active_thruster_count_rows, dtype=np.int32
+        ),
         "split": np.asarray(split_rows, dtype=np.int32),
         "difficulty_bin": np.asarray(difficulty_bin_rows, dtype=np.int32),
         "rank": np.asarray(rank_rows, dtype=np.int32),
@@ -667,6 +637,12 @@ def _build_scenario_table_cached(
         "targeted_task_wrench": np.asarray(
             targeted_wrench_rows, dtype=np.float32
         ),
+        "targeted_task_utilization": np.asarray(
+            targeted_utilization_rows, dtype=np.float32
+        ),
+        "targeted_task_direction": np.asarray(
+            targeted_direction_rows, dtype=np.float32
+        ),
     }
 
 
@@ -679,8 +655,6 @@ def build_failure_scenario_table(
     min_rank: int = 6,
     stress_quantile: float = 0.9,
     mild_effectiveness: float = 0.5,
-    sparse_active_thrusters: int | None = None,
-    sparse_max_active_sets: int = 32,
 ) -> dict[str, jnp.ndarray]:
     mixer_t = np.asarray(jax.device_get(thruster_mixer_t), dtype=np.float32)
     ctrl_low_np = np.asarray(jax.device_get(ctrl_low), dtype=np.float32)
@@ -693,8 +667,6 @@ def build_failure_scenario_table(
         min_rank=min_rank,
         stress_quantile=stress_quantile,
         mild_effectiveness=mild_effectiveness,
-        sparse_active_thrusters=sparse_active_thrusters,
-        sparse_max_active_sets=sparse_max_active_sets,
     )
     cache_path = os.path.join(_scenario_cache_dir(), f"{cache_key}.npz")
     if os.path.isfile(cache_path):
@@ -704,8 +676,7 @@ def build_failure_scenario_table(
 
     print(
         "[Failure Scenarios] Building scenario table "
-        f"(max_faults={max_faults}, min_rank={min_rank}, "
-        f"sparse_active_thrusters={sparse_active_thrusters}); "
+        f"(max_faults={max_faults}, min_rank={min_rank}); "
         "this is cached after the first run.",
         flush=True,
     )
@@ -718,8 +689,6 @@ def build_failure_scenario_table(
         int(min_rank),
         float(stress_quantile),
         float(mild_effectiveness),
-        None if sparse_active_thrusters is None else int(sparse_active_thrusters),
-        int(sparse_max_active_sets),
     )
     np.savez_compressed(cache_path, **table)
     print(f"[Failure Scenarios] Cached scenario table: {cache_path}", flush=True)
@@ -744,6 +713,9 @@ def scenario_bin_counts(table: dict[str, jnp.ndarray], split_id: int = SPLIT_TRA
         "easy": int(np.logical_and(split_mask, bins == BIN_EASY).sum()),
         "medium": int(np.logical_and(split_mask, bins == BIN_MEDIUM).sum()),
         "hard": int(np.logical_and(split_mask, bins == BIN_HARD).sum()),
+        "near_boundary": int(
+            np.logical_and(split_mask, bins == BIN_NEAR_BOUNDARY).sum()
+        ),
     }
 
 
@@ -784,8 +756,7 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
     failure_types = np.asarray(jax.device_get(table["failure_types"]))
     thrusters = np.asarray(jax.device_get(table["thrusters"]))
     n_faults = np.asarray(jax.device_get(table["n_faults"]))
-    sparse_active_set_id = np.asarray(jax.device_get(table["sparse_active_set_id"]))
-    sparse_active_count = np.asarray(jax.device_get(table["sparse_active_count"]))
+    active_thruster_count = np.asarray(jax.device_get(table["active_thruster_count"]))
     splits = np.asarray(jax.device_get(table["split"]))
     bins = np.asarray(jax.device_get(table["difficulty_bin"]))
     ranks = np.asarray(jax.device_get(table["rank"]))
@@ -804,6 +775,16 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
     targeted_error = np.asarray(jax.device_get(table["targeted_task_error"]))
     targeted_margin = np.asarray(jax.device_get(table["targeted_task_margin"]))
     targeted_wrench = np.asarray(jax.device_get(table["targeted_task_wrench"]))
+    targeted_utilization = np.asarray(
+        jax.device_get(
+            table.get("targeted_task_utilization", jnp.zeros_like(targeted_error))
+        )
+    )
+    targeted_direction = np.asarray(
+        jax.device_get(
+            table.get("targeted_task_direction", jnp.zeros_like(targeted_wrench))
+        )
+    )
 
     max_faults = failure_types.shape[1] if failure_types.ndim == 2 else 0
     fieldnames = [
@@ -811,8 +792,7 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
         "split",
         "difficulty_bin",
         "n_faults",
-        "sparse_active_set_id",
-        "sparse_active_count",
+        "active_thruster_count",
         "rank",
         "min_singular_value",
         "condition_number",
@@ -826,8 +806,10 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
         "task_feasibility_regime",
         "targeted_task_error",
         "targeted_task_margin",
+        "targeted_task_utilization",
     ]
     fieldnames.extend([f"targeted_wrench_{idx}" for idx in range(6)])
+    fieldnames.extend([f"targeted_direction_{idx}" for idx in range(6)])
     for idx in range(max_faults):
         fieldnames.extend(
             [
@@ -846,8 +828,7 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
                 "split": SPLIT_NAMES.get(int(splits[scenario_id]), "unknown"),
                 "difficulty_bin": BIN_NAMES.get(int(bins[scenario_id]), "unknown"),
                 "n_faults": int(n_faults[scenario_id]),
-                "sparse_active_set_id": int(sparse_active_set_id[scenario_id]),
-                "sparse_active_count": int(sparse_active_count[scenario_id]),
+                "active_thruster_count": int(active_thruster_count[scenario_id]),
                 "rank": int(ranks[scenario_id]),
                 "min_singular_value": float(min_sv[scenario_id]),
                 "condition_number": float(cond[scenario_id]),
@@ -865,10 +846,16 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
                 ),
                 "targeted_task_error": float(targeted_error[scenario_id]),
                 "targeted_task_margin": float(targeted_margin[scenario_id]),
+                "targeted_task_utilization": float(
+                    targeted_utilization[scenario_id]
+                ),
             }
             for wrench_idx in range(6):
                 row[f"targeted_wrench_{wrench_idx}"] = float(
                     targeted_wrench[scenario_id, wrench_idx]
+                )
+                row[f"targeted_direction_{wrench_idx}"] = float(
+                    targeted_direction[scenario_id, wrench_idx]
                 )
             for fault_idx in range(max_faults):
                 failure_type = int(failure_types[scenario_id, fault_idx])
@@ -895,12 +882,16 @@ def scenario_selection_payload(
             f"{prefix}/bin_easy_fraction": 0.0,
             f"{prefix}/bin_medium_fraction": 0.0,
             f"{prefix}/bin_hard_fraction": 0.0,
+            f"{prefix}/bin_near_boundary_fraction": 0.0,
         }
 
     bins = np.asarray(jax.device_get(table["difficulty_bin"]))[scenario_indices_np]
     splits = np.asarray(jax.device_get(table["split"]))[scenario_indices_np]
     n_faults = np.asarray(jax.device_get(table["n_faults"]))[scenario_indices_np]
-    sparse_active_count = np.asarray(jax.device_get(table["sparse_active_count"]))[
+    failure_types = np.asarray(jax.device_get(table["failure_types"]))[
+        scenario_indices_np
+    ]
+    active_thruster_count = np.asarray(jax.device_get(table["active_thruster_count"]))[
         scenario_indices_np
     ]
     p90_error = np.asarray(jax.device_get(table["p90_feasibility_error"]))[
@@ -927,6 +918,14 @@ def scenario_selection_payload(
     targeted_margin = np.asarray(jax.device_get(table["targeted_task_margin"]))[
         scenario_indices_np
     ]
+    targeted_utilization = np.asarray(
+        jax.device_get(
+            table.get(
+                "targeted_task_utilization",
+                jnp.zeros_like(table["targeted_task_margin"]),
+            )
+        )
+    )[scenario_indices_np]
     regimes = np.asarray(jax.device_get(table["authority_regime"]))[
         scenario_indices_np
     ]
@@ -939,6 +938,9 @@ def scenario_selection_payload(
         f"{prefix}/bin_easy_fraction": float((bins == BIN_EASY).sum() / denom),
         f"{prefix}/bin_medium_fraction": float((bins == BIN_MEDIUM).sum() / denom),
         f"{prefix}/bin_hard_fraction": float((bins == BIN_HARD).sum() / denom),
+        f"{prefix}/bin_near_boundary_fraction": float(
+            (bins == BIN_NEAR_BOUNDARY).sum() / denom
+        ),
         f"{prefix}/split_train_fraction": float((splits == SPLIT_TRAIN).sum() / denom),
         f"{prefix}/split_eval_id_fraction": float(
             (splits == SPLIT_EVAL_ID).sum() / denom
@@ -948,7 +950,13 @@ def scenario_selection_payload(
         ),
         f"{prefix}/split_stress_fraction": float((splits == SPLIT_STRESS).sum() / denom),
         f"{prefix}/mean_num_faults": float(n_faults.mean()),
-        f"{prefix}/mean_sparse_active_count": float(sparse_active_count.mean()),
+        f"{prefix}/mean_active_thruster_count": float(active_thruster_count.mean()),
+        **{
+            f"{prefix}/failure_type_{name}_fraction": float(
+                np.any(failure_types == failure_type, axis=1).sum() / denom
+            )
+            for failure_type, name in FAILURE_TYPE_NAMES.items()
+        },
         f"{prefix}/mean_p90_feasibility_error": float(p90_error.mean()),
         f"{prefix}/max_p90_feasibility_error": float(p90_error.max()),
         f"{prefix}/mean_feasibility_error": float(mean_error.mean()),
@@ -958,6 +966,9 @@ def scenario_selection_payload(
         f"{prefix}/mean_authority_margin": float(mean_margin.mean()),
         f"{prefix}/mean_targeted_task_error": float(targeted_error.mean()),
         f"{prefix}/mean_targeted_task_margin": float(targeted_margin.mean()),
+        f"{prefix}/mean_targeted_task_utilization": float(
+            targeted_utilization.mean()
+        ),
         f"{prefix}/regime_redundant_fraction": float(
             (regimes == REGIME_REDUNDANT).sum() / denom
         ),
@@ -1037,6 +1048,7 @@ def sample_scenario_indices(
     difficulty_bin: int | None = None,
     authority_regime: int | None = None,
     task_feasibility_regime: int | None = None,
+    failure_type: int | None = None,
 ) -> jnp.ndarray:
     split = table["split"]
     mask = split == int(split_id)
@@ -1053,9 +1065,77 @@ def sample_scenario_indices(
             mask, table["task_feasibility_regime"] == int(task_feasibility_regime)
         )
         mask = jnp.where(jnp.any(task_mask), task_mask, mask)
+    if failure_type is not None:
+        type_mask = jnp.logical_and(
+            mask, jnp.any(table["failure_types"] == int(failure_type), axis=1)
+        )
+        mask = jnp.where(jnp.any(type_mask), type_mask, mask)
     logits = jnp.where(mask, 0.0, -jnp.inf)
     sampled = jax.random.categorical(key, logits, shape=(count,))
     return sampled.astype(jnp.int32)
+
+
+def sample_task_conditioned_scenario_indices(
+    key: jnp.ndarray,
+    table: dict[str, jnp.ndarray],
+    *,
+    split_id: int,
+    task_wrenches: jnp.ndarray,
+    difficulty_bin: int | None = None,
+    authority_regime: int | None = None,
+    task_feasibility_regime: int | None = None,
+    failure_type: int | None = None,
+    alignment_temperature: float = 8.0,
+) -> jnp.ndarray:
+    """
+    Sample one scenario per task wrench, favoring failures weak along that task.
+
+    This is the online part of the library approach: the table is precomputed,
+    but reset-time selection is conditioned on the actual regulation demand.
+    """
+    task_wrenches = jnp.asarray(task_wrenches, dtype=jnp.float32)
+    count = int(task_wrenches.shape[0])
+    if count == 0:
+        return jnp.empty((0,), dtype=jnp.int32)
+
+    mask = table["split"] == int(split_id)
+    if difficulty_bin is not None:
+        bin_mask = jnp.logical_and(mask, table["difficulty_bin"] == int(difficulty_bin))
+        mask = jnp.where(jnp.any(bin_mask), bin_mask, mask)
+    if authority_regime is not None:
+        regime_mask = jnp.logical_and(
+            mask, table["authority_regime"] == int(authority_regime)
+        )
+        mask = jnp.where(jnp.any(regime_mask), regime_mask, mask)
+    if task_feasibility_regime is not None:
+        task_mask = jnp.logical_and(
+            mask, table["task_feasibility_regime"] == int(task_feasibility_regime)
+        )
+        mask = jnp.where(jnp.any(task_mask), task_mask, mask)
+    if failure_type is not None:
+        type_mask = jnp.logical_and(
+            mask, jnp.any(table["failure_types"] == int(failure_type), axis=1)
+        )
+        mask = jnp.where(jnp.any(type_mask), type_mask, mask)
+
+    feasible_mask = jnp.logical_and(
+        mask, table["task_feasibility_regime"] != TASK_REGIME_INFEASIBLE
+    )
+    mask = jnp.where(jnp.any(feasible_mask), feasible_mask, mask)
+
+    scenario_dirs = table.get("targeted_task_direction")
+    if scenario_dirs is None:
+        scenario_dirs = table["targeted_task_wrench"] / (
+            jnp.linalg.norm(table["targeted_task_wrench"], axis=1, keepdims=True)
+            + 1e-6
+        )
+    task_dirs = task_wrenches / (
+        jnp.linalg.norm(task_wrenches, axis=1, keepdims=True) + 1e-6
+    )
+    alignment = jnp.abs(task_dirs @ scenario_dirs.T)
+    base_logits = jnp.where(mask, 0.0, -jnp.inf)
+    logits = base_logits[None, :] + float(alignment_temperature) * alignment
+    return jax.random.categorical(key, logits, axis=1).astype(jnp.int32)
 
 
 def _scenario_rows_for_indices(
@@ -1248,6 +1328,8 @@ def apply_sampled_failure_scenario_split(
     difficulty_bin: int | None = None,
     authority_regime: int | None = None,
     task_feasibility_regime: int | None = None,
+    failure_type: int | None = None,
+    task_wrenches: jnp.ndarray | None = None,
     return_selection: bool = False,
 ) -> dict[str, float] | tuple[dict[str, float], jnp.ndarray, jnp.ndarray]:
     num_perturbed = int(env.num_envs * max(0.0, min(1.0, fraction_perturbed_envs)))
@@ -1272,15 +1354,28 @@ def apply_sampled_failure_scenario_split(
         num_perturbed,
         [clean_envs, disturbed_only_envs, has_perturbation],
     )
-    scenario_indices = sample_scenario_indices(
-        scenario_key,
-        table,
-        split_id=split_id,
-        count=num_perturbed,
-        difficulty_bin=difficulty_bin,
-        authority_regime=authority_regime,
-        task_feasibility_regime=task_feasibility_regime,
-    )
+    if task_wrenches is None:
+        scenario_indices = sample_scenario_indices(
+            scenario_key,
+            table,
+            split_id=split_id,
+            count=num_perturbed,
+            difficulty_bin=difficulty_bin,
+            authority_regime=authority_regime,
+            task_feasibility_regime=task_feasibility_regime,
+            failure_type=failure_type,
+        )
+    else:
+        scenario_indices = sample_task_conditioned_scenario_indices(
+            scenario_key,
+            table,
+            split_id=split_id,
+            task_wrenches=jnp.asarray(task_wrenches)[selected_envs],
+            difficulty_bin=difficulty_bin,
+            authority_regime=authority_regime,
+            task_feasibility_regime=task_feasibility_regime,
+            failure_type=failure_type,
+        )
     apply_failure_scenarios(
         env,
         key=apply_key,

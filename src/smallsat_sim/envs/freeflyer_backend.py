@@ -120,7 +120,7 @@ def freeflyer_reset(
     base_qvel = config.init_qvel[0]
 
     def randomize_state(env_key):
-        pos_key, quat_key = jax.random.split(env_key)
+        pos_key, quat_key, linvel_key, angvel_key = jax.random.split(env_key, 4)
         u = jax.random.uniform(pos_key, (2,))
         r = config.max_start_offset * jnp.sqrt(u[0])
         theta = 2.0 * jnp.pi * u[1]
@@ -133,10 +133,26 @@ def freeflyer_reset(
             dtype=base_qpos.dtype,
         )
         random_quat = _sample_random_quat(quat_key).astype(base_qpos.dtype)
-        return jnp.concatenate([random_pos, random_quat])
+        linvel = jax.random.uniform(
+            linvel_key,
+            (3,),
+            minval=-float(config.max_start_linear_velocity),
+            maxval=float(config.max_start_linear_velocity),
+        ).astype(base_qvel.dtype)
+        angvel = jax.random.uniform(
+            angvel_key,
+            (3,),
+            minval=-float(config.max_start_angular_velocity),
+            maxval=float(config.max_start_angular_velocity),
+        ).astype(base_qvel.dtype)
+        qvel = base_qvel
+        if base_qvel.shape[0] >= 3:
+            qvel = qvel.at[:3].set(linvel)
+        if base_qvel.shape[0] >= 6:
+            qvel = qvel.at[3:6].set(angvel)
+        return jnp.concatenate([random_pos, random_quat]), qvel
 
-    qpos = jax.vmap(randomize_state)(env_keys)
-    qvel = jnp.broadcast_to(base_qvel, (config.num_envs, base_qvel.shape[0]))
+    qpos, qvel = jax.vmap(randomize_state)(env_keys)
     return FreeFlyerVecEnvState(
         rng=rng_key,
         qpos=qpos,

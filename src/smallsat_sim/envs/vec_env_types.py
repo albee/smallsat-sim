@@ -120,6 +120,8 @@ class VecEnvStepConfig:
     inertia_diag: Optional[jnp.ndarray] = None
     model_dt: float = 0.01
     effects_enabled: bool = True
+    max_start_linear_velocity: float = 0.0
+    max_start_angular_velocity: float = 0.0
 
 
 @dataclass
