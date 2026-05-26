@@ -73,7 +73,7 @@ SCENARIO_FAILURE_STATUS = {
     4: PerturbationStatus.THRUST_INSTABILITY.value,
 }
 _GP_SAMPLE_BANK: dict[tuple, tuple[jnp.ndarray, jnp.ndarray]] = {}
-_SCENARIO_CACHE_VERSION = "task-conditioned-utilization-v1"
+_SCENARIO_CACHE_VERSION = "task-conditioned-higher-order-v2"
 
 
 def task_wrench_from_state_features(
@@ -119,6 +119,8 @@ def _scenario_cache_key(
     ctrl_high: np.ndarray,
     *,
     max_faults: int,
+    exhaustive_faults: int,
+    sampled_per_fault_count: int,
     min_rank: int,
     stress_quantile: float,
     mild_effectiveness: float,
@@ -129,6 +131,8 @@ def _scenario_cache_key(
     digest.update(np.asarray(ctrl_low, dtype=np.float32).tobytes())
     digest.update(np.asarray(ctrl_high, dtype=np.float32).tobytes())
     digest.update(str(int(max_faults)).encode())
+    digest.update(str(int(exhaustive_faults)).encode())
+    digest.update(str(int(sampled_per_fault_count)).encode())
     digest.update(str(int(min_rank)).encode())
     digest.update(f"{float(stress_quantile):.8f}".encode())
     digest.update(f"{float(mild_effectiveness):.8f}".encode())
@@ -407,6 +411,75 @@ def _task_feasibility_regime(targeted_error: float, targeted_margin: float) -> i
     return TASK_REGIME_EASY_FEASIBLE
 
 
+def _failure_combo_key(
+    combo: tuple[tuple[int, int], ...]
+) -> tuple[tuple[int, int], ...]:
+    return tuple(
+        sorted(((int(ft), int(thr)) for ft, thr in combo), key=lambda item: item[1])
+    )
+
+
+def _iter_failure_combos(
+    *,
+    n_thrusters: int,
+    max_faults: int,
+    exhaustive_faults: int,
+    sampled_per_fault_count: int,
+) -> list[tuple[tuple[int, int], ...]]:
+    max_faults = max(1, min(int(max_faults), int(n_thrusters)))
+    exhaustive_faults = max(0, min(int(exhaustive_faults), max_faults))
+    sampled_per_fault_count = max(0, int(sampled_per_fault_count))
+    fault_pool = [
+        (failure_type, thruster)
+        for failure_type in range(len(FAILURE_TYPE_NAMES))
+        for thruster in range(n_thrusters)
+    ]
+    combos_out: list[tuple[tuple[int, int], ...]] = []
+    seen: set[tuple[tuple[int, int], ...]] = set()
+
+    for n_faults in range(1, exhaustive_faults + 1):
+        for combo in combinations(fault_pool, n_faults):
+            thrusters = tuple(item[1] for item in combo)
+            if len(set(thrusters)) != len(thrusters):
+                continue
+            key = _failure_combo_key(combo)
+            if key in seen:
+                continue
+            seen.add(key)
+            combos_out.append(key)
+
+    if sampled_per_fault_count == 0:
+        return combos_out
+
+    rng = np.random.default_rng(20260526)
+    for n_faults in range(exhaustive_faults + 1, max_faults + 1):
+        accepted = 0
+        attempts = 0
+        max_attempts = sampled_per_fault_count * 50
+        while accepted < sampled_per_fault_count and attempts < max_attempts:
+            attempts += 1
+            thrusters = rng.choice(n_thrusters, size=n_faults, replace=False)
+            failure_types = rng.integers(
+                0, len(FAILURE_TYPE_NAMES), size=n_faults, endpoint=False
+            )
+            combo = tuple(
+                sorted(
+                    (
+                        (int(failure_type), int(thruster))
+                        for failure_type, thruster in zip(failure_types, thrusters)
+                    ),
+                    key=lambda item: item[1],
+                )
+            )
+            if combo in seen:
+                continue
+            seen.add(combo)
+            combos_out.append(combo)
+            accepted += 1
+
+    return combos_out
+
+
 @lru_cache(maxsize=16)
 def _build_scenario_table_cached(
     mixer_t_bytes: bytes,
@@ -414,6 +487,8 @@ def _build_scenario_table_cached(
     ctrl_low_bytes: bytes,
     ctrl_high_bytes: bytes,
     max_faults: int,
+    exhaustive_faults: int,
+    sampled_per_fault_count: int,
     min_rank: int,
     stress_quantile: float,
     mild_effectiveness: float,
@@ -430,83 +505,82 @@ def _build_scenario_table_cached(
     p90_all = []
     deterministic_holdout = []
 
-    fault_pool = [
-        (failure_type, thruster)
-        for failure_type in range(5)
-        for thruster in range(n_thrusters)
-    ]
-    for n_faults in range(1, max_faults + 1):
-        combos = combinations(fault_pool, n_faults)
-        for combo in combos:
-            thrusters = tuple(item[1] for item in combo)
-            if len(set(thrusters)) != len(thrusters):
-                continue
-            failure_types = tuple(item[0] for item in combo)
-            (
-                rank,
-                min_sv,
-                condition_number,
-                mean_error,
-                p90_error,
-                bias_cancellation_error,
-                bias_wrench_norm,
-                p10_authority_margin,
-                mean_authority_margin,
-                authority_regime,
-                targeted_task_error,
-                targeted_task_margin,
-                targeted_task_wrench,
-                targeted_task_utilization,
-                targeted_task_direction,
-            ) = _scenario_metrics(
-                failure_types,
-                thrusters,
-                mixer_t,
-                ctrl_low,
-                ctrl_high,
-                task_wrenches,
-                targeted_task_wrenches,
-                mild_effectiveness,
-            )
-            if rank < min_rank:
-                continue
-            task_feasibility_regime = _task_feasibility_regime(
-                targeted_task_error,
-                targeted_task_margin,
-            )
-            if task_feasibility_regime == TASK_REGIME_INFEASIBLE:
-                continue
-            scenario_rows.append(
-                {
-                    "failure_types": failure_types,
-                    "thrusters": thrusters,
-                    "n_faults": n_faults,
-                    "active_thruster_count": n_thrusters - n_faults,
-                    "rank": rank,
-                    "min_sv": min_sv,
-                    "condition_number": condition_number,
-                    "mean_error": mean_error,
-                    "p90_error": p90_error,
-                    "bias_cancellation_error": bias_cancellation_error,
-                    "bias_wrench_norm": bias_wrench_norm,
-                    "p10_authority_margin": p10_authority_margin,
-                    "mean_authority_margin": mean_authority_margin,
-                    "authority_regime": authority_regime,
-                    "targeted_task_error": targeted_task_error,
-                    "targeted_task_margin": targeted_task_margin,
-                    "targeted_task_wrench": targeted_task_wrench,
-                    "targeted_task_utilization": targeted_task_utilization,
-                    "targeted_task_direction": targeted_task_direction,
-                    "task_feasibility_regime": task_feasibility_regime,
-                }
-            )
-            p90_all.append(p90_error)
-            holdout_hash = (
-                sum((ft + 1) * 17 for ft in failure_types)
-                + sum((thr + 1) * 31 for thr in thrusters)
-                + n_faults * 13
-            ) % 10
-            deterministic_holdout.append(holdout_hash >= 8)
+    combos = _iter_failure_combos(
+        n_thrusters=n_thrusters,
+        max_faults=max_faults,
+        exhaustive_faults=exhaustive_faults,
+        sampled_per_fault_count=sampled_per_fault_count,
+    )
+    for combo in combos:
+        n_faults = len(combo)
+        thrusters = tuple(item[1] for item in combo)
+        failure_types = tuple(item[0] for item in combo)
+        (
+            rank,
+            min_sv,
+            condition_number,
+            mean_error,
+            p90_error,
+            bias_cancellation_error,
+            bias_wrench_norm,
+            p10_authority_margin,
+            mean_authority_margin,
+            authority_regime,
+            targeted_task_error,
+            targeted_task_margin,
+            targeted_task_wrench,
+            targeted_task_utilization,
+            targeted_task_direction,
+        ) = _scenario_metrics(
+            failure_types,
+            thrusters,
+            mixer_t,
+            ctrl_low,
+            ctrl_high,
+            task_wrenches,
+            targeted_task_wrenches,
+            mild_effectiveness,
+        )
+        if rank < min_rank:
+            continue
+        task_feasibility_regime = _task_feasibility_regime(
+            targeted_task_error,
+            targeted_task_margin,
+        )
+        if task_feasibility_regime == TASK_REGIME_INFEASIBLE:
+            continue
+        scenario_rows.append(
+            {
+                "failure_types": failure_types,
+                "thrusters": thrusters,
+                "n_faults": n_faults,
+                "active_thruster_count": n_thrusters
+                - sum(1 for failure_type in failure_types if failure_type == 0),
+                "rank": rank,
+                "min_sv": min_sv,
+                "condition_number": condition_number,
+                "mean_error": mean_error,
+                "p90_error": p90_error,
+                "bias_cancellation_error": bias_cancellation_error,
+                "bias_wrench_norm": bias_wrench_norm,
+                "p10_authority_margin": p10_authority_margin,
+                "mean_authority_margin": mean_authority_margin,
+                "authority_regime": authority_regime,
+                "targeted_task_error": targeted_task_error,
+                "targeted_task_margin": targeted_task_margin,
+                "targeted_task_wrench": targeted_task_wrench,
+                "targeted_task_utilization": targeted_task_utilization,
+                "targeted_task_direction": targeted_task_direction,
+                "task_feasibility_regime": task_feasibility_regime,
+            }
+        )
+        p90_all.append(p90_error)
+        holdout_hash = (
+            sum((ft + 1) * 17 for ft in failure_types)
+            + sum((thr + 1) * 31 for thr in thrusters)
+            + n_faults * 13
+        ) % 10
+        deterministic_holdout.append(holdout_hash >= 8)
 
     if not scenario_rows:
         empty_int = np.empty((0, table_width), dtype=np.int32)
@@ -651,7 +725,9 @@ def build_failure_scenario_table(
     ctrl_low: jnp.ndarray,
     ctrl_high: jnp.ndarray,
     *,
-    max_faults: int = 2,
+    max_faults: int = 12,
+    exhaustive_faults: int = 2,
+    sampled_per_fault_count: int = 512,
     min_rank: int = 6,
     stress_quantile: float = 0.9,
     mild_effectiveness: float = 0.5,
@@ -659,11 +735,16 @@ def build_failure_scenario_table(
     mixer_t = np.asarray(jax.device_get(thruster_mixer_t), dtype=np.float32)
     ctrl_low_np = np.asarray(jax.device_get(ctrl_low), dtype=np.float32)
     ctrl_high_np = np.asarray(jax.device_get(ctrl_high), dtype=np.float32)
+    max_faults = max(1, min(int(max_faults), mixer_t.shape[0]))
+    exhaustive_faults = max(0, min(int(exhaustive_faults), max_faults))
+    sampled_per_fault_count = max(0, int(sampled_per_fault_count))
     cache_key = _scenario_cache_key(
         mixer_t,
         ctrl_low_np,
         ctrl_high_np,
         max_faults=max_faults,
+        exhaustive_faults=exhaustive_faults,
+        sampled_per_fault_count=sampled_per_fault_count,
         min_rank=min_rank,
         stress_quantile=stress_quantile,
         mild_effectiveness=mild_effectiveness,
@@ -676,7 +757,8 @@ def build_failure_scenario_table(
 
     print(
         "[Failure Scenarios] Building scenario table "
-        f"(max_faults={max_faults}, min_rank={min_rank}); "
+        f"(max_faults={max_faults}, exhaustive_faults={exhaustive_faults}, "
+        f"sampled_per_fault_count={sampled_per_fault_count}, min_rank={min_rank}); "
         "this is cached after the first run.",
         flush=True,
     )
@@ -685,7 +767,9 @@ def build_failure_scenario_table(
         tuple(mixer_t.shape),
         ctrl_low_np.tobytes(),
         ctrl_high_np.tobytes(),
-        int(max_faults),
+        max_faults,
+        exhaustive_faults,
+        sampled_per_fault_count,
         int(min_rank),
         float(stress_quantile),
         float(mild_effectiveness),

@@ -220,7 +220,7 @@ def learn_runner(self) -> None:
     curriculum_mode = str(getattr(cfg, "failure_curriculum_mode", "type"))
     use_controllable_failure_scenarios = bool(
         getattr(cfg, "use_controllable_failure_scenarios", False)
-    )
+    ) and bool(self.env.train_with_failures)
     split_name_to_id = {
         "train": SPLIT_TRAIN,
         "eval_id": SPLIT_EVAL_ID,
@@ -242,7 +242,13 @@ def learn_runner(self) -> None:
             self.env._thruster_mixer_T,
             self.agent.actor.act_low,
             self.agent.actor.act_high,
-            max_faults=int(getattr(cfg, "failure_scenario_max_faults", 2)),
+            max_faults=int(getattr(cfg, "failure_scenario_max_faults", 12)),
+            exhaustive_faults=int(
+                getattr(cfg, "failure_scenario_exhaustive_faults", 2)
+            ),
+            sampled_per_fault_count=int(
+                getattr(cfg, "failure_scenario_sampled_per_fault_count", 512)
+            ),
             min_rank=int(getattr(cfg, "failure_scenario_min_rank", 6)),
             stress_quantile=float(
                 getattr(cfg, "failure_scenario_stress_quantile", 0.9)

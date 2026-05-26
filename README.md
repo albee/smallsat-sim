@@ -231,7 +231,7 @@ The easiest way to get a good overview is to step through one iteration of the t
 
 To achieve adaptive policies, the residual wrench (actual - desired) commanded by the smallsat's actuator's is fed to the base policy during training and depolyment. During the latter, the actual wrench (called extrinsics) is estimated by the `CNNAdaptationModule` or `TransformerAdaptationModule`. This is turn is trained with supervised learning, using the state-action history and the ground extrinsics from simulation. The active adaptation architecture can be selected through `EnvConfig.control.RL.am_architecture` (default `"transformer"`).
 
-When failures are enabled, policy training uses a precomputed Astrobee failure-scenario library. After nominal training, failures are sampled online at reset time based on the current regulation wrench so the policy sees feasible but task-relevant authority loss rather than globally hard or impossible faults.
+When failures are enabled, policy training uses a precomputed Astrobee failure-scenario library. After nominal training, failures are sampled online at reset time based on the current regulation wrench so the policy sees feasible but task-relevant authority loss rather than globally hard or impossible faults. The library is not capped at two simultaneous faults: low-order cases are exhaustive and higher-order candidates are sampled then filtered by feasibility.
 
 To deploy the trained RL controller, run `experiments/astrobee_RL.py`.
 

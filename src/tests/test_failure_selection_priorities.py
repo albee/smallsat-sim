@@ -7,6 +7,7 @@ from smallsat_sim.envs.disturbances import DisturbanceState, DisturbanceStatus
 from smallsat_sim.controllers.rl.runners.failure_scenarios import (
     SPLIT_TRAIN,
     TASK_REGIME_HARD_FEASIBLE,
+    _iter_failure_combos,
     sample_task_conditioned_scenario_indices,
     task_wrench_from_state_features,
 )
@@ -276,3 +277,17 @@ def test_task_conditioned_scenario_sampling_prefers_aligned_weak_direction() -> 
     )
 
     assert float(jnp.mean(sampled == 0)) > 0.95
+
+
+def test_failure_library_candidate_generation_includes_higher_order_faults() -> None:
+    combos = _iter_failure_combos(
+        n_thrusters=12,
+        max_faults=12,
+        exhaustive_faults=2,
+        sampled_per_fault_count=8,
+    )
+    n_faults = [len(combo) for combo in combos]
+
+    assert max(n_faults) > 2
+    assert 12 in n_faults
+    assert all(len({thruster for _, thruster in combo}) == len(combo) for combo in combos)

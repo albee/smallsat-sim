@@ -50,12 +50,20 @@ def evaluate_policy_checkpoint(
     agent_key_before = runner.agent.key
     cfg = runner.env.env_cfg.control.RL
     scenario_table = None
-    if bool(getattr(cfg, "use_controllable_failure_scenarios", False)):
+    if runner.env.train_with_failures and bool(
+        getattr(cfg, "use_controllable_failure_scenarios", False)
+    ):
         scenario_table = build_failure_scenario_table(
             runner.env._thruster_mixer_T,
             runner.agent.actor.act_low,
             runner.agent.actor.act_high,
-            max_faults=int(getattr(cfg, "failure_scenario_max_faults", 2)),
+            max_faults=int(getattr(cfg, "failure_scenario_max_faults", 12)),
+            exhaustive_faults=int(
+                getattr(cfg, "failure_scenario_exhaustive_faults", 2)
+            ),
+            sampled_per_fault_count=int(
+                getattr(cfg, "failure_scenario_sampled_per_fault_count", 512)
+            ),
             min_rank=int(getattr(cfg, "failure_scenario_min_rank", 6)),
             stress_quantile=float(
                 getattr(cfg, "failure_scenario_stress_quantile", 0.9)

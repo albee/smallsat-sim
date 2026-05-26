@@ -121,7 +121,7 @@ def train_adaptation_module_on_policy_runner(self) -> None:
     curriculum_mode = str(getattr(cfg, "failure_curriculum_mode", "type"))
     use_controllable_failure_scenarios = bool(
         getattr(cfg, "use_controllable_failure_scenarios", False)
-    )
+    ) and bool(self.env.train_with_failures)
     failure_scenario_table = None
     use_task_conditioned_failure_sampling = bool(
         getattr(cfg, "use_task_conditioned_failure_sampling", True)
@@ -131,7 +131,13 @@ def train_adaptation_module_on_policy_runner(self) -> None:
             self.env._thruster_mixer_T,
             self.agent.actor.act_low,
             self.agent.actor.act_high,
-            max_faults=int(getattr(cfg, "failure_scenario_max_faults", 2)),
+            max_faults=int(getattr(cfg, "failure_scenario_max_faults", 12)),
+            exhaustive_faults=int(
+                getattr(cfg, "failure_scenario_exhaustive_faults", 2)
+            ),
+            sampled_per_fault_count=int(
+                getattr(cfg, "failure_scenario_sampled_per_fault_count", 512)
+            ),
             min_rank=int(getattr(cfg, "failure_scenario_min_rank", 6)),
             stress_quantile=float(
                 getattr(cfg, "failure_scenario_stress_quantile", 0.9)
