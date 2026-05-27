@@ -1928,6 +1928,7 @@ def apply_sampled_failure_scenario_split(
     task_feasibility_regime: int | None = None,
     failure_type: int | None = None,
     authority_label_any_mask: int | None = None,
+    failure_sampling_mix: tuple[dict, ...] | list[dict] | None = None,
     task_wrenches: jnp.ndarray | None = None,
     return_selection: bool = False,
 ) -> dict[str, float] | tuple[dict[str, float], jnp.ndarray, jnp.ndarray]:
@@ -1953,7 +1954,57 @@ def apply_sampled_failure_scenario_split(
         num_perturbed,
         [clean_envs, disturbed_only_envs, has_perturbation],
     )
-    if task_wrenches is None:
+    if failure_sampling_mix:
+        mix_entries = [entry for entry in failure_sampling_mix if int(entry["weight"]) > 0]
+        weights = jnp.asarray(
+            [float(entry["weight"]) for entry in mix_entries], dtype=jnp.float32
+        )
+        weights = weights / jnp.maximum(jnp.sum(weights), 1e-8)
+        mix_choice = jax.random.choice(
+            scenario_key,
+            a=jnp.arange(len(mix_entries), dtype=jnp.int32),
+            shape=(num_perturbed,),
+            p=weights,
+        )
+        scenario_indices = jnp.zeros((num_perturbed,), dtype=jnp.int32)
+        scenario_keys = jax.random.split(scenario_key, max(len(mix_entries), 1))
+        selected_task_wrenches = (
+            None if task_wrenches is None else jnp.asarray(task_wrenches)[selected_envs]
+        )
+        for mix_idx, mix_entry in enumerate(mix_entries):
+            env_mask = mix_choice == mix_idx
+            env_count = int(jnp.sum(env_mask))
+            if env_count <= 0:
+                continue
+            sampled = (
+                sample_scenario_indices(
+                    scenario_keys[mix_idx],
+                    table,
+                    split_id=split_id,
+                    count=env_count,
+                    difficulty_bin=difficulty_bin,
+                    authority_regime=authority_regime,
+                    task_feasibility_regime=mix_entry.get("task_feasibility_regime"),
+                    failure_type=failure_type,
+                    authority_label_any_mask=mix_entry.get("authority_label_any_mask"),
+                )
+                if selected_task_wrenches is None
+                else sample_task_conditioned_scenario_indices(
+                    scenario_keys[mix_idx],
+                    table,
+                    split_id=split_id,
+                    task_wrenches=selected_task_wrenches[env_mask],
+                    difficulty_bin=difficulty_bin,
+                    authority_regime=authority_regime,
+                    task_feasibility_regime=mix_entry.get("task_feasibility_regime"),
+                    failure_type=failure_type,
+                    authority_label_any_mask=mix_entry.get("authority_label_any_mask"),
+                )
+            )
+            scenario_indices = scenario_indices.at[jnp.where(env_mask, size=env_count)[0]].set(
+                sampled
+            )
+    elif task_wrenches is None:
         scenario_indices = sample_scenario_indices(
             scenario_key,
             table,

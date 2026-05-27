@@ -544,7 +544,9 @@ class OnPolicyRunner(object):
                         query_i,
                         return_stats=True,
                         return_predictions=True,
-                        training=True,
+                        # Keep dropout deterministic here to avoid mutating
+                        # an nnx RNG stream across nested jit/grad/vmap traces.
+                        training=False,
                     )
                 )(X, query)
                 log_sigma = jnp.clip(log_sigma, -6.0, 2.0)

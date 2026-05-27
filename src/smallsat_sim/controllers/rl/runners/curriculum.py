@@ -37,10 +37,10 @@ def build_authority_regime_curriculum(
     """
     Build the main task-relevant authority curriculum.
 
-    After the clean nominal phase, fine-tuning uses a 50/50 mixture by default:
-    clean environments and task-aligned hard-feasible failures. In the failed
-    environments, the task wrench is certified feasible but near the damaged
-    actuator boundary.
+    After the clean nominal warmup, immediately train with a fixed mixed batch:
+    nominal environments plus failure environments every epoch. Failure sampling
+    is biased toward task-relevant hard-feasible cases, with smaller fractions
+    for easy/near-infeasible/bias regimes.
     """
     del disturbance_fraction
     if not train_with_failures:
@@ -60,31 +60,34 @@ def build_authority_regime_curriculum(
         ]
         return phases, int(fallback_epochs)
 
-    weighted_mix = (
-        # 50% clean / nominal
-        ("nominal", 50, None, None),
-        # easy_feasible small amount only
-        ("easy_feasible", 2, TASK_REGIME_EASY_FEASIBLE, None),
-        # 35% hard_feasible task-conditioned (main target)
-        ("hard_feasible", 33, TASK_REGIME_HARD_FEASIBLE, None),
-        # 10% near_infeasible task-conditioned (smaller amount)
-        ("near_infeasible", 10, TASK_REGIME_NEAR_INFEASIBLE, None),
-        # 5% bias/nonlinear cases
-        (
-            "bias_or_nonlinear",
-            5,
-            None,
-            int(LABEL_BIAS_DOMINATED | LABEL_NONLINEAR_MISMATCH),
-        ),
+    failure_sampling_mix = (
+        {
+            "name": "hard_feasible",
+            "weight": 33,
+            "task_feasibility_regime": TASK_REGIME_HARD_FEASIBLE,
+            "authority_label_any_mask": None,
+        },
+        {
+            "name": "easy_feasible",
+            "weight": 7,
+            "task_feasibility_regime": TASK_REGIME_EASY_FEASIBLE,
+            "authority_label_any_mask": None,
+        },
+        {
+            "name": "near_infeasible",
+            "weight": 7,
+            "task_feasibility_regime": TASK_REGIME_NEAR_INFEASIBLE,
+            "authority_label_any_mask": None,
+        },
+        {
+            "name": "bias_or_nonlinear",
+            "weight": 3,
+            "task_feasibility_regime": None,
+            "authority_label_any_mask": int(
+                LABEL_BIAS_DOMINATED | LABEL_NONLINEAR_MISMATCH
+            ),
+        },
     )
-
-    total_weight = sum(weight for _, weight, _, _ in weighted_mix)
-    scaled_epochs = [
-        max(1, int(round(float(phase_epochs) * float(weight) / float(total_weight))))
-        for _, weight, _, _ in weighted_mix
-    ]
-    diff = int(phase_epochs) - int(sum(scaled_epochs))
-    scaled_epochs[0] += diff
 
     phases: list[dict] = []
     if int(nominal_epochs) > 0:
@@ -101,20 +104,20 @@ def build_authority_regime_curriculum(
             }
         )
 
-    for (name, _weight, regime, label_mask), epochs in zip(weighted_mix, scaled_epochs):
-        is_nominal = name == "nominal"
+    if int(phase_epochs) > 0:
         phases.append(
             {
-                "name": name,
-                "epochs": int(epochs),
-                "active_failures": [] if is_nominal else list(FAILURE_ORDER),
-                "failure_fraction": 0.0 if is_nominal else 1.0,
+                "name": "mixed_failures",
+                "epochs": int(phase_epochs),
+                "active_failures": list(FAILURE_ORDER),
+                "failure_fraction": float(failure_fraction),
                 "disturbance_fraction": 0.0,
                 "new_failure": None,
                 "difficulty_bin": None,
                 "authority_regime": None,
-                "task_feasibility_regime": regime,
-                "authority_label_any_mask": label_mask,
+                "task_feasibility_regime": None,
+                "authority_label_any_mask": None,
+                "failure_sampling_mix": failure_sampling_mix,
             }
         )
 

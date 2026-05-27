@@ -300,6 +300,7 @@ def learn_runner(self) -> None:
             else int(phase_task_feasibility_regime)
         )
         phase_authority_label_any_mask = phase.get("authority_label_any_mask")
+        phase_failure_sampling_mix = phase.get("failure_sampling_mix")
         phase_uses_perturbations = bool(active_failures) and phase_failure_fraction > 0.0
         phase_uses_disturbances = phase_disturbance_fraction > 0.0
         phase_uses_effects = phase_uses_perturbations or phase_uses_disturbances
@@ -388,6 +389,7 @@ def learn_runner(self) -> None:
                                 authority_regime=phase_authority_regime,
                                 task_feasibility_regime=phase_task_feasibility_regime,
                                 authority_label_any_mask=phase_authority_label_any_mask,
+                                failure_sampling_mix=phase_failure_sampling_mix,
                                 task_wrenches=current_task_wrenches,
                                 return_selection=True,
                             )

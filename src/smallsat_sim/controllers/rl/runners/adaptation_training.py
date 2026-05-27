@@ -190,6 +190,7 @@ def train_adaptation_module_on_policy_runner(self) -> None:
         phase_difficulty_bin = phase.get("difficulty_bin")
         phase_authority_regime = phase.get("authority_regime")
         phase_task_feasibility_regime = phase.get("task_feasibility_regime")
+        phase_failure_sampling_mix = phase.get("failure_sampling_mix")
         phase_distribution = uniform_failure_distribution(
             list(phase["active_failures"])
         )
@@ -238,6 +239,7 @@ def train_adaptation_module_on_policy_runner(self) -> None:
                     difficulty_bin=phase_difficulty_bin,
                     authority_regime=phase_authority_regime,
                     task_feasibility_regime=phase_task_feasibility_regime,
+                    failure_sampling_mix=phase_failure_sampling_mix,
                     task_wrenches=current_task_wrenches,
                 )
             else:
