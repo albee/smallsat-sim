@@ -25,6 +25,18 @@ def uniform_failure_distribution(active_failure_indices: list[int]) -> jnp.ndarr
     return dist
 
 
+def phase_failure_fraction(phase: dict, curriculum_epoch: int) -> float:
+    """Return the failure fraction for a phase at a zero-based curriculum epoch."""
+    schedule = phase.get("failure_fraction_schedule")
+    if not schedule:
+        return float(phase["failure_fraction"])
+    if schedule.get("type") != "linear_cap":
+        raise ValueError(f"Unsupported failure_fraction_schedule: {schedule}")
+    max_fraction = float(schedule["max_fraction"])
+    ramp_epochs = max(1, int(schedule["ramp_epochs"]))
+    return min(max_fraction, max_fraction * float(curriculum_epoch) / float(ramp_epochs))
+
+
 def build_authority_regime_curriculum(
     *,
     train_with_failures: bool,
@@ -135,17 +147,15 @@ def build_authority_regime_curriculum_v2(
     disturbance_fraction: float = 0.1,
 ) -> tuple[list[dict], int]:
     """
-    New default curriculum with fixed 200-epoch bins and increasing failure mix.
+    Default single-phase curriculum with immediate failure exposure.
 
-    Schedule (when failures are enabled):
-    0-200:   99% nominal, 1% easy_feasible
-    200-400: 95% nominal, 3% easy_feasible, 2% hard_feasible
-    400-600: 85% nominal, 5% easy_feasible, 10% hard_feasible
-    600-800: 70% nominal, 7% easy_feasible, 23% hard_feasible
-    800-1000:50% nominal, 7% easy_feasible, 33% hard_feasible,
-             7% near_infeasible, 3% bias_or_nonlinear
+    The total failed-env fraction follows
+    ``min(0.5, 0.5 * epoch / 1500)`` for zero-based curriculum epochs. Failed
+    environments always use the same scenario-regime mix:
+    hard_feasible=70, easy_feasible=15, near_infeasible=10,
+    bias_or_nonlinear=5. Non-failed environments remain nominal.
     """
-    del fallback_epochs, nominal_epochs, phase_epochs, failure_fraction, disturbance_fraction
+    del nominal_epochs, phase_epochs, failure_fraction, disturbance_fraction
     if not train_with_failures:
         phases = [
             {
@@ -163,12 +173,18 @@ def build_authority_regime_curriculum_v2(
         ]
         return phases, 1000
 
+    total_epochs = max(int(fallback_epochs), 1501)
     phases: list[dict] = [
         {
-            "name": "mixed_000_200",
-            "epochs": 200,
+            "name": "mixed_failure_ramp",
+            "epochs": total_epochs,
             "active_failures": list(FAILURE_ORDER),
-            "failure_fraction": 0.01,
+            "failure_fraction": 0.0,
+            "failure_fraction_schedule": {
+                "type": "linear_cap",
+                "max_fraction": 0.5,
+                "ramp_epochs": 1500,
+            },
             "disturbance_fraction": 0.0,
             "new_failure": None,
             "difficulty_bin": None,
@@ -176,125 +192,27 @@ def build_authority_regime_curriculum_v2(
             "task_feasibility_regime": None,
             "authority_label_any_mask": None,
             "failure_sampling_mix": (
-                {
-                    "name": "easy_feasible",
-                    "weight": 100,
-                    "task_feasibility_regime": TASK_REGIME_EASY_FEASIBLE,
-                    "authority_label_any_mask": None,
-                },
-            ),
-        },
-        {
-            "name": "mixed_200_400",
-            "epochs": 200,
-            "active_failures": list(FAILURE_ORDER),
-            "failure_fraction": 0.05,
-            "disturbance_fraction": 0.0,
-            "new_failure": None,
-            "difficulty_bin": None,
-            "authority_regime": None,
-            "task_feasibility_regime": None,
-            "authority_label_any_mask": None,
-            "failure_sampling_mix": (
-                {
-                    "name": "easy_feasible",
-                    "weight": 3,
-                    "task_feasibility_regime": TASK_REGIME_EASY_FEASIBLE,
-                    "authority_label_any_mask": None,
-                },
                 {
                     "name": "hard_feasible",
-                    "weight": 2,
+                    "weight": 70,
                     "task_feasibility_regime": TASK_REGIME_HARD_FEASIBLE,
                     "authority_label_any_mask": None,
                 },
-            ),
-        },
-        {
-            "name": "mixed_400_600",
-            "epochs": 200,
-            "active_failures": list(FAILURE_ORDER),
-            "failure_fraction": 0.15,
-            "disturbance_fraction": 0.0,
-            "new_failure": None,
-            "difficulty_bin": None,
-            "authority_regime": None,
-            "task_feasibility_regime": None,
-            "authority_label_any_mask": None,
-            "failure_sampling_mix": (
                 {
                     "name": "easy_feasible",
-                    "weight": 5,
+                    "weight": 15,
                     "task_feasibility_regime": TASK_REGIME_EASY_FEASIBLE,
-                    "authority_label_any_mask": None,
-                },
-                {
-                    "name": "hard_feasible",
-                    "weight": 10,
-                    "task_feasibility_regime": TASK_REGIME_HARD_FEASIBLE,
-                    "authority_label_any_mask": None,
-                },
-            ),
-        },
-        {
-            "name": "mixed_600_800",
-            "epochs": 200,
-            "active_failures": list(FAILURE_ORDER),
-            "failure_fraction": 0.30,
-            "disturbance_fraction": 0.0,
-            "new_failure": None,
-            "difficulty_bin": None,
-            "authority_regime": None,
-            "task_feasibility_regime": None,
-            "authority_label_any_mask": None,
-            "failure_sampling_mix": (
-                {
-                    "name": "easy_feasible",
-                    "weight": 7,
-                    "task_feasibility_regime": TASK_REGIME_EASY_FEASIBLE,
-                    "authority_label_any_mask": None,
-                },
-                {
-                    "name": "hard_feasible",
-                    "weight": 23,
-                    "task_feasibility_regime": TASK_REGIME_HARD_FEASIBLE,
-                    "authority_label_any_mask": None,
-                },
-            ),
-        },
-        {
-            "name": "mixed_800_1000",
-            "epochs": 200,
-            "active_failures": list(FAILURE_ORDER),
-            "failure_fraction": 0.50,
-            "disturbance_fraction": 0.0,
-            "new_failure": None,
-            "difficulty_bin": None,
-            "authority_regime": None,
-            "task_feasibility_regime": None,
-            "authority_label_any_mask": None,
-            "failure_sampling_mix": (
-                {
-                    "name": "easy_feasible",
-                    "weight": 7,
-                    "task_feasibility_regime": TASK_REGIME_EASY_FEASIBLE,
-                    "authority_label_any_mask": None,
-                },
-                {
-                    "name": "hard_feasible",
-                    "weight": 33,
-                    "task_feasibility_regime": TASK_REGIME_HARD_FEASIBLE,
                     "authority_label_any_mask": None,
                 },
                 {
                     "name": "near_infeasible",
-                    "weight": 7,
+                    "weight": 10,
                     "task_feasibility_regime": TASK_REGIME_NEAR_INFEASIBLE,
                     "authority_label_any_mask": None,
                 },
                 {
                     "name": "bias_or_nonlinear",
-                    "weight": 3,
+                    "weight": 5,
                     "task_feasibility_regime": None,
                     "authority_label_any_mask": int(
                         LABEL_BIAS_DOMINATED | LABEL_NONLINEAR_MISMATCH
@@ -303,5 +221,4 @@ def build_authority_regime_curriculum_v2(
             ),
         },
     ]
-    total_epochs = sum(int(phase["epochs"]) for phase in phases)
     return phases, total_epochs

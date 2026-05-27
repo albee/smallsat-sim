@@ -1,6 +1,7 @@
 from smallsat_sim.controllers.rl.runners.curriculum import (
     build_authority_regime_curriculum,
     build_authority_regime_curriculum_v2,
+    phase_failure_fraction,
 )
 
 
@@ -36,23 +37,50 @@ def test_authority_curriculum_has_single_mixed_failure_phase_after_warmup() -> N
 def test_authority_curriculum_v2_default_schedule() -> None:
     phases, total_epochs = build_authority_regime_curriculum_v2(
         train_with_failures=True,
-        fallback_epochs=100,
+        fallback_epochs=2000,
         nominal_epochs=100,
         phase_epochs=50,
         failure_fraction=0.5,
         disturbance_fraction=0.1,
     )
 
-    assert len(phases) == 5
-    assert [p["epochs"] for p in phases] == [200, 200, 200, 200, 200]
-    assert [p["failure_fraction"] for p in phases] == [0.01, 0.05, 0.15, 0.30, 0.50]
-    assert total_epochs == 1000
+    assert len(phases) == 1
+    assert phases[0]["name"] == "mixed_failure_ramp"
+    assert phases[0]["epochs"] == 2000
+    assert phase_failure_fraction(phases[0], 0) == 0.0
+    assert phase_failure_fraction(phases[0], 750) == 0.25
+    assert phase_failure_fraction(phases[0], 1500) == 0.5
+    assert phase_failure_fraction(phases[0], 2000) == 0.5
+    assert total_epochs == 2000
 
-    last_mix = phases[-1]["failure_sampling_mix"]
-    assert [entry["name"] for entry in last_mix] == [
-        "easy_feasible",
+    mix = phases[0]["failure_sampling_mix"]
+    assert [entry["name"] for entry in mix] == [
         "hard_feasible",
+        "easy_feasible",
         "near_infeasible",
         "bias_or_nonlinear",
     ]
-    assert [entry["weight"] for entry in last_mix] == [7, 33, 7, 3]
+    assert [entry["weight"] for entry in mix] == [70, 15, 10, 5]
+
+
+def test_authority_curriculum_v2_nominal_only_unchanged() -> None:
+    phases, total_epochs = build_authority_regime_curriculum_v2(
+        train_with_failures=False,
+        fallback_epochs=900,
+    )
+
+    assert phases == [
+        {
+            "name": "nominal_only",
+            "epochs": 1000,
+            "active_failures": [],
+            "failure_fraction": 0.0,
+            "disturbance_fraction": 0.0,
+            "new_failure": None,
+            "difficulty_bin": None,
+            "authority_regime": None,
+            "task_feasibility_regime": None,
+            "authority_label_any_mask": None,
+        }
+    ]
+    assert total_epochs == 1000

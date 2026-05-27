@@ -1955,16 +1955,32 @@ def apply_sampled_failure_scenario_split(
         [clean_envs, disturbed_only_envs, has_perturbation],
     )
     if failure_sampling_mix:
-        mix_entries = [entry for entry in failure_sampling_mix if int(entry["weight"]) > 0]
-        weights = jnp.asarray(
-            [float(entry["weight"]) for entry in mix_entries], dtype=jnp.float32
+        mix_entries = [
+            entry for entry in failure_sampling_mix if int(entry["weight"]) > 0
+        ]
+        if not mix_entries:
+            mix_entries = [
+                {"weight": 1, "task_feasibility_regime": task_feasibility_regime}
+            ]
+        weights_np = np.asarray(
+            [float(entry["weight"]) for entry in mix_entries], dtype=np.float64
         )
-        weights = weights / jnp.maximum(jnp.sum(weights), 1e-8)
-        mix_choice = jax.random.choice(
-            scenario_key,
-            a=jnp.arange(len(mix_entries), dtype=jnp.int32),
-            shape=(num_perturbed,),
-            p=weights,
+        weights_np = weights_np / max(float(weights_np.sum()), 1e-8)
+        raw_counts = weights_np * float(num_perturbed)
+        mix_counts = np.floor(raw_counts).astype(np.int32)
+        remainder = int(num_perturbed - int(mix_counts.sum()))
+        if remainder > 0:
+            order = np.argsort(-(raw_counts - mix_counts))
+            mix_counts[order[:remainder]] += 1
+        mix_choice_np = np.concatenate(
+            [
+                np.full(int(count), mix_idx, dtype=np.int32)
+                for mix_idx, count in enumerate(mix_counts)
+                if int(count) > 0
+            ]
+        )
+        mix_choice = jax.random.permutation(
+            scenario_key, jnp.asarray(mix_choice_np, dtype=jnp.int32)
         )
         scenario_indices = jnp.zeros((num_perturbed,), dtype=jnp.int32)
         scenario_keys = jax.random.split(scenario_key, max(len(mix_entries), 1))

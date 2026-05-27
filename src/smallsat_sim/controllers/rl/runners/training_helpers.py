@@ -37,6 +37,7 @@ def evaluate_policy_checkpoint(
     perturbation_distribution: jnp.ndarray,
     disturbance_fraction: float,
     eval_episodes: int,
+    failure_sampling_mix: tuple[dict, ...] | list[dict] | None = None,
 ) -> float:
     """
     Lightweight evaluation used to safeguard nominal performance.
@@ -102,6 +103,7 @@ def evaluate_policy_checkpoint(
                     split_id=SPLIT_SEMANTIC_EVAL,
                     fraction_perturbed_envs=float(fraction_perturbed_envs),
                     start_time=None,
+                    failure_sampling_mix=failure_sampling_mix,
                     task_wrenches=task_wrenches,
                 )
             else:

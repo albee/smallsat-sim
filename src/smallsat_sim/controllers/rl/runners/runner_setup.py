@@ -48,6 +48,11 @@ def build_checkpoint_file_names(env) -> dict[str, str]:
         if env.train_with_failures and curriculum_mode == "authority"
         else None
     )
+    curriculum_tag = (
+        "failramp1500_mix70_15_10_5"
+        if env.train_with_failures and curriculum_mode == "authority"
+        else None
+    )
     failure_fraction_tag = None
     if env.train_with_failures:
         failure_fraction = float(
@@ -65,6 +70,7 @@ def build_checkpoint_file_names(env) -> dict[str, str]:
             task_tag,
             scratch_failure,
             task_feasible_tag,
+            curriculum_tag,
             failure_fraction_tag,
             nominal,
         ]

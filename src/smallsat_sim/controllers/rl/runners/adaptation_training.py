@@ -20,7 +20,8 @@ from smallsat_sim.controllers.rl.runners.adaptive_context import (
     task_authority_targets,
 )
 from smallsat_sim.controllers.rl.runners.curriculum import (
-    build_authority_regime_curriculum,
+    build_authority_regime_curriculum_v2,
+    phase_failure_fraction as get_phase_failure_fraction,
     uniform_failure_distribution,
 )
 from smallsat_sim.controllers.rl.runners.failure_scenarios import (
@@ -151,7 +152,7 @@ def train_adaptation_module_on_policy_runner(self) -> None:
             f"[AM Curriculum] mode='{curriculum_mode}' is deprecated; using semantic authority curriculum.",
             flush=True,
         )
-    curriculum_phases, curriculum_total_epochs = build_authority_regime_curriculum(
+    curriculum_phases, curriculum_total_epochs = build_authority_regime_curriculum_v2(
         train_with_failures=bool(self.env.train_with_failures),
         fallback_epochs=int(self.epochs),
         nominal_epochs=int(cfg.curriculum_nominal_epochs),
@@ -185,7 +186,9 @@ def train_adaptation_module_on_policy_runner(self) -> None:
         if hasattr(self.env, "reset_disturbances"):
             self.env.reset_disturbances()
         phase = _phase_for_am_epoch(epoch)
-        phase_failure_fraction = float(phase["failure_fraction"])
+        phase_failure_fraction = get_phase_failure_fraction(
+            phase, int(epoch * curriculum_total_epochs / max(int(self.epochs), 1))
+        )
         phase_disturbance_fraction = float(phase["disturbance_fraction"])
         phase_difficulty_bin = phase.get("difficulty_bin")
         phase_authority_regime = phase.get("authority_regime")

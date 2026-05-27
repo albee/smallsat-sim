@@ -14,8 +14,8 @@ from smallsat_sim.controllers.rl.runners.rollout import (
     run_functional_rollout,
 )
 from smallsat_sim.controllers.rl.runners.curriculum import (
-    build_authority_regime_curriculum,
     build_authority_regime_curriculum_v2,
+    phase_failure_fraction as get_phase_failure_fraction,
     uniform_failure_distribution,
 )
 from smallsat_sim.controllers.rl.runners.failure_scenarios import (
@@ -52,6 +52,7 @@ from smallsat_sim.controllers.rl.runners.runner_utils import (
     update_module_from_checkpoint_state,
 )
 from smallsat_sim.controllers.rl.storage.replay_buffer import ReplayBuffer
+from smallsat_sim.envs.perturbation_state import PerturbationStatus
 from smallsat_sim.envs.perturbations_rl import Perturbation
 from smallsat_sim.envs.vec_env import (
     _compute_state_features,
@@ -91,6 +92,35 @@ def _context_input_weight_norm(module, obs_dim: int, res_dim: int) -> float:
     if not norms:
         return 0.0
     return float(jnp.max(jnp.stack(norms)))
+
+
+def _active_failure_masks_from_effect_states(
+    *,
+    num_envs: int,
+    perturbation_states: tuple,
+    disturbance_states: tuple,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    has_perturbation = jnp.zeros((num_envs,), dtype=bool)
+    has_disturbance = jnp.zeros((num_envs,), dtype=bool)
+
+    for state in perturbation_states or ():
+        if state is None or getattr(state, "thruster_mask", None) is None:
+            continue
+        thruster_mask = jnp.asarray(state.thruster_mask)
+        if thruster_mask.shape[0] == num_envs:
+            has_perturbation = jnp.logical_or(
+                has_perturbation,
+                jnp.any(thruster_mask != PerturbationStatus.OPERATIONAL.value, axis=1),
+            )
+
+    for state in disturbance_states or ():
+        if state is None or getattr(state, "active_mask", None) is None:
+            continue
+        active_mask = jnp.asarray(state.active_mask).astype(bool)
+        if active_mask.shape[0] == num_envs:
+            has_disturbance = jnp.logical_or(has_disturbance, active_mask)
+
+    return has_perturbation, has_disturbance
 
 
 def learn_runner(self) -> None:
@@ -151,7 +181,6 @@ def learn_runner(self) -> None:
     phase_epochs = int(cfg.curriculum_phase_epochs)
     failure_fraction = float(cfg.curriculum_failure_fraction)
     disturbance_fraction = float(cfg.curriculum_disturbance_fraction)
-    failure_ramp_epochs = max(1, int(getattr(cfg, "curriculum_failure_ramp_epochs", 1)))
     disturbance_ramp_epochs = max(
         1, int(getattr(cfg, "curriculum_disturbance_ramp_epochs", 1))
     )
@@ -274,16 +303,15 @@ def learn_runner(self) -> None:
     # Convenience distribution for nominal-only evaluation.
     zeros_dist = jnp.zeros((5,), dtype=jnp.float32)
 
-    # Reuse step-config objects across epochs. Rebuilding them every epoch can
-    # force extra trace/compile work in the scan path because the config carries
-    # large pytrees (MJX templates and effect snapshots).
+    # Reuse only effect-free configs. Effect-enabled configs snapshot failure
+    # states, so they must be rebuilt after each curriculum resample.
     step_config_cache: dict[bool, object] = {}
 
     for phase_idx, phase in enumerate(phases):
         phase_name = phase["name"]
         phase_epochs = int(phase["epochs"])
         active_failures = list(phase["active_failures"])
-        phase_failure_fraction = float(phase["failure_fraction"])
+        phase_failure_fraction = get_phase_failure_fraction(phase, global_epoch)
         phase_disturbance_fraction = float(phase["disturbance_fraction"])
         phase_distribution = uniform_failure_distribution(active_failures)
         new_failure_idx = phase["new_failure"]
@@ -303,7 +331,10 @@ def learn_runner(self) -> None:
         )
         phase_authority_label_any_mask = phase.get("authority_label_any_mask")
         phase_failure_sampling_mix = phase.get("failure_sampling_mix")
-        phase_uses_perturbations = bool(active_failures) and phase_failure_fraction > 0.0
+        phase_uses_perturbations = bool(active_failures) and (
+            phase_failure_fraction > 0.0
+            or bool(phase.get("failure_fraction_schedule"))
+        )
         phase_uses_disturbances = phase_disturbance_fraction > 0.0
         phase_uses_effects = phase_uses_perturbations or phase_uses_disturbances
         applied_failure_fraction = 0.0
@@ -320,11 +351,13 @@ def learn_runner(self) -> None:
             global_epoch += 1
             epoch_start_time = time.perf_counter()
             setup_start_time = time.perf_counter()
-            failure_ramp = min(1.0, float(phase_epoch + 1) / float(failure_ramp_epochs))
             disturbance_ramp = min(
                 1.0, float(phase_epoch + 1) / float(disturbance_ramp_epochs)
             )
-            current_failure_fraction = phase_failure_fraction * failure_ramp
+            curriculum_epoch = global_epoch - 1
+            current_failure_fraction = get_phase_failure_fraction(
+                phase, curriculum_epoch
+            )
             current_disturbance_fraction = phase_disturbance_fraction * disturbance_ramp
             epoch_key = self._take_keys()
             (
@@ -351,6 +384,7 @@ def learn_runner(self) -> None:
             # Apply failures/disturbances for this phase with fixed proportions
             should_resample_effects = (
                 phase_epoch == 0
+                or bool(phase.get("failure_fraction_schedule"))
                 or phase_epoch % resample_effects_interval == 0
             )
             if self.env.train_with_failures and phase_uses_effects:
@@ -412,21 +446,33 @@ def learn_runner(self) -> None:
                             fraction_disturbed_envs=applied_disturbance_fraction,
                             start_time=disturbance_start_time,
                         )
-            has_perturbation_epoch, has_disturbance_epoch = self.env._get_active_failure_masks()
-            failed_env_mask_epoch = jnp.logical_or(
-                has_perturbation_epoch, has_disturbance_epoch
-            )
-            nominal_env_mask_epoch = jnp.logical_not(failed_env_mask_epoch)
-
             # Accumulate rollout stats to emit once per epoch
             setup_duration = time.perf_counter() - setup_start_time
             scan_start = time.perf_counter()
-            if phase_uses_effects not in step_config_cache:
+            if phase_uses_effects:
+                step_config = self.env.build_step_config(
+                    max_episode_len=self.max_ep_len,
+                    effects_enabled=True,
+                )
+            elif phase_uses_effects not in step_config_cache:
                 step_config_cache[phase_uses_effects] = self.env.build_step_config(
                     max_episode_len=self.max_ep_len,
                     effects_enabled=phase_uses_effects,
                 )
-            step_config = step_config_cache[phase_uses_effects]
+                step_config = step_config_cache[phase_uses_effects]
+            else:
+                step_config = step_config_cache[phase_uses_effects]
+            has_perturbation_epoch, has_disturbance_epoch = (
+                _active_failure_masks_from_effect_states(
+                    num_envs=self.env.num_envs,
+                    perturbation_states=step_config.base_perturbation_states,
+                    disturbance_states=step_config.base_disturbance_states,
+                )
+            )
+            failed_env_mask_epoch = jnp.logical_or(
+                has_perturbation_epoch, has_disturbance_epoch
+            )
+            nominal_env_mask_epoch = jnp.logical_not(failed_env_mask_epoch)
             rollout_backend = os.environ.get(
                 "SMALLSAT_ROLLOUT_BACKEND",
                 getattr(self.env.env_cfg.control.RL, "rollout_backend", "mjx"),
@@ -1153,12 +1199,6 @@ def learn_runner(self) -> None:
                 # In-loop eval mutates the shared env object (resets + applies effects).
                 # Snapshot and restore training state so eval cannot leak into the next epoch.
                 train_state_snapshot = self.env.state_struct
-                train_perturbation_states_snapshot = getattr(
-                    self.env, "perturbation_states", None
-                )
-                train_disturbance_states_snapshot = getattr(
-                    self.env, "disturbance_states", None
-                )
                 train_thruster_mask_snapshot = getattr(Perturbation, "thruster_mask", None)
                 try:
                     nominal_score = evaluate_policy_checkpoint(
@@ -1190,15 +1230,11 @@ def learn_runner(self) -> None:
                         perturbation_distribution=phase_distribution,
                         disturbance_fraction=applied_disturbance_fraction,
                         eval_episodes=eval_episodes,
+                        failure_sampling_mix=phase_failure_sampling_mix,
                     )
                 finally:
-                    self.env._state = train_state_snapshot
-                    if train_perturbation_states_snapshot is not None:
-                        self.env.perturbation_states = train_perturbation_states_snapshot
-                    if train_disturbance_states_snapshot is not None:
-                        self.env.disturbance_states = train_disturbance_states_snapshot
-                    if train_thruster_mask_snapshot is not None:
-                        Perturbation.thruster_mask = train_thruster_mask_snapshot
+                    self.env.apply_state_struct(train_state_snapshot)
+                    Perturbation.thruster_mask = train_thruster_mask_snapshot
 
                 print(
                     f"[Curriculum Eval] phase={phase_name} epoch={phase_epoch + 1}/{phase_epochs} "
