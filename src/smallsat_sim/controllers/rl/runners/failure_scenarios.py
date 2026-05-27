@@ -89,6 +89,44 @@ TASK_ERROR_HARD_FEASIBLE_THRESHOLD = 0.10
 UTILIZATION_BIN_EASY_MAX = 0.30
 UTILIZATION_BIN_MEDIUM_MAX = 0.60
 UTILIZATION_BIN_HARD_MAX = 0.90
+OOD_HIGHER_ORDER_FAULT_COUNT = 3
+OOD_NEAR_BOUNDARY_UTILIZATION = UTILIZATION_BIN_HARD_MAX
+
+
+def _count_distinct_failure_types(failure_types: tuple[int, ...]) -> int:
+    distinct = {int(ft) for ft in failure_types if int(ft) >= 0}
+    return len(distinct)
+
+
+def _is_distributional_ood_candidate(
+    *,
+    failure_types: tuple[int, ...],
+    n_faults: int,
+    task_feasibility_regime: int,
+    targeted_task_utilization: float,
+    authority_label_mask: int,
+) -> bool:
+    """
+    Mark scenarios intentionally outside the core training distribution.
+
+    OOD is defined semantically (distribution shift), not purely by n_faults:
+    - higher-order combinations,
+    - near-boundary / near-infeasible authority,
+    - rare pathology signatures.
+    """
+    if int(n_faults) >= OOD_HIGHER_ORDER_FAULT_COUNT:
+        return True
+    if int(task_feasibility_regime) == TASK_REGIME_NEAR_INFEASIBLE:
+        return True
+    if float(targeted_task_utilization) >= OOD_NEAR_BOUNDARY_UTILIZATION:
+        return True
+    if (int(authority_label_mask) & LABEL_NEAR_DEPENDENT) != 0:
+        return True
+    if (int(authority_label_mask) & LABEL_NONLINEAR_MISMATCH) != 0:
+        return True
+    if _count_distinct_failure_types(failure_types) >= 2 and int(n_faults) >= 2:
+        return True
+    return False
 
 
 def task_wrench_from_state_features(
@@ -923,8 +961,17 @@ def _build_scenario_table_cached(
         thrusters = row["thrusters"]
         n_faults = row["n_faults"]
         p90_error = row["p90_error"]
-        if deterministic_holdout[row_idx]:
-            split = SPLIT_EVAL_OOD if n_faults > 1 else SPLIT_EVAL_ID
+        is_ood = _is_distributional_ood_candidate(
+            failure_types=failure_types,
+            n_faults=n_faults,
+            task_feasibility_regime=row["task_feasibility_regime"],
+            targeted_task_utilization=row["targeted_task_utilization"],
+            authority_label_mask=row["authority_label_mask"],
+        )
+        if is_ood:
+            split = SPLIT_EVAL_OOD
+        elif deterministic_holdout[row_idx]:
+            split = SPLIT_EVAL_ID
         else:
             split = SPLIT_TRAIN
         is_stress = int(p90_error >= stress_threshold)
@@ -1085,6 +1132,12 @@ def scenario_split_counts(table: dict[str, jnp.ndarray]) -> dict[str, int]:
         "eval_id": int((split == SPLIT_EVAL_ID).sum()),
         "eval_ood": int((split == SPLIT_EVAL_OOD).sum()),
         "stress": int(stress.sum()),
+        "eval_id_stress": int(
+            np.logical_and(split == SPLIT_EVAL_ID, stress.astype(bool)).sum()
+        ),
+        "eval_ood_stress": int(
+            np.logical_and(split == SPLIT_EVAL_OOD, stress.astype(bool)).sum()
+        ),
     }
 
 
