@@ -21,8 +21,6 @@ from smallsat_sim.controllers.rl.runners.adaptive_context import (
 )
 from smallsat_sim.controllers.rl.runners.curriculum import (
     build_authority_regime_curriculum,
-    build_difficulty_curriculum,
-    build_failure_curriculum,
     uniform_failure_distribution,
 )
 from smallsat_sim.controllers.rl.runners.failure_scenarios import (
@@ -118,7 +116,7 @@ def train_adaptation_module_on_policy_runner(self) -> None:
     disturbance_start_time_max = float(
         getattr(cfg, "curriculum_disturbance_start_time_max", 0.0)
     )
-    curriculum_mode = str(getattr(cfg, "failure_curriculum_mode", "type"))
+    curriculum_mode = str(getattr(cfg, "failure_curriculum_mode", "authority"))
     use_controllable_failure_scenarios = bool(
         getattr(cfg, "use_controllable_failure_scenarios", False)
     ) and bool(self.env.train_with_failures)
@@ -148,41 +146,19 @@ def train_adaptation_module_on_policy_runner(self) -> None:
         )
         precompute_scenario_gp_samples(self.env, self._take_keys())
 
-    if (
-        curriculum_mode == "authority"
-        and use_controllable_failure_scenarios
-        and failure_scenario_table is not None
-    ):
-        curriculum_phases, curriculum_total_epochs = build_authority_regime_curriculum(
-            train_with_failures=bool(self.env.train_with_failures),
-            fallback_epochs=int(self.epochs),
-            nominal_epochs=int(cfg.curriculum_nominal_epochs),
-            phase_epochs=int(cfg.curriculum_phase_epochs),
-            failure_fraction=float(cfg.curriculum_failure_fraction),
-            disturbance_fraction=float(cfg.curriculum_disturbance_fraction),
+    if curriculum_mode not in ("authority", "semantic"):
+        print(
+            f"[AM Curriculum] mode='{curriculum_mode}' is deprecated; using semantic authority curriculum.",
+            flush=True,
         )
-    elif (
-        curriculum_mode == "difficulty"
-        and use_controllable_failure_scenarios
-        and failure_scenario_table is not None
-    ):
-        curriculum_phases, curriculum_total_epochs = build_difficulty_curriculum(
-            train_with_failures=bool(self.env.train_with_failures),
-            fallback_epochs=int(self.epochs),
-            nominal_epochs=int(cfg.curriculum_nominal_epochs),
-            phase_epochs=int(cfg.curriculum_phase_epochs),
-            failure_fraction=float(cfg.curriculum_failure_fraction),
-            disturbance_fraction=float(cfg.curriculum_disturbance_fraction),
-        )
-    else:
-        curriculum_phases, curriculum_total_epochs = build_failure_curriculum(
-            train_with_failures=bool(self.env.train_with_failures),
-            fallback_epochs=int(self.epochs),
-            nominal_epochs=int(cfg.curriculum_nominal_epochs),
-            phase_epochs=int(cfg.curriculum_phase_epochs),
-            failure_fraction=float(cfg.curriculum_failure_fraction),
-            disturbance_fraction=float(cfg.curriculum_disturbance_fraction),
-        )
+    curriculum_phases, curriculum_total_epochs = build_authority_regime_curriculum(
+        train_with_failures=bool(self.env.train_with_failures),
+        fallback_epochs=int(self.epochs),
+        nominal_epochs=int(cfg.curriculum_nominal_epochs),
+        phase_epochs=int(cfg.curriculum_phase_epochs),
+        failure_fraction=float(cfg.curriculum_failure_fraction),
+        disturbance_fraction=float(cfg.curriculum_disturbance_fraction),
+    )
     phase_end_epochs = []
     running_epoch = 0
     for phase in curriculum_phases:
@@ -237,7 +213,6 @@ def train_adaptation_module_on_policy_runner(self) -> None:
             if (
                 use_controllable_failure_scenarios
                 and failure_scenario_table is not None
-                and curriculum_mode in ("authority", "difficulty")
             ):
                 current_task_wrenches = None
                 if use_task_conditioned_failure_sampling:

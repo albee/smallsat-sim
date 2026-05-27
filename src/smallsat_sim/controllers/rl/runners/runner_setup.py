@@ -41,7 +41,7 @@ def build_checkpoint_file_names(env) -> dict[str, str]:
     )
     task_tag = "full_pose" if success_criterion == "full_pose" else None
     curriculum_mode = str(
-        getattr(env.env_cfg.control.RL, "failure_curriculum_mode", "type")
+        getattr(env.env_cfg.control.RL, "failure_curriculum_mode", "authority")
     )
     task_feasible_tag = (
         "taskaligned"

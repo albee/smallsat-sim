@@ -19,8 +19,8 @@ from smallsat_sim.envs.perturbations_rl import Perturbation
 
 
 SPLIT_TRAIN = 0
-SPLIT_EVAL_ID = 1
-SPLIT_EVAL_OOD = 2
+SPLIT_SEMANTIC_EVAL = 1
+SPLIT_STRESS_TEST = 2
 BIN_EASY = 0
 BIN_MEDIUM = 1
 BIN_HARD = 2
@@ -51,8 +51,8 @@ FAILURE_TYPE_NAMES = {
 }
 SPLIT_NAMES = {
     SPLIT_TRAIN: "train",
-    SPLIT_EVAL_ID: "eval_id",
-    SPLIT_EVAL_OOD: "eval_ood",
+    SPLIT_SEMANTIC_EVAL: "semantic_eval",
+    SPLIT_STRESS_TEST: "stress_test",
 }
 BIN_NAMES = {
     BIN_EASY: "easy",
@@ -80,7 +80,7 @@ SCENARIO_FAILURE_STATUS = {
     4: PerturbationStatus.THRUST_INSTABILITY.value,
 }
 _GP_SAMPLE_BANK: dict[tuple, tuple[jnp.ndarray, jnp.ndarray]] = {}
-_SCENARIO_CACHE_VERSION = "task-conditioned-horizon-utilization-v5-split-stress-orthogonal"
+_SCENARIO_CACHE_VERSION = "task-conditioned-horizon-utilization-v6-semantic-splits"
 TASK_ERROR_INFEASIBLE_THRESHOLD = 0.25
 TASK_MARGIN_INFEASIBLE_THRESHOLD = -0.20
 TASK_MARGIN_NEAR_INFEASIBLE_THRESHOLD = 0.0
@@ -89,46 +89,6 @@ TASK_ERROR_HARD_FEASIBLE_THRESHOLD = 0.10
 UTILIZATION_BIN_EASY_MAX = 0.30
 UTILIZATION_BIN_MEDIUM_MAX = 0.60
 UTILIZATION_BIN_HARD_MAX = 0.90
-OOD_HIGHER_ORDER_FAULT_COUNT = 3
-OOD_NEAR_BOUNDARY_UTILIZATION = UTILIZATION_BIN_HARD_MAX
-
-
-def _count_distinct_failure_types(failure_types: tuple[int, ...]) -> int:
-    distinct = {int(ft) for ft in failure_types if int(ft) >= 0}
-    return len(distinct)
-
-
-def _is_distributional_ood_candidate(
-    *,
-    failure_types: tuple[int, ...],
-    n_faults: int,
-    task_feasibility_regime: int,
-    targeted_task_utilization: float,
-    authority_label_mask: int,
-) -> bool:
-    """
-    Mark scenarios intentionally outside the core training distribution.
-
-    OOD is defined semantically (distribution shift), not purely by n_faults:
-    - higher-order combinations,
-    - near-boundary / near-infeasible authority,
-    - rare pathology signatures.
-    """
-    if int(n_faults) >= OOD_HIGHER_ORDER_FAULT_COUNT:
-        return True
-    if int(task_feasibility_regime) == TASK_REGIME_NEAR_INFEASIBLE:
-        return True
-    if float(targeted_task_utilization) >= OOD_NEAR_BOUNDARY_UTILIZATION:
-        return True
-    if (int(authority_label_mask) & LABEL_NEAR_DEPENDENT) != 0:
-        return True
-    if (int(authority_label_mask) & LABEL_NONLINEAR_MISMATCH) != 0:
-        return True
-    if _count_distinct_failure_types(failure_types) >= 2 and int(n_faults) >= 2:
-        return True
-    return False
-
-
 def task_wrench_from_state_features(
     states: jnp.ndarray,
     *,
@@ -177,6 +137,7 @@ def _scenario_cache_key(
     min_rank: int,
     stress_quantile: float,
     mild_effectiveness: float,
+    include_infeasible: bool,
 ) -> str:
     digest = hashlib.sha256()
     digest.update(_SCENARIO_CACHE_VERSION.encode())
@@ -189,6 +150,7 @@ def _scenario_cache_key(
     digest.update(str(int(min_rank)).encode())
     digest.update(f"{float(stress_quantile):.8f}".encode())
     digest.update(f"{float(mild_effectiveness):.8f}".encode())
+    digest.update(str(int(bool(include_infeasible))).encode())
     return digest.hexdigest()[:16]
 
 
@@ -795,6 +757,7 @@ def _build_scenario_table_cached(
     min_rank: int,
     stress_quantile: float,
     mild_effectiveness: float,
+    include_infeasible: bool,
 ) -> dict[str, np.ndarray]:
     mixer_t = np.frombuffer(mixer_t_bytes, dtype=np.float32).reshape(mixer_t_shape)
     ctrl_low = np.frombuffer(ctrl_low_bytes, dtype=np.float32).copy()
@@ -806,7 +769,6 @@ def _build_scenario_table_cached(
 
     scenario_rows = []
     p90_all = []
-    deterministic_holdout = []
 
     combos = _iter_failure_combos(
         n_thrusters=n_thrusters,
@@ -854,7 +816,9 @@ def _build_scenario_table_cached(
             targeted_task_error,
             targeted_task_margin,
         )
-        if task_feasibility_regime == TASK_REGIME_INFEASIBLE:
+        if task_feasibility_regime == TASK_REGIME_INFEASIBLE and not bool(
+            include_infeasible
+        ):
             continue
         scenario_rows.append(
             {
@@ -886,12 +850,6 @@ def _build_scenario_table_cached(
             }
         )
         p90_all.append(p90_error)
-        holdout_hash = (
-            sum((ft + 1) * 17 for ft in failure_types)
-            + sum((thr + 1) * 31 for thr in thrusters)
-            + n_faults * 13
-        ) % 10
-        deterministic_holdout.append(holdout_hash >= 8)
 
     if not scenario_rows:
         empty_int = np.empty((0, table_width), dtype=np.int32)
@@ -961,19 +919,12 @@ def _build_scenario_table_cached(
         thrusters = row["thrusters"]
         n_faults = row["n_faults"]
         p90_error = row["p90_error"]
-        is_ood = _is_distributional_ood_candidate(
-            failure_types=failure_types,
-            n_faults=n_faults,
-            task_feasibility_regime=row["task_feasibility_regime"],
-            targeted_task_utilization=row["targeted_task_utilization"],
-            authority_label_mask=row["authority_label_mask"],
+        del row_idx
+        split = (
+            SPLIT_STRESS_TEST
+            if int(row["task_feasibility_regime"]) == TASK_REGIME_INFEASIBLE
+            else SPLIT_TRAIN
         )
-        if is_ood:
-            split = SPLIT_EVAL_OOD
-        elif deterministic_holdout[row_idx]:
-            split = SPLIT_EVAL_ID
-        else:
-            split = SPLIT_TRAIN
         is_stress = int(p90_error >= stress_threshold)
 
         utilization = float(row["targeted_task_utilization"])
@@ -1074,6 +1025,7 @@ def build_failure_scenario_table(
     min_rank: int = 6,
     stress_quantile: float = 0.9,
     mild_effectiveness: float = 0.5,
+    include_infeasible: bool = False,
 ) -> dict[str, jnp.ndarray]:
     mixer_t = np.asarray(jax.device_get(thruster_mixer_t), dtype=np.float32)
     ctrl_low_np = np.asarray(jax.device_get(ctrl_low), dtype=np.float32)
@@ -1091,6 +1043,7 @@ def build_failure_scenario_table(
         min_rank=min_rank,
         stress_quantile=stress_quantile,
         mild_effectiveness=mild_effectiveness,
+        include_infeasible=include_infeasible,
     )
     cache_path = os.path.join(_scenario_cache_dir(), f"{cache_key}.npz")
     if os.path.isfile(cache_path):
@@ -1116,6 +1069,7 @@ def build_failure_scenario_table(
         int(min_rank),
         float(stress_quantile),
         float(mild_effectiveness),
+        bool(include_infeasible),
     )
     np.savez_compressed(cache_path, **table)
     print(f"[Failure Scenarios] Cached scenario table: {cache_path}", flush=True)
@@ -1129,14 +1083,14 @@ def scenario_split_counts(table: dict[str, jnp.ndarray]) -> dict[str, int]:
     )
     return {
         "train": int((split == SPLIT_TRAIN).sum()),
-        "eval_id": int((split == SPLIT_EVAL_ID).sum()),
-        "eval_ood": int((split == SPLIT_EVAL_OOD).sum()),
+        "semantic_eval": int((split == SPLIT_SEMANTIC_EVAL).sum()),
+        "stress_test": int((split == SPLIT_STRESS_TEST).sum()),
         "stress": int(stress.sum()),
-        "eval_id_stress": int(
-            np.logical_and(split == SPLIT_EVAL_ID, stress.astype(bool)).sum()
+        "semantic_eval_stress": int(
+            np.logical_and(split == SPLIT_SEMANTIC_EVAL, stress.astype(bool)).sum()
         ),
-        "eval_ood_stress": int(
-            np.logical_and(split == SPLIT_EVAL_OOD, stress.astype(bool)).sum()
+        "stress_test_stress": int(
+            np.logical_and(split == SPLIT_STRESS_TEST, stress.astype(bool)).sum()
         ),
     }
 
@@ -1431,11 +1385,11 @@ def scenario_selection_payload(
             (bins == BIN_NEAR_BOUNDARY).sum() / denom
         ),
         f"{prefix}/split_train_fraction": float((splits == SPLIT_TRAIN).sum() / denom),
-        f"{prefix}/split_eval_id_fraction": float(
-            (splits == SPLIT_EVAL_ID).sum() / denom
+        f"{prefix}/split_semantic_eval_fraction": float(
+            (splits == SPLIT_SEMANTIC_EVAL).sum() / denom
         ),
-        f"{prefix}/split_eval_ood_fraction": float(
-            (splits == SPLIT_EVAL_OOD).sum() / denom
+        f"{prefix}/split_stress_test_fraction": float(
+            (splits == SPLIT_STRESS_TEST).sum() / denom
         ),
         f"{prefix}/stress_fraction": float(is_stress.sum() / denom),
         f"{prefix}/mean_num_faults": float(n_faults.mean()),

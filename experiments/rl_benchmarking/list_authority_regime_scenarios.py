@@ -98,6 +98,11 @@ def _parse_args() -> argparse.Namespace:
         default="horizon_max_utilization",
     )
     parser.add_argument("--descending", action="store_true")
+    parser.add_argument(
+        "--include-infeasible",
+        action="store_true",
+        help="Include infeasible scenarios (stress-test only rows).",
+    )
     return parser.parse_args()
 
 
@@ -145,6 +150,7 @@ def main() -> None:
         mild_effectiveness=float(
             getattr(cfg, "failure_scenario_mild_effectiveness", 0.5)
         ),
+        include_infeasible=bool(args.include_infeasible),
     )
 
     arrays = {key: np.asarray(jax.device_get(value)) for key, value in table.items()}

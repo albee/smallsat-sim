@@ -15,13 +15,11 @@ from smallsat_sim.controllers.rl.runners.rollout import (
 )
 from smallsat_sim.controllers.rl.runners.curriculum import (
     build_authority_regime_curriculum,
-    build_difficulty_curriculum,
-    build_failure_curriculum,
     uniform_failure_distribution,
 )
 from smallsat_sim.controllers.rl.runners.failure_scenarios import (
-    SPLIT_EVAL_ID,
-    SPLIT_EVAL_OOD,
+    SPLIT_SEMANTIC_EVAL,
+    SPLIT_STRESS_TEST,
     SPLIT_TRAIN,
     apply_sampled_failure_scenario_split,
     build_failure_scenario_table,
@@ -181,14 +179,14 @@ def learn_runner(self) -> None:
     authority_logging_interval = max(1, authority_logging_interval)
     checkpoint_interval = int(getattr(cfg, "training_checkpoint_interval", 10))
     checkpoint_interval = max(1, checkpoint_interval)
-    curriculum_mode = str(getattr(cfg, "failure_curriculum_mode", "type"))
+    curriculum_mode = str(getattr(cfg, "failure_curriculum_mode", "authority"))
     use_controllable_failure_scenarios = bool(
         getattr(cfg, "use_controllable_failure_scenarios", False)
     ) and bool(self.env.train_with_failures)
     split_name_to_id = {
         "train": SPLIT_TRAIN,
-        "eval_id": SPLIT_EVAL_ID,
-        "eval_ood": SPLIT_EVAL_OOD,
+        "semantic_eval": SPLIT_SEMANTIC_EVAL,
+        "stress_test": SPLIT_STRESS_TEST,
     }
     failure_scenario_train_split = str(
         getattr(cfg, "failure_scenario_train_split", "train")
@@ -252,41 +250,19 @@ def learn_runner(self) -> None:
     # Keep evaluation lightweight relative to training rollouts.
     eval_episodes = max(1, min(self.n_evals, 3))
 
-    if (
-        curriculum_mode == "authority"
-        and use_controllable_failure_scenarios
-        and failure_scenario_table is not None
-    ):
-        phases, total_epochs = build_authority_regime_curriculum(
-            train_with_failures=bool(self.env.train_with_failures),
-            fallback_epochs=int(cfg.PPO.epochs),
-            nominal_epochs=nominal_epochs,
-            phase_epochs=phase_epochs,
-            failure_fraction=failure_fraction,
-            disturbance_fraction=disturbance_fraction,
+    if curriculum_mode not in ("authority", "semantic"):
+        print(
+            f"[Curriculum] mode='{curriculum_mode}' is deprecated; using semantic authority curriculum.",
+            flush=True,
         )
-    elif (
-        curriculum_mode == "difficulty"
-        and use_controllable_failure_scenarios
-        and failure_scenario_table is not None
-    ):
-        phases, total_epochs = build_difficulty_curriculum(
-            train_with_failures=bool(self.env.train_with_failures),
-            fallback_epochs=int(cfg.PPO.epochs),
-            nominal_epochs=nominal_epochs,
-            phase_epochs=phase_epochs,
-            failure_fraction=failure_fraction,
-            disturbance_fraction=disturbance_fraction,
-        )
-    else:
-        phases, total_epochs = build_failure_curriculum(
-            train_with_failures=bool(self.env.train_with_failures),
-            fallback_epochs=int(cfg.PPO.epochs),
-            nominal_epochs=nominal_epochs,
-            phase_epochs=phase_epochs,
-            failure_fraction=failure_fraction,
-            disturbance_fraction=disturbance_fraction,
-        )
+    phases, total_epochs = build_authority_regime_curriculum(
+        train_with_failures=bool(self.env.train_with_failures),
+        fallback_epochs=int(cfg.PPO.epochs),
+        nominal_epochs=nominal_epochs,
+        phase_epochs=phase_epochs,
+        failure_fraction=failure_fraction,
+        disturbance_fraction=disturbance_fraction,
+    )
     # Align runner/agent epoch counts with the curriculum length
     self.epochs = total_epochs
     if hasattr(self.agent, "epochs"):
@@ -382,7 +358,6 @@ def learn_runner(self) -> None:
                         if (
                             use_controllable_failure_scenarios
                             and failure_scenario_table is not None
-                            and curriculum_mode in ("difficulty", "authority")
                         ):
                             current_task_wrenches = None
                             if use_task_conditioned_failure_sampling:

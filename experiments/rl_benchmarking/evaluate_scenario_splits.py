@@ -6,6 +6,7 @@ import argparse
 import csv
 import os
 from argparse import Namespace
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ from smallsat_sim.controllers.rl.runners.failure_scenarios import (
     LABEL_NEAR_DEPENDENT,
     LABEL_NONLINEAR_MISMATCH,
     LABEL_SATURATION_PRONE,
+    LABEL_SYMMETRY_BREAKING,
     LABEL_TORQUE_DEGENERATE,
     SPLIT_TRAIN,
     TASK_REGIME_EASY_FEASIBLE,
@@ -538,22 +540,38 @@ def _rollout_once(
 def _context_input_weight_norms(runner: OnPolicyRunner) -> dict[str, float]:
     if not runner.env.use_adaptive_approach:
         return {}
-    try:
-        state = nnx.state(runner.am)
-        leaves = jax.tree_util.tree_leaves(state)
-        norms = [
-            float(jnp.linalg.norm(leaf))
-            for leaf in leaves
-            if hasattr(leaf, "shape")
-        ]
-        if not norms:
-            return {}
-        return {
-            "context_input_weight_norms_l2_mean": float(np.mean(norms)),
-            "context_input_weight_norms_l2_max": float(np.max(norms)),
-        }
-    except Exception:
+    obs_dim = int(runner.env.obs_dim)
+    res_dim = int(runner.env.res_dim)
+    if res_dim <= 0:
         return {}
+
+    def _context_norm(module) -> float:
+        norms = []
+
+        def visit(node) -> None:
+            if hasattr(node, "value"):
+                value = node.value
+                if (
+                    hasattr(value, "shape")
+                    and len(value.shape) == 2
+                    and int(value.shape[0]) == int(obs_dim + res_dim)
+                    and int(value.shape[0]) > int(obs_dim)
+                ):
+                    norms.append(jnp.linalg.norm(value[obs_dim:, :]))
+                return
+            if isinstance(node, Mapping):
+                for child in node.values():
+                    visit(child)
+
+        visit(nnx.state(module))
+        if not norms:
+            return 0.0
+        return float(jnp.max(jnp.stack(norms)))
+
+    return {
+        "actor_context_input_weight_norm": _context_norm(runner.agent.actor),
+        "critic_context_input_weight_norm": _context_norm(runner.agent.critic),
+    }
 
 
 def _bootstrap_ci_mean(
@@ -1000,6 +1018,7 @@ def main() -> None:
         mild_effectiveness=float(
             getattr(cfg, "failure_scenario_mild_effectiveness", 0.5)
         ),
+        include_infeasible=bool(args.include_infeasible),
     )
     print(
         "[Scenario Eval] Table counts "
@@ -1016,8 +1035,12 @@ def main() -> None:
         ("near_infeasible", TASK_REGIME_NEAR_INFEASIBLE, None, None, float(args.failure_fraction)),
         ("stuck_off_only", None, 0, None, float(args.failure_fraction)),
         ("stuck_on_only", None, 1, None, float(args.failure_fraction)),
+        ("faulty_valve_only", None, 2, None, float(args.failure_fraction)),
+        ("saturated_thrust_only", None, 3, None, float(args.failure_fraction)),
+        ("thrust_instability_only", None, 4, None, float(args.failure_fraction)),
         ("nonlinear_mismatch", None, None, LABEL_NONLINEAR_MISMATCH, float(args.failure_fraction)),
         ("constant_disturbance", None, 5, None, float(args.failure_fraction)),
+        ("symmetry_breaking", None, None, LABEL_SYMMETRY_BREAKING, float(args.failure_fraction)),
         ("torque_degenerate", None, None, LABEL_TORQUE_DEGENERATE, float(args.failure_fraction)),
         ("force_degenerate", None, None, LABEL_FORCE_DEGENERATE, float(args.failure_fraction)),
         ("coupled_force_torque", None, None, LABEL_COUPLED_FORCE_TORQUE, float(args.failure_fraction)),

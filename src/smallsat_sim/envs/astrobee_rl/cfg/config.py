@@ -127,19 +127,19 @@ class EnvConfig(BaseEnvConfig):
             # initialization and train directly on the task-conditioned failure
             # mixture; nominal-only runs use PPO.epochs as their fallback length.
             curriculum_nominal_epochs = 600
-            curriculum_phase_epochs = 300
+            curriculum_phase_epochs = 200
             curriculum_failure_fraction = 0.5
             curriculum_disturbance_fraction = 0.1
             curriculum_failure_ramp_epochs = 1
             curriculum_disturbance_ramp_epochs = 1
             curriculum_resample_effects_interval = 5
-            failure_curriculum_mode = "authority"  # "authority", "difficulty", or backup "type"
+            failure_curriculum_mode = "authority"  # semantic authority curriculum
             use_controllable_failure_scenarios = True
             use_task_conditioned_failure_sampling = True
             failure_scenario_max_faults = 12
             failure_scenario_exhaustive_faults = 2
             failure_scenario_sampled_per_fault_count = 512
-            failure_scenario_train_split = "train"
+            failure_scenario_train_split = "train"  # stress is an orthogonal label
             failure_scenario_min_rank = 6
             failure_scenario_stress_quantile = 0.9
             failure_scenario_mild_effectiveness = 0.5

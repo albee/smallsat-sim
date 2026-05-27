@@ -21,7 +21,7 @@ from smallsat_sim.controllers.rl.runners.adaptive_context import (
     summarize_authority_metrics,
 )
 from smallsat_sim.controllers.rl.runners.failure_scenarios import (
-    SPLIT_EVAL_ID,
+    SPLIT_SEMANTIC_EVAL,
     apply_sampled_failure_scenario_split,
     build_failure_scenario_table,
     task_wrench_from_state_features,
@@ -195,7 +195,7 @@ def evaluate_runner(
                     runner.env,
                     key=perturb_key,
                     table=scenario_table,
-                    split_id=SPLIT_EVAL_ID,
+                    split_id=SPLIT_SEMANTIC_EVAL,
                     fraction_perturbed_envs=0.4,
                     start_time=failure_start_time,
                     task_wrenches=task_wrenches,
