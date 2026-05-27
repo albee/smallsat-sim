@@ -291,6 +291,11 @@ def learn_runner(self) -> None:
     # Convenience distribution for nominal-only evaluation.
     zeros_dist = jnp.zeros((5,), dtype=jnp.float32)
 
+    # Reuse step-config objects across epochs. Rebuilding them every epoch can
+    # force extra trace/compile work in the scan path because the config carries
+    # large pytrees (MJX templates and effect snapshots).
+    step_config_cache: dict[bool, object] = {}
+
     for phase_idx, phase in enumerate(phases):
         phase_name = phase["name"]
         phase_epochs = int(phase["epochs"])
@@ -427,10 +432,12 @@ def learn_runner(self) -> None:
             # Accumulate rollout stats to emit once per epoch
             setup_duration = time.perf_counter() - setup_start_time
             scan_start = time.perf_counter()
-            step_config = self.env.build_step_config(
-                max_episode_len=self.max_ep_len,
-                effects_enabled=phase_uses_effects,
-            )
+            if phase_uses_effects not in step_config_cache:
+                step_config_cache[phase_uses_effects] = self.env.build_step_config(
+                    max_episode_len=self.max_ep_len,
+                    effects_enabled=phase_uses_effects,
+                )
+            step_config = step_config_cache[phase_uses_effects]
             rollout_backend = os.environ.get(
                 "SMALLSAT_ROLLOUT_BACKEND",
                 getattr(self.env.env_cfg.control.RL, "rollout_backend", "mjx"),

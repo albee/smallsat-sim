@@ -21,7 +21,6 @@ from smallsat_sim.envs.perturbations_rl import Perturbation
 SPLIT_TRAIN = 0
 SPLIT_EVAL_ID = 1
 SPLIT_EVAL_OOD = 2
-SPLIT_STRESS = 3
 BIN_EASY = 0
 BIN_MEDIUM = 1
 BIN_HARD = 2
@@ -54,7 +53,6 @@ SPLIT_NAMES = {
     SPLIT_TRAIN: "train",
     SPLIT_EVAL_ID: "eval_id",
     SPLIT_EVAL_OOD: "eval_ood",
-    SPLIT_STRESS: "stress",
 }
 BIN_NAMES = {
     BIN_EASY: "easy",
@@ -82,7 +80,7 @@ SCENARIO_FAILURE_STATUS = {
     4: PerturbationStatus.THRUST_INSTABILITY.value,
 }
 _GP_SAMPLE_BANK: dict[tuple, tuple[jnp.ndarray, jnp.ndarray]] = {}
-_SCENARIO_CACHE_VERSION = "task-conditioned-horizon-utilization-v4"
+_SCENARIO_CACHE_VERSION = "task-conditioned-horizon-utilization-v5-split-stress-orthogonal"
 TASK_ERROR_INFEASIBLE_THRESHOLD = 0.25
 TASK_MARGIN_INFEASIBLE_THRESHOLD = -0.20
 TASK_MARGIN_NEAR_INFEASIBLE_THRESHOLD = 0.0
@@ -865,6 +863,7 @@ def _build_scenario_table_cached(
             "n_faults": np.empty((0,), dtype=np.int32),
             "active_thruster_count": np.empty((0,), dtype=np.int32),
             "split": np.empty((0,), dtype=np.int32),
+            "is_stress": np.empty((0,), dtype=np.int32),
             "difficulty_bin": np.empty((0,), dtype=np.int32),
             "rank": np.empty((0,), dtype=np.int32),
             "min_singular_value": np.empty((0,), dtype=np.float32),
@@ -896,6 +895,7 @@ def _build_scenario_table_cached(
     n_fault_rows: list[int] = []
     active_thruster_count_rows: list[int] = []
     split_rows: list[int] = []
+    is_stress_rows: list[int] = []
     rank_rows: list[int] = []
     min_sv_rows: list[float] = []
     condition_rows: list[float] = []
@@ -923,12 +923,11 @@ def _build_scenario_table_cached(
         thrusters = row["thrusters"]
         n_faults = row["n_faults"]
         p90_error = row["p90_error"]
-        if p90_error >= stress_threshold:
-            split = SPLIT_STRESS
-        elif deterministic_holdout[row_idx]:
+        if deterministic_holdout[row_idx]:
             split = SPLIT_EVAL_OOD if n_faults > 1 else SPLIT_EVAL_ID
         else:
             split = SPLIT_TRAIN
+        is_stress = int(p90_error >= stress_threshold)
 
         utilization = float(row["targeted_task_utilization"])
         if utilization < UTILIZATION_BIN_EASY_MAX:
@@ -947,6 +946,7 @@ def _build_scenario_table_cached(
         n_fault_rows.append(n_faults)
         active_thruster_count_rows.append(row["active_thruster_count"])
         split_rows.append(split)
+        is_stress_rows.append(is_stress)
         difficulty_bin_rows.append(difficulty_bin)
         rank_rows.append(row["rank"])
         min_sv_rows.append(row["min_sv"])
@@ -977,6 +977,7 @@ def _build_scenario_table_cached(
             active_thruster_count_rows, dtype=np.int32
         ),
         "split": np.asarray(split_rows, dtype=np.int32),
+        "is_stress": np.asarray(is_stress_rows, dtype=np.int32),
         "difficulty_bin": np.asarray(difficulty_bin_rows, dtype=np.int32),
         "rank": np.asarray(rank_rows, dtype=np.int32),
         "min_singular_value": np.asarray(min_sv_rows, dtype=np.float32),
@@ -1076,11 +1077,14 @@ def build_failure_scenario_table(
 
 def scenario_split_counts(table: dict[str, jnp.ndarray]) -> dict[str, int]:
     split = np.asarray(jax.device_get(table["split"]))
+    stress = np.asarray(
+        jax.device_get(table.get("is_stress", jnp.zeros_like(table["split"])))
+    )
     return {
         "train": int((split == SPLIT_TRAIN).sum()),
         "eval_id": int((split == SPLIT_EVAL_ID).sum()),
         "eval_ood": int((split == SPLIT_EVAL_OOD).sum()),
-        "stress": int((split == SPLIT_STRESS).sum()),
+        "stress": int(stress.sum()),
     }
 
 
@@ -1137,6 +1141,9 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
     n_faults = np.asarray(jax.device_get(table["n_faults"]))
     active_thruster_count = np.asarray(jax.device_get(table["active_thruster_count"]))
     splits = np.asarray(jax.device_get(table["split"]))
+    is_stress = np.asarray(
+        jax.device_get(table.get("is_stress", jnp.zeros_like(table["split"])))
+    )
     bins = np.asarray(jax.device_get(table["difficulty_bin"]))
     ranks = np.asarray(jax.device_get(table["rank"]))
     min_sv = np.asarray(jax.device_get(table["min_singular_value"]))
@@ -1205,6 +1212,7 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
         "horizon_max_utilization",
         "horizon_mean_utilization",
         "authority_label_mask",
+        "is_stress",
     ]
     fieldnames.extend([f"targeted_wrench_{idx}" for idx in range(6)])
     fieldnames.extend([f"targeted_direction_{idx}" for idx in range(6)])
@@ -1255,6 +1263,7 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
                     horizon_mean_utilization[scenario_id]
                 ),
                 "authority_label_mask": int(authority_label_mask[scenario_id]),
+                "is_stress": bool(is_stress[scenario_id]),
             }
             for wrench_idx in range(6):
                 row[f"targeted_wrench_{wrench_idx}"] = float(
@@ -1296,6 +1305,9 @@ def scenario_selection_payload(
 
     bins = np.asarray(jax.device_get(table["difficulty_bin"]))[scenario_indices_np]
     splits = np.asarray(jax.device_get(table["split"]))[scenario_indices_np]
+    is_stress = np.asarray(
+        jax.device_get(table.get("is_stress", jnp.zeros_like(table["split"])))
+    )[scenario_indices_np]
     n_faults = np.asarray(jax.device_get(table["n_faults"]))[scenario_indices_np]
     failure_types = np.asarray(jax.device_get(table["failure_types"]))[
         scenario_indices_np
@@ -1372,7 +1384,7 @@ def scenario_selection_payload(
         f"{prefix}/split_eval_ood_fraction": float(
             (splits == SPLIT_EVAL_OOD).sum() / denom
         ),
-        f"{prefix}/split_stress_fraction": float((splits == SPLIT_STRESS).sum() / denom),
+        f"{prefix}/stress_fraction": float(is_stress.sum() / denom),
         f"{prefix}/mean_num_faults": float(n_faults.mean()),
         f"{prefix}/mean_active_thruster_count": float(active_thruster_count.mean()),
         **{

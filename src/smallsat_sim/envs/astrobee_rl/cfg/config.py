@@ -104,7 +104,7 @@ class EnvConfig(BaseEnvConfig):
 
             class PPO:
                 steps_per_epoch = 512
-                epochs = 800
+                epochs = 900
                 max_ep_len = 512  # 25.6s at 20Hz; enough for 2m setpoint regulation without overlong episodes
                 gamma = 0.995
                 lam = 0.97
@@ -126,8 +126,8 @@ class EnvConfig(BaseEnvConfig):
             # Failure curriculum knobs. Failure-training runs start from random
             # initialization and train directly on the task-conditioned failure
             # mixture; nominal-only runs use PPO.epochs as their fallback length.
-            curriculum_nominal_epochs = 0
-            curriculum_phase_epochs = 800
+            curriculum_nominal_epochs = 600
+            curriculum_phase_epochs = 300
             curriculum_failure_fraction = 0.5
             curriculum_disturbance_fraction = 0.1
             curriculum_failure_ramp_epochs = 1
