@@ -15,6 +15,7 @@ from smallsat_sim.controllers.rl.runners.rollout import (
 )
 from smallsat_sim.controllers.rl.runners.curriculum import (
     build_authority_regime_curriculum,
+    build_authority_regime_curriculum_v2,
     uniform_failure_distribution,
 )
 from smallsat_sim.controllers.rl.runners.failure_scenarios import (
@@ -255,7 +256,7 @@ def learn_runner(self) -> None:
             f"[Curriculum] mode='{curriculum_mode}' is deprecated; using semantic authority curriculum.",
             flush=True,
         )
-    phases, total_epochs = build_authority_regime_curriculum(
+    phases, total_epochs = build_authority_regime_curriculum_v2(
         train_with_failures=bool(self.env.train_with_failures),
         fallback_epochs=int(cfg.PPO.epochs),
         nominal_epochs=nominal_epochs,
@@ -410,6 +411,11 @@ def learn_runner(self) -> None:
                             fraction_disturbed_envs=applied_disturbance_fraction,
                             start_time=disturbance_start_time,
                         )
+            has_perturbation_epoch, has_disturbance_epoch = self.env._get_active_failure_masks()
+            failed_env_mask_epoch = jnp.logical_or(
+                has_perturbation_epoch, has_disturbance_epoch
+            )
+            nominal_env_mask_epoch = jnp.logical_not(failed_env_mask_epoch)
 
             # Accumulate rollout stats to emit once per epoch
             setup_duration = time.perf_counter() - setup_start_time
@@ -757,6 +763,30 @@ def learn_runner(self) -> None:
             success_rate_epoch = jnp.asarray(
                 terminals_any_epoch.astype(jnp.float32).mean()
             )
+            nominal_env_count_epoch = jnp.asarray(
+                nominal_env_mask_epoch.astype(jnp.float32).sum()
+            )
+            failed_env_count_epoch = jnp.asarray(
+                failed_env_mask_epoch.astype(jnp.float32).sum()
+            )
+            nominal_success_rate_epoch = jnp.where(
+                nominal_env_count_epoch > 0.0,
+                (
+                    terminals_any_epoch.astype(jnp.float32)
+                    * nominal_env_mask_epoch.astype(jnp.float32)
+                ).sum()
+                / nominal_env_count_epoch,
+                0.0,
+            )
+            failed_success_rate_epoch = jnp.where(
+                failed_env_count_epoch > 0.0,
+                (
+                    terminals_any_epoch.astype(jnp.float32)
+                    * failed_env_mask_epoch.astype(jnp.float32)
+                ).sum()
+                / failed_env_count_epoch,
+                0.0,
+            )
             if self.env.collect_reward_components:
                 terminated_success = epoch_reward_components.get(
                     "terminated_success"
@@ -961,6 +991,10 @@ def learn_runner(self) -> None:
                     mean_episodic_returns=float(mean_ep_return_epoch),
                     success_env_count=float(success_env_count_epoch),
                     success_rate=float(success_rate_epoch),
+                    nominal_env_count=float(nominal_env_count_epoch),
+                    failed_env_count=float(failed_env_count_epoch),
+                    nominal_success_rate=float(nominal_success_rate_epoch),
+                    failed_success_rate=float(failed_success_rate_epoch),
                     terminated_step_count=float(terminated_step_count_epoch),
                     success_termination_step_count=float(
                         success_termination_step_count_epoch
@@ -1039,6 +1073,10 @@ def learn_runner(self) -> None:
                     critic_loss_normalized=critic_loss_normalized_f,
                     success_env_count=float(success_env_count_epoch),
                     success_rate=float(success_rate_epoch),
+                    nominal_env_count=float(nominal_env_count_epoch),
+                    failed_env_count=float(failed_env_count_epoch),
+                    nominal_success_rate=float(nominal_success_rate_epoch),
+                    failed_success_rate=float(failed_success_rate_epoch),
                     terminated_step_count=float(terminated_step_count_epoch),
                     success_termination_step_count=float(
                         success_termination_step_count_epoch
@@ -1064,6 +1102,7 @@ def learn_runner(self) -> None:
                     current_disturbance_fraction=float(applied_disturbance_fraction),
                     current_difficulty_bin=current_difficulty_bin,
                     current_authority_regime=current_authority_regime,
+                    current_task_feasibility_regime=current_task_feasibility_regime,
                     median_final_position_error=float(
                         median_final_pos_error_epoch
                     ),
