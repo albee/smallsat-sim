@@ -52,6 +52,7 @@ from smallsat_sim.controllers.rl.runners.runner_utils import (
     update_module_from_checkpoint_state,
 )
 from smallsat_sim.controllers.rl.storage.replay_buffer import ReplayBuffer
+from smallsat_sim.envs.perturbations_rl import Perturbation
 from smallsat_sim.envs.vec_env import (
     _compute_state_features,
     _compute_freeflyer_state_features,
@@ -1149,36 +1150,55 @@ def learn_runner(self) -> None:
             if eval_due:
                 eval_start_time = time.perf_counter()
                 eval_keys = jax.random.split(eval_key, 3)
-                nominal_score = evaluate_policy_checkpoint(
-                    self,
-                    key=eval_keys[0],
-                    fraction_perturbed_envs=0.0,
-                    perturbation_distribution=zeros_dist,
-                    disturbance_fraction=0.0,
-                    eval_episodes=eval_episodes,
+                # In-loop eval mutates the shared env object (resets + applies effects).
+                # Snapshot and restore training state so eval cannot leak into the next epoch.
+                train_state_snapshot = self.env.state_struct
+                train_perturbation_states_snapshot = getattr(
+                    self.env, "perturbation_states", None
                 )
+                train_disturbance_states_snapshot = getattr(
+                    self.env, "disturbance_states", None
+                )
+                train_thruster_mask_snapshot = getattr(Perturbation, "thruster_mask", None)
+                try:
+                    nominal_score = evaluate_policy_checkpoint(
+                        self,
+                        key=eval_keys[0],
+                        fraction_perturbed_envs=0.0,
+                        perturbation_distribution=zeros_dist,
+                        disturbance_fraction=0.0,
+                        eval_episodes=eval_episodes,
+                    )
 
-                # Evaluate the newest failure in isolation
-                failure_dist = zeros_dist
-                if new_failure_idx is not None:
-                    failure_dist = failure_dist.at[int(new_failure_idx)].set(1.0)
-                failure_score = evaluate_policy_checkpoint(
-                    self,
-                    key=eval_keys[1],
-                    fraction_perturbed_envs=1.0,
-                    perturbation_distribution=failure_dist,
-                    disturbance_fraction=0.0,
-                    eval_episodes=eval_episodes,
-                )
+                    # Evaluate the newest failure in isolation
+                    failure_dist = zeros_dist
+                    if new_failure_idx is not None:
+                        failure_dist = failure_dist.at[int(new_failure_idx)].set(1.0)
+                    failure_score = evaluate_policy_checkpoint(
+                        self,
+                        key=eval_keys[1],
+                        fraction_perturbed_envs=1.0,
+                        perturbation_distribution=failure_dist,
+                        disturbance_fraction=0.0,
+                        eval_episodes=eval_episodes,
+                    )
 
-                mixture_score = evaluate_policy_checkpoint(
-                    self,
-                    key=eval_keys[2],
-                    fraction_perturbed_envs=applied_failure_fraction,
-                    perturbation_distribution=phase_distribution,
-                    disturbance_fraction=applied_disturbance_fraction,
-                    eval_episodes=eval_episodes,
-                )
+                    mixture_score = evaluate_policy_checkpoint(
+                        self,
+                        key=eval_keys[2],
+                        fraction_perturbed_envs=applied_failure_fraction,
+                        perturbation_distribution=phase_distribution,
+                        disturbance_fraction=applied_disturbance_fraction,
+                        eval_episodes=eval_episodes,
+                    )
+                finally:
+                    self.env._state = train_state_snapshot
+                    if train_perturbation_states_snapshot is not None:
+                        self.env.perturbation_states = train_perturbation_states_snapshot
+                    if train_disturbance_states_snapshot is not None:
+                        self.env.disturbance_states = train_disturbance_states_snapshot
+                    if train_thruster_mask_snapshot is not None:
+                        Perturbation.thruster_mask = train_thruster_mask_snapshot
 
                 print(
                     f"[Curriculum Eval] phase={phase_name} epoch={phase_epoch + 1}/{phase_epochs} "
