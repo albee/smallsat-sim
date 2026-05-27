@@ -22,7 +22,6 @@ from smallsat_sim.controllers.rl.runners.curriculum import (
 from smallsat_sim.controllers.rl.runners.failure_scenarios import (
     SPLIT_EVAL_ID,
     SPLIT_EVAL_OOD,
-    SPLIT_STRESS,
     SPLIT_TRAIN,
     apply_sampled_failure_scenario_split,
     build_failure_scenario_table,
@@ -190,11 +189,17 @@ def learn_runner(self) -> None:
         "train": SPLIT_TRAIN,
         "eval_id": SPLIT_EVAL_ID,
         "eval_ood": SPLIT_EVAL_OOD,
-        "stress": SPLIT_STRESS,
     }
     failure_scenario_train_split = str(
         getattr(cfg, "failure_scenario_train_split", "train")
     )
+    if failure_scenario_train_split == "stress":
+        print(
+            "[Failure Scenarios] split='stress' is deprecated (stress is now a label). "
+            "Using split='train'.",
+            flush=True,
+        )
+        failure_scenario_train_split = "train"
     failure_scenario_split_id = split_name_to_id.get(
         failure_scenario_train_split, SPLIT_TRAIN
     )
