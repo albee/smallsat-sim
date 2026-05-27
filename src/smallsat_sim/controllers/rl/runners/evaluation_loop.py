@@ -22,6 +22,7 @@ from smallsat_sim.controllers.rl.runners.adaptive_context import (
 )
 from smallsat_sim.controllers.rl.runners.failure_scenarios import (
     SPLIT_SEMANTIC_EVAL,
+    SPLIT_TRAIN,
     apply_sampled_failure_scenario_split,
     build_failure_scenario_table,
     task_wrench_from_state_features,
@@ -136,6 +137,11 @@ def evaluate_runner(
                 getattr(cfg, "failure_scenario_mild_effectiveness", 0.5)
             ),
         )
+        eval_split_id = (
+            SPLIT_SEMANTIC_EVAL
+            if bool(jnp.any(scenario_table["split"] == SPLIT_SEMANTIC_EVAL))
+            else SPLIT_TRAIN
+        )
     authority_logging_max_samples = int(
         getattr(cfg, "authority_logging_max_samples", 8192)
     )
@@ -195,7 +201,7 @@ def evaluate_runner(
                     runner.env,
                     key=perturb_key,
                     table=scenario_table,
-                    split_id=SPLIT_SEMANTIC_EVAL,
+                    split_id=eval_split_id,
                     fraction_perturbed_envs=0.4,
                     start_time=failure_start_time,
                     task_wrenches=task_wrenches,

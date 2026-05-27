@@ -339,6 +339,7 @@ def learn_runner(self) -> None:
         phase_uses_effects = phase_uses_perturbations or phase_uses_disturbances
         applied_failure_fraction = 0.0
         applied_disturbance_fraction = 0.0
+        applied_failure_env_count = -1
         active_scenario_payload: dict[str, float] = {}
 
         print(
@@ -359,6 +360,9 @@ def learn_runner(self) -> None:
                 phase, curriculum_epoch
             )
             current_disturbance_fraction = phase_disturbance_fraction * disturbance_ramp
+            current_failure_env_count = int(
+                self.env.num_envs * max(0.0, min(1.0, current_failure_fraction))
+            )
             epoch_key = self._take_keys()
             (
                 perturb_key,
@@ -382,15 +386,22 @@ def learn_runner(self) -> None:
             )
 
             # Apply failures/disturbances for this phase with fixed proportions
-            should_resample_effects = (
+            should_resample_failures = (
                 phase_epoch == 0
-                or bool(phase.get("failure_fraction_schedule"))
-                or phase_epoch % resample_effects_interval == 0
+                or current_failure_env_count != applied_failure_env_count
+                or (
+                    not bool(phase.get("failure_fraction_schedule"))
+                    and phase_epoch % resample_effects_interval == 0
+                )
+            )
+            should_resample_disturbances = (
+                phase_epoch == 0 or phase_epoch % resample_effects_interval == 0
             )
             if self.env.train_with_failures and phase_uses_effects:
                 if phase_uses_perturbations:
-                    if should_resample_effects:
+                    if should_resample_failures:
                         applied_failure_fraction = current_failure_fraction
+                        applied_failure_env_count = current_failure_env_count
                         self.env.reset_perturbations()
                         if (
                             use_controllable_failure_scenarios
@@ -437,7 +448,7 @@ def learn_runner(self) -> None:
                                 start_time=failure_start_time,
                             )
                 if phase_uses_disturbances:
-                    if should_resample_effects:
+                    if should_resample_disturbances:
                         applied_disturbance_fraction = current_disturbance_fraction
                         if hasattr(self.env, "reset_disturbances"):
                             self.env.reset_disturbances()
@@ -1249,8 +1260,13 @@ def learn_runner(self) -> None:
                 or global_epoch == self.epochs
             )
             if should_save_checkpoint:
+                checkpoint_filename = (
+                    self.training_state_file_name
+                    if global_epoch == self.epochs
+                    else f"checkpoint_epoch_{global_epoch}_{self.training_state_file_name}"
+                )
                 save_trained_modules(
-                    self.agent, self.ckpt_dir, self.training_state_file_name
+                    self.agent, self.ckpt_dir, checkpoint_filename
                 )
             save_duration = time.perf_counter() - save_start_time
             epoch_total_duration = time.perf_counter() - epoch_start_time

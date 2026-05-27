@@ -10,6 +10,7 @@ from smallsat_sim.controllers.rl.runners.adaptive_context import (
 )
 from smallsat_sim.controllers.rl.runners.failure_scenarios import (
     SPLIT_SEMANTIC_EVAL,
+    SPLIT_TRAIN,
     apply_sampled_failure_scenario_split,
     build_failure_scenario_table,
     task_wrench_from_state_features,
@@ -73,6 +74,11 @@ def evaluate_policy_checkpoint(
                 getattr(cfg, "failure_scenario_mild_effectiveness", 0.5)
             ),
         )
+        eval_split_id = (
+            SPLIT_SEMANTIC_EVAL
+            if bool(jnp.any(scenario_table["split"] == SPLIT_SEMANTIC_EVAL))
+            else SPLIT_TRAIN
+        )
 
     for ep_key in episode_keys:
         runner.env.reset()
@@ -100,7 +106,7 @@ def evaluate_policy_checkpoint(
                     runner.env,
                     key=ep_key,
                     table=scenario_table,
-                    split_id=SPLIT_SEMANTIC_EVAL,
+                    split_id=eval_split_id,
                     fraction_perturbed_envs=float(fraction_perturbed_envs),
                     start_time=None,
                     failure_sampling_mix=failure_sampling_mix,
