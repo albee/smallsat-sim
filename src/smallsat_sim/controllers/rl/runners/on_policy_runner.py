@@ -312,13 +312,22 @@ class OnPolicyRunner(object):
         """
         raise NotImplementedError("Post-training is not implemented yet.\n")
 
-    def evaluate(self, phase: int = 2) -> None:
+    def evaluate(
+        self,
+        phase: int = 2,
+        *,
+        allow_privileged_context: bool = False,
+    ) -> None:
         """
         Evaluate the agent.
         If phase == 1, evaluate base policy before training the adaptation module.
         If phase == 2, evaluate base policy after training the adaptation module.
         """
-        evaluate_runner(self, phase=phase)
+        evaluate_runner(
+            self,
+            phase=phase,
+            allow_privileged_context=allow_privileged_context,
+        )
 
     def _generate_experience(self) -> None:
         """
@@ -688,14 +697,25 @@ class OnPolicyRunner(object):
                 jnp.empty((0, seq_len, targets.shape[2]), dtype=targets.dtype),
             )
 
+        # Optional cap to keep AM dataset construction/train updates within GPU memory.
+        raw_valid_count = valid_count
+        max_window_samples = int(getattr(self.rl_cfg, "am_max_window_samples", 0))
+        if max_window_samples > 0 and raw_valid_count > max_window_samples:
+            keep_idx = jnp.linspace(
+                0, raw_valid_count - 1, max_window_samples, dtype=jnp.int32
+            )
+            valid_count = max_window_samples
+        else:
+            keep_idx = None
+
         # Flatten (time, env) indices where a full history is available.
-        valid_t, valid_env = jnp.where(
-            valid_mask,
-            size=int(valid_mask.size),
-            fill_value=-1,
-        )
-        valid_t = valid_t[:valid_count]
-        valid_env = valid_env[:valid_count]
+        valid_pairs = jnp.argwhere(valid_mask, size=raw_valid_count, fill_value=0)
+        if keep_idx is not None:
+            valid_pairs = valid_pairs[keep_idx]
+        else:
+            valid_pairs = valid_pairs[:valid_count]
+        valid_t = valid_pairs[:, 0]
+        valid_env = valid_pairs[:, 1]
         starts = valid_t - (seq_len - 1)
 
         feat_dim = features.shape[2]

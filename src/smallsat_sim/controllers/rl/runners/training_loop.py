@@ -67,10 +67,6 @@ from smallsat_sim.envs.vec_env import (
 def _context_input_weight_norm(module, obs_dim: int, res_dim: int) -> float:
     """
     Return the largest first-layer weight norm attached to adaptive context inputs.
-
-    Nominal checkpoints are warm-started into adaptive policies by zero-padding
-    these rows, so this metric directly tells us whether PPO has started using
-    the additional context channels.
     """
     if res_dim <= 0:
         return 0.0
@@ -118,45 +114,14 @@ def learn_runner(self) -> None:
         update_module_from_checkpoint_state(self.agent.critic, critic_state)
         return True
 
-    def _nominal_checkpoint_name(ckpt_filename: str) -> str:
-        stem, ext = os.path.splitext(ckpt_filename)
-        if stem.endswith("_nominal"):
-            return ckpt_filename
-        return f"{stem}_nominal{ext}"
-
     if self.env.use_pretrained:
         # Check if pretrained actor and critic modules are available and load them
         if _load_actor_critic_checkpoint(self.pretraining_state_file_name):
             print(f"Loaded pretrained checkpoint {self.pretraining_state_file_name}.\n")
         else:
             print("No pretrained modules available.\n")
-
-    warm_started_from_nominal = False
-    nominal_checkpoint_name = _nominal_checkpoint_name(self.training_state_file_name)
-    if self.env.train_with_failures and not self.env.use_pretrained:
-        plain_nominal_checkpoint_name = _nominal_checkpoint_name("training_state_full_pose.pkl")
-        warm_start_candidates = (
-            [plain_nominal_checkpoint_name, nominal_checkpoint_name]
-            if self.env.use_adaptive_approach
-            else [plain_nominal_checkpoint_name, nominal_checkpoint_name]
-        )
-        loaded_nominal_checkpoint_name = None
-        for candidate in warm_start_candidates:
-            if _load_actor_critic_checkpoint(candidate):
-                loaded_nominal_checkpoint_name = candidate
-                warm_started_from_nominal = True
-                break
-        if warm_started_from_nominal:
-            print(
-                f"Loaded nominal checkpoint {loaded_nominal_checkpoint_name}; "
-                "skipping nominal curriculum phase.\n"
-            )
-        else:
-            print(
-                "No compatible nominal checkpoint found "
-                f"({', '.join(warm_start_candidates)}); "
-                "training nominal phase first.\n"
-            )
+    elif self.env.train_with_failures:
+        print("Training failure policy from scratch with native input dimensions.\n")
 
     print("Training agent...\n")
 
@@ -289,7 +254,7 @@ def learn_runner(self) -> None:
     ):
         phases, total_epochs = build_authority_regime_curriculum(
             train_with_failures=bool(self.env.train_with_failures),
-            fallback_epochs=nominal_epochs,
+            fallback_epochs=int(cfg.PPO.epochs),
             nominal_epochs=nominal_epochs,
             phase_epochs=phase_epochs,
             failure_fraction=failure_fraction,
@@ -302,7 +267,7 @@ def learn_runner(self) -> None:
     ):
         phases, total_epochs = build_difficulty_curriculum(
             train_with_failures=bool(self.env.train_with_failures),
-            fallback_epochs=nominal_epochs,
+            fallback_epochs=int(cfg.PPO.epochs),
             nominal_epochs=nominal_epochs,
             phase_epochs=phase_epochs,
             failure_fraction=failure_fraction,
@@ -311,24 +276,16 @@ def learn_runner(self) -> None:
     else:
         phases, total_epochs = build_failure_curriculum(
             train_with_failures=bool(self.env.train_with_failures),
-            fallback_epochs=nominal_epochs,
+            fallback_epochs=int(cfg.PPO.epochs),
             nominal_epochs=nominal_epochs,
             phase_epochs=phase_epochs,
             failure_fraction=failure_fraction,
             disturbance_fraction=disturbance_fraction,
         )
-    if warm_started_from_nominal:
-        phases = [phase for phase in phases if phase["active_failures"]]
-        total_epochs = sum(int(phase["epochs"]) for phase in phases)
     # Align runner/agent epoch counts with the curriculum length
     self.epochs = total_epochs
     if hasattr(self.agent, "epochs"):
         self.agent.epochs = total_epochs
-
-    # Track the best checkpoint by nominal score to guard against drift
-    best_nominal_score = float("-inf")
-    best_actor_state = None
-    best_critic_state = None
 
     global_epoch = 0
     # Convenience distribution for nominal-only evaluation.
@@ -356,6 +313,7 @@ def learn_runner(self) -> None:
             if phase_task_feasibility_regime is None
             else int(phase_task_feasibility_regime)
         )
+        phase_authority_label_any_mask = phase.get("authority_label_any_mask")
         phase_uses_perturbations = bool(active_failures) and phase_failure_fraction > 0.0
         phase_uses_disturbances = phase_disturbance_fraction > 0.0
         phase_uses_effects = phase_uses_perturbations or phase_uses_disturbances
@@ -444,6 +402,7 @@ def learn_runner(self) -> None:
                                 difficulty_bin=phase_difficulty_bin,
                                 authority_regime=phase_authority_regime,
                                 task_feasibility_regime=phase_task_feasibility_regime,
+                                authority_label_any_mask=phase_authority_label_any_mask,
                                 task_wrenches=current_task_wrenches,
                                 return_selection=True,
                             )
@@ -1154,7 +1113,6 @@ def learn_runner(self) -> None:
                 )
             logging_duration = time.perf_counter() - logging_start_time
 
-            # Safeguard: periodically evaluate and keep the best nominal checkpoint
             eval_duration = 0.0
             eval_due = bool(active_failures) and (
                 (phase_epoch + 1) % eval_interval == 0
@@ -1194,15 +1152,9 @@ def learn_runner(self) -> None:
                     eval_episodes=eval_episodes,
                 )
 
-                if nominal_score > best_nominal_score:
-                    best_nominal_score = nominal_score
-                    best_actor_state = nnx.state(self.agent.actor)
-                    best_critic_state = nnx.state(self.agent.critic)
-
                 print(
                     f"[Curriculum Eval] phase={phase_name} epoch={phase_epoch + 1}/{phase_epochs} "
                     f"nominal={nominal_score:.4f} failure_k={failure_score:.4f} mixture={mixture_score:.4f} "
-                    f"best_nominal={best_nominal_score:.4f}"
                 )
                 eval_duration = time.perf_counter() - eval_start_time
 
@@ -1212,14 +1164,6 @@ def learn_runner(self) -> None:
                 global_epoch % checkpoint_interval == 0
                 or global_epoch == self.epochs
             )
-            if (
-                self.env.train_with_failures
-                and phase_name == "nominal"
-                and phase_epoch + 1 == phase_epochs
-            ):
-                save_trained_modules(
-                    self.agent, self.ckpt_dir, nominal_checkpoint_name
-                )
             if should_save_checkpoint:
                 save_trained_modules(
                     self.agent, self.ckpt_dir, self.training_state_file_name
@@ -1249,11 +1193,3 @@ def learn_runner(self) -> None:
                     timing=epoch_timing,
                 )
             )
-
-    # Restore the best nominal checkpoint at the end of the curriculum
-    if best_actor_state is not None and best_critic_state is not None:
-        nnx.update(self.agent.actor, best_actor_state)
-        nnx.update(self.agent.critic, best_critic_state)
-        save_trained_modules(
-            self.agent, self.ckpt_dir, self.training_state_file_name
-        )

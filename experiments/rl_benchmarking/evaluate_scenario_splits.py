@@ -7,6 +7,7 @@ import csv
 import os
 from argparse import Namespace
 from pathlib import Path
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -16,8 +17,13 @@ from flax import nnx
 from mujoco import mjx
 
 from smallsat_sim.controllers.rl.runners.failure_scenarios import (
-    BIN_NAMES,
-    FAILURE_TYPE_NAMES,
+    LABEL_BIAS_DOMINATED,
+    LABEL_COUPLED_FORCE_TORQUE,
+    LABEL_FORCE_DEGENERATE,
+    LABEL_NEAR_DEPENDENT,
+    LABEL_NONLINEAR_MISMATCH,
+    LABEL_SATURATION_PRONE,
+    LABEL_TORQUE_DEGENERATE,
     SPLIT_TRAIN,
     TASK_REGIME_EASY_FEASIBLE,
     TASK_REGIME_HARD_FEASIBLE,
@@ -58,21 +64,6 @@ from smallsat_sim.controllers.rl.runners.on_policy_runner import OnPolicyRunner
 from smallsat_sim.planners.oracle.oracle_rl import OraclePlannerRL
 
 
-TASK_FEASIBLE_SCENARIO_EVALS = (
-    ("task_easy_feasible", SPLIT_TRAIN, TASK_REGIME_EASY_FEASIBLE),
-    ("task_hard_feasible", SPLIT_TRAIN, TASK_REGIME_HARD_FEASIBLE),
-    ("task_near_infeasible", SPLIT_TRAIN, TASK_REGIME_NEAR_INFEASIBLE),
-    ("task_infeasible_stress", SPLIT_TRAIN, TASK_REGIME_INFEASIBLE),
-)
-
-TARGETED_TASK_FEASIBLE_SCENARIO_EVALS = (
-    ("targeted_easy_feasible", SPLIT_TRAIN, TASK_REGIME_EASY_FEASIBLE),
-    ("targeted_hard_feasible", SPLIT_TRAIN, TASK_REGIME_HARD_FEASIBLE),
-    ("targeted_near_infeasible", SPLIT_TRAIN, TASK_REGIME_NEAR_INFEASIBLE),
-    ("targeted_infeasible_stress", SPLIT_TRAIN, TASK_REGIME_INFEASIBLE),
-)
-
-
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--headless", action="store_true", default=True)
@@ -85,6 +76,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--targeted-failure-fraction", type=float, default=1.0)
     parser.add_argument("--targeted-start-distance", type=float, default=2.0)
     parser.add_argument("--skip-targeted", action="store_true")
+    parser.add_argument(
+        "--context-ablation",
+        default="real",
+        choices=("real", "zero", "shuffled", "all"),
+        help="Adaptive context mode at eval. Use 'all' for real/zero/shuffled.",
+    )
+    parser.add_argument(
+        "--include-infeasible",
+        action="store_true",
+        help="Also evaluate infeasible stress splits. Disabled by default.",
+    )
     parser.add_argument("--disturbance-fraction", type=float, default=0.0)
     parser.add_argument(
         "--run-name",
@@ -125,6 +127,29 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         default=None,
+    )
+    parser.add_argument(
+        "--min-samples-per-split",
+        type=int,
+        default=64,
+        help="Minimum sampled scenarios required for a split/pathology report.",
+    )
+    parser.add_argument(
+        "--enforce-min-samples",
+        action="store_true",
+        help="If set, fail evaluation when sampled scenario count is below threshold.",
+    )
+    parser.add_argument(
+        "--ci-bootstrap-samples",
+        type=int,
+        default=500,
+        help="Bootstrap replicates for confidence intervals.",
+    )
+    parser.add_argument(
+        "--ci-alpha",
+        type=float,
+        default=0.05,
+        help="Two-sided CI level alpha (e.g., 0.05 => 95% CI).",
     )
     return parser.parse_args()
 
@@ -255,6 +280,7 @@ def _scenario_filter_has_rows(
     task_feasibility_regime: int | None = None,
     difficulty_bin: int | None = None,
     failure_type: int | None = None,
+    authority_label_any_mask: int | None = None,
 ) -> bool:
     mask = table["split"] == int(split_id)
     if task_feasibility_regime is not None:
@@ -267,6 +293,11 @@ def _scenario_filter_has_rows(
         mask = jnp.logical_and(
             mask, jnp.any(table["failure_types"] == int(failure_type), axis=1)
         )
+    if authority_label_any_mask is not None:
+        mask = jnp.logical_and(
+            mask,
+            (table["authority_label_mask"] & int(authority_label_any_mask)) != 0,
+        )
     return bool(jax.device_get(jnp.any(mask)))
 
 
@@ -276,6 +307,7 @@ def _rollout_once(
     initial_position_offsets: jnp.ndarray | None = None,
     initial_attitude_errors: jnp.ndarray | None = None,
     phase: int = 1,
+    context_ablation: str = "real",
 ) -> dict[str, float]:
     num_envs = runner.env.num_envs
     step_config = runner.env.build_step_config(max_episode_len=runner.episode_len)
@@ -352,6 +384,10 @@ def _rollout_once(
                 use_task_conditioned_am=runner.env.use_task_conditioned_am,
             )
             context_pred = runner.adaptation_module(history, query)
+            if context_ablation == "zero":
+                context_pred = jnp.zeros_like(context_pred)
+            elif context_ablation == "shuffled":
+                context_pred = jnp.roll(context_pred, shift=1, axis=0)
             residuals_next = jnp.where(history_full[:, None], context_pred, residuals)
             return residuals_next, history_full, new_extra
 
@@ -432,6 +468,36 @@ def _rollout_once(
     )
     max_hold_steps = best_runs[-1]
 
+    # Time-averaged first-episode errors and control metrics.
+    pos_err_seq = jnp.linalg.norm(step_outputs.next_states[:, :, :3], axis=-1)
+    att_err_seq = jnp.linalg.norm(step_outputs.next_states[:, :, 3:6], axis=-1)
+    mask_sum = jnp.maximum(jnp.sum(mask_f, axis=0), 1e-6)
+    mean_pos_err_by_env = jnp.sum(pos_err_seq * mask_f, axis=0) / mask_sum
+    mean_att_err_by_env = jnp.sum(att_err_seq * mask_f, axis=0) / mask_sum
+
+    applied_ctrl = step_outputs.applied_ctrl
+    commanded_ctrl = step_outputs.commanded_ctrl
+    act_high = jnp.asarray(runner.agent.actor.act_high)[None, None, :]
+    act_low = jnp.asarray(runner.agent.actor.act_low)[None, None, :]
+    fuel_by_env = jnp.sum(jnp.sum(jnp.abs(applied_ctrl), axis=-1) * mask_f, axis=0)
+    active_ctrl = jnp.maximum(jnp.sum(mask_f), 1.0)
+    sat_tol = 1e-3
+    sat_hi = commanded_ctrl >= (act_high - sat_tol)
+    sat_lo = commanded_ctrl <= (act_low + sat_tol)
+    sat_any = jnp.logical_or(sat_hi, sat_lo)
+    saturation_fraction = jnp.sum(sat_any.astype(jnp.float32) * mask_f[:, :, None]) / (
+        active_ctrl * float(commanded_ctrl.shape[-1])
+    )
+
+    # Settling time proxy: first step where full-pose set is reached.
+    first_set_idx = jnp.argmax(in_set.astype(jnp.int32), axis=0)
+    has_set = jnp.any(in_set, axis=0)
+    settling_steps = jnp.where(
+        has_set,
+        first_set_idx.astype(jnp.float32),
+        jnp.full_like(first_set_idx, float(runner.episode_len), dtype=jnp.float32),
+    )
+
     final_pos_error_np = np.asarray(jax.device_get(final_pos_error))
     full_pose_success_rate = float(terminals_any.astype(jnp.float32).mean())
     translation_success_rate = float(pos_ok.astype(jnp.float32).mean())
@@ -439,7 +505,10 @@ def _rollout_once(
         "mean_return": float(returns.mean()),
         "success_rate": full_pose_success_rate,
         "full_pose_success_rate": full_pose_success_rate,
+        "mean_position_error": float(mean_pos_err_by_env.mean()),
+        "mean_attitude_error": float(mean_att_err_by_env.mean()),
         "mean_final_position_error": float(final_pos_error.mean()),
+        "mean_final_attitude_error": float(final_att_error.mean()),
         "median_final_position_error": float(np.median(final_pos_error_np)),
         "p75_final_position_error": float(np.percentile(final_pos_error_np, 75.0)),
         "p90_final_position_error": float(np.percentile(final_pos_error_np, 90.0)),
@@ -459,7 +528,55 @@ def _rollout_once(
         "mean_consecutive_success_hold_steps": float(
             max_hold_steps.astype(jnp.float32).mean()
         ),
+        "settling_time_steps": float(settling_steps.mean()),
+        "control_effort": float((fuel_by_env / mask_sum).mean()),
+        "fuel": float(fuel_by_env.mean()),
+        "saturation_fraction": float(saturation_fraction),
     }
+
+
+def _context_input_weight_norms(runner: OnPolicyRunner) -> dict[str, float]:
+    if not runner.env.use_adaptive_approach:
+        return {}
+    try:
+        state = nnx.state(runner.am)
+        leaves = jax.tree_util.tree_leaves(state)
+        norms = [
+            float(jnp.linalg.norm(leaf))
+            for leaf in leaves
+            if hasattr(leaf, "shape")
+        ]
+        if not norms:
+            return {}
+        return {
+            "context_input_weight_norms_l2_mean": float(np.mean(norms)),
+            "context_input_weight_norms_l2_max": float(np.max(norms)),
+        }
+    except Exception:
+        return {}
+
+
+def _bootstrap_ci_mean(
+    values: np.ndarray,
+    *,
+    alpha: float,
+    n_bootstrap: int,
+    seed: int,
+) -> tuple[float, float]:
+    arr = np.asarray(values, dtype=np.float64).reshape(-1)
+    if arr.size == 0:
+        return float("nan"), float("nan")
+    if arr.size == 1:
+        x = float(arr[0])
+        return x, x
+    n_bootstrap = max(1, int(n_bootstrap))
+    alpha = float(np.clip(alpha, 1e-6, 0.999999))
+    rng = np.random.default_rng(int(seed))
+    sample_idx = rng.integers(0, arr.size, size=(n_bootstrap, arr.size))
+    means = arr[sample_idx].mean(axis=1)
+    lo = float(np.quantile(means, alpha / 2.0))
+    hi = float(np.quantile(means, 1.0 - alpha / 2.0))
+    return lo, hi
 
 def _evaluate_scenario(
     runner: OnPolicyRunner,
@@ -474,6 +591,12 @@ def _evaluate_scenario(
     phase: int,
     difficulty_bin: int | None = None,
     failure_type: int | None = None,
+    authority_label_any_mask: int | None = None,
+    context_ablation: str = "real",
+    min_samples_per_split: int = 0,
+    enforce_min_samples: bool = False,
+    ci_bootstrap_samples: int = 500,
+    ci_alpha: float = 0.05,
 ) -> dict[str, float | str | int | None]:
     cfg = runner.env.env_cfg.control.RL
     failure_start_min = float(getattr(cfg, "curriculum_failure_start_time_min", 0.0))
@@ -486,6 +609,9 @@ def _evaluate_scenario(
     )
 
     metrics_per_episode: list[dict[str, float]] = []
+    success_rate_per_episode: list[float] = []
+    final_pos_error_per_episode: list[float] = []
+    final_att_error_per_episode: list[float] = []
     scenario_payloads: list[dict[str, float]] = []
     for episode_idx in range(episodes):
         print(
@@ -518,7 +644,7 @@ def _evaluate_scenario(
                 kp_att=float(getattr(pd_gains, "Kp_q", 3.0)),
                 kd_att=float(getattr(pd_gains, "Kd_q", 5.0)),
             )
-        scenario_payload = apply_sampled_failure_scenario_split(
+        scenario_result = apply_sampled_failure_scenario_split(
             runner.env,
             key=perturb_key,
             table=table,
@@ -526,10 +652,51 @@ def _evaluate_scenario(
             difficulty_bin=difficulty_bin,
             task_feasibility_regime=task_feasibility_regime,
             failure_type=failure_type,
+            authority_label_any_mask=authority_label_any_mask,
             task_wrenches=task_wrenches,
             fraction_perturbed_envs=failure_fraction,
             start_time=failure_start_time,
+            return_selection=True,
         )
+        scenario_payload, _selected_envs, scenario_indices = scenario_result
+        scenario_indices_np = np.asarray(jax.device_get(scenario_indices), dtype=np.int32)
+        if scenario_indices_np.size > 0:
+            failure_types_np = np.asarray(
+                jax.device_get(table["failure_types"])
+            )[scenario_indices_np]
+            label_mask_np = np.asarray(
+                jax.device_get(table["authority_label_mask"])
+            )[scenario_indices_np]
+            scenario_payload = dict(scenario_payload)
+            scenario_payload["scenario/count"] = float(scenario_indices_np.size)
+            scenario_payload["scenario/horizon_max_utilization_mean"] = float(
+                np.asarray(jax.device_get(table["horizon_max_utilization"]))[
+                    scenario_indices_np
+                ].mean()
+            )
+            for ft, name in (
+                (0, "stuck_off"),
+                (1, "stuck_on"),
+                (2, "faulty_valve"),
+                (3, "saturated_thrust"),
+                (4, "thrust_instability"),
+                (5, "constant_disturbance"),
+            ):
+                scenario_payload[f"scenario/count_failure_{name}"] = float(
+                    np.any(failure_types_np == ft, axis=1).sum()
+                )
+            for bit, name in (
+                (LABEL_TORQUE_DEGENERATE, "torque_degenerate"),
+                (LABEL_FORCE_DEGENERATE, "force_degenerate"),
+                (LABEL_COUPLED_FORCE_TORQUE, "coupled_force_torque"),
+                (LABEL_SATURATION_PRONE, "saturation_prone"),
+                (LABEL_NEAR_DEPENDENT, "near_dependent"),
+                (LABEL_BIAS_DOMINATED, "bias_dominated"),
+                (LABEL_NONLINEAR_MISMATCH, "nonlinear_mismatch"),
+            ):
+                scenario_payload[f"scenario/count_label_{name}"] = float(
+                    ((label_mask_np & int(bit)) != 0).sum()
+                )
         scenario_payloads.append(scenario_payload)
 
         if disturbance_fraction > 0.0:
@@ -542,7 +709,11 @@ def _evaluate_scenario(
                 start_time=disturbance_start_time,
             )
 
-        metrics_per_episode.append(_rollout_once(runner, phase=phase))
+        metrics = _rollout_once(runner, phase=phase, context_ablation=context_ablation)
+        metrics_per_episode.append(metrics)
+        success_rate_per_episode.append(float(metrics["success_rate"]))
+        final_pos_error_per_episode.append(float(metrics["mean_final_position_error"]))
+        final_att_error_per_episode.append(float(metrics["mean_final_attitude_error"]))
 
     aggregate: dict[str, float | str | int | None] = {
         "scenario": scenario_name,
@@ -553,6 +724,7 @@ def _evaluate_scenario(
         "episodes": episodes,
         "failure_fraction": failure_fraction,
         "disturbance_fraction": disturbance_fraction,
+        "context_ablation": context_ablation,
     }
     metric_keys = metrics_per_episode[0].keys()
     for key in metric_keys:
@@ -561,6 +733,38 @@ def _evaluate_scenario(
         aggregate[key.replace("/", "_")] = float(
             np.mean([payload[key] for payload in scenario_payloads])
         )
+    sampled_count = int(round(float(aggregate.get("scenario_count", 0.0))))
+    aggregate["sample_count_ok"] = int(sampled_count >= int(min_samples_per_split))
+    aggregate["sample_count_threshold"] = int(min_samples_per_split)
+    if enforce_min_samples and sampled_count < int(min_samples_per_split):
+        raise RuntimeError(
+            f"{scenario_name}: sampled {sampled_count} < required {int(min_samples_per_split)}"
+        )
+    sr_lo, sr_hi = _bootstrap_ci_mean(
+        np.asarray(success_rate_per_episode, dtype=np.float64),
+        alpha=ci_alpha,
+        n_bootstrap=ci_bootstrap_samples,
+        seed=20260527,
+    )
+    pos_lo, pos_hi = _bootstrap_ci_mean(
+        np.asarray(final_pos_error_per_episode, dtype=np.float64),
+        alpha=ci_alpha,
+        n_bootstrap=ci_bootstrap_samples,
+        seed=20260528,
+    )
+    att_lo, att_hi = _bootstrap_ci_mean(
+        np.asarray(final_att_error_per_episode, dtype=np.float64),
+        alpha=ci_alpha,
+        n_bootstrap=ci_bootstrap_samples,
+        seed=20260529,
+    )
+    aggregate["success_rate_ci_low"] = sr_lo
+    aggregate["success_rate_ci_high"] = sr_hi
+    aggregate["mean_final_position_error_ci_low"] = pos_lo
+    aggregate["mean_final_position_error_ci_high"] = pos_hi
+    aggregate["mean_final_attitude_error_ci_low"] = att_lo
+    aggregate["mean_final_attitude_error_ci_high"] = att_hi
+    aggregate.update(_context_input_weight_norms(runner))
     return aggregate
 
 
@@ -575,6 +779,11 @@ def _evaluate_targeted_scenario(
     failure_fraction: float,
     start_distance: float,
     phase: int,
+    context_ablation: str = "real",
+    min_samples_per_split: int = 0,
+    enforce_min_samples: bool = False,
+    ci_bootstrap_samples: int = 500,
+    ci_alpha: float = 0.05,
 ) -> dict[str, float | str | int | None]:
     num_perturbed = int(
         runner.env.num_envs * max(0.0, min(1.0, failure_fraction))
@@ -583,6 +792,9 @@ def _evaluate_targeted_scenario(
         raise ValueError("targeted failure_fraction must select at least one env")
 
     metrics_per_episode: list[dict[str, float]] = []
+    success_rate_per_episode: list[float] = []
+    final_pos_error_per_episode: list[float] = []
+    final_att_error_per_episode: list[float] = []
     scenario_payloads: list[dict[str, float]] = []
     for episode_idx in range(episodes):
         print(
@@ -615,6 +827,45 @@ def _evaluate_targeted_scenario(
         scenario_payloads.append(
             scenario_selection_payload(table, scenario_indices, prefix="scenario")
         )
+        scenario_indices_np = np.asarray(jax.device_get(scenario_indices), dtype=np.int32)
+        if scenario_indices_np.size > 0:
+            failure_types_np = np.asarray(
+                jax.device_get(table["failure_types"])
+            )[scenario_indices_np]
+            label_mask_np = np.asarray(
+                jax.device_get(table["authority_label_mask"])
+            )[scenario_indices_np]
+            payload = dict(scenario_payloads[-1])
+            payload["scenario/count"] = float(scenario_indices_np.size)
+            payload["scenario/horizon_max_utilization_mean"] = float(
+                np.asarray(jax.device_get(table["horizon_max_utilization"]))[
+                    scenario_indices_np
+                ].mean()
+            )
+            for ft, name in (
+                (0, "stuck_off"),
+                (1, "stuck_on"),
+                (2, "faulty_valve"),
+                (3, "saturated_thrust"),
+                (4, "thrust_instability"),
+                (5, "constant_disturbance"),
+            ):
+                payload[f"scenario/count_failure_{name}"] = float(
+                    np.any(failure_types_np == ft, axis=1).sum()
+                )
+            for bit, name in (
+                (LABEL_TORQUE_DEGENERATE, "torque_degenerate"),
+                (LABEL_FORCE_DEGENERATE, "force_degenerate"),
+                (LABEL_COUPLED_FORCE_TORQUE, "coupled_force_torque"),
+                (LABEL_SATURATION_PRONE, "saturation_prone"),
+                (LABEL_NEAR_DEPENDENT, "near_dependent"),
+                (LABEL_BIAS_DOMINATED, "bias_dominated"),
+                (LABEL_NONLINEAR_MISMATCH, "nonlinear_mismatch"),
+            ):
+                payload[f"scenario/count_label_{name}"] = float(
+                    ((label_mask_np & int(bit)) != 0).sum()
+                )
+            scenario_payloads[-1] = payload
 
         offsets, attitude_errors = targeted_pose_errors_from_scenarios(
             table,
@@ -642,14 +893,17 @@ def _evaluate_targeted_scenario(
                 ],
                 axis=0,
             )
-        metrics_per_episode.append(
-            _rollout_once(
-                runner,
-                initial_position_offsets=offsets,
-                initial_attitude_errors=attitude_errors,
-                phase=phase,
-            )
+        metrics = _rollout_once(
+            runner,
+            initial_position_offsets=offsets,
+            initial_attitude_errors=attitude_errors,
+            phase=phase,
+            context_ablation=context_ablation,
         )
+        metrics_per_episode.append(metrics)
+        success_rate_per_episode.append(float(metrics["success_rate"]))
+        final_pos_error_per_episode.append(float(metrics["mean_final_position_error"]))
+        final_att_error_per_episode.append(float(metrics["mean_final_attitude_error"]))
 
     aggregate: dict[str, float | str | int | None] = {
         "scenario": scenario_name,
@@ -659,6 +913,7 @@ def _evaluate_targeted_scenario(
         "failure_fraction": failure_fraction,
         "disturbance_fraction": 0.0,
         "targeted_start_distance": start_distance,
+        "context_ablation": context_ablation,
     }
     metric_keys = metrics_per_episode[0].keys()
     for key in metric_keys:
@@ -667,6 +922,38 @@ def _evaluate_targeted_scenario(
         aggregate[key.replace("/", "_")] = float(
             np.mean([payload[key] for payload in scenario_payloads])
         )
+    sampled_count = int(round(float(aggregate.get("scenario_count", 0.0))))
+    aggregate["sample_count_ok"] = int(sampled_count >= int(min_samples_per_split))
+    aggregate["sample_count_threshold"] = int(min_samples_per_split)
+    if enforce_min_samples and sampled_count < int(min_samples_per_split):
+        raise RuntimeError(
+            f"{scenario_name}: sampled {sampled_count} < required {int(min_samples_per_split)}"
+        )
+    sr_lo, sr_hi = _bootstrap_ci_mean(
+        np.asarray(success_rate_per_episode, dtype=np.float64),
+        alpha=ci_alpha,
+        n_bootstrap=ci_bootstrap_samples,
+        seed=20260627,
+    )
+    pos_lo, pos_hi = _bootstrap_ci_mean(
+        np.asarray(final_pos_error_per_episode, dtype=np.float64),
+        alpha=ci_alpha,
+        n_bootstrap=ci_bootstrap_samples,
+        seed=20260628,
+    )
+    att_lo, att_hi = _bootstrap_ci_mean(
+        np.asarray(final_att_error_per_episode, dtype=np.float64),
+        alpha=ci_alpha,
+        n_bootstrap=ci_bootstrap_samples,
+        seed=20260629,
+    )
+    aggregate["success_rate_ci_low"] = sr_lo
+    aggregate["success_rate_ci_high"] = sr_hi
+    aggregate["mean_final_position_error_ci_low"] = pos_lo
+    aggregate["mean_final_position_error_ci_high"] = pos_hi
+    aggregate["mean_final_attitude_error_ci_low"] = att_lo
+    aggregate["mean_final_attitude_error_ci_high"] = att_hi
+    aggregate.update(_context_input_weight_norms(runner))
     return aggregate
 
 
@@ -722,95 +1009,101 @@ def main() -> None:
     )
 
     rows = []
-    for scenario_name, split_id, task_regime in TASK_FEASIBLE_SCENARIO_EVALS:
-        if not _scenario_filter_has_rows(
-            table,
-            split_id=split_id,
-            task_feasibility_regime=task_regime,
-        ):
-            print(f"[Scenario Eval] Skipping {scenario_name}: no matching scenarios")
-            continue
-        rows.append(
-            _evaluate_scenario(
-                runner,
+    fixed_evals = [
+        ("nominal", None, None, None, 0.0),
+        ("easy_feasible", TASK_REGIME_EASY_FEASIBLE, None, None, float(args.failure_fraction)),
+        ("hard_feasible", TASK_REGIME_HARD_FEASIBLE, None, None, float(args.failure_fraction)),
+        ("near_infeasible", TASK_REGIME_NEAR_INFEASIBLE, None, None, float(args.failure_fraction)),
+        ("stuck_off_only", None, 0, None, float(args.failure_fraction)),
+        ("stuck_on_only", None, 1, None, float(args.failure_fraction)),
+        ("nonlinear_mismatch", None, None, LABEL_NONLINEAR_MISMATCH, float(args.failure_fraction)),
+        ("constant_disturbance", None, 5, None, float(args.failure_fraction)),
+        ("torque_degenerate", None, None, LABEL_TORQUE_DEGENERATE, float(args.failure_fraction)),
+        ("force_degenerate", None, None, LABEL_FORCE_DEGENERATE, float(args.failure_fraction)),
+        ("coupled_force_torque", None, None, LABEL_COUPLED_FORCE_TORQUE, float(args.failure_fraction)),
+        ("saturation_prone", None, None, LABEL_SATURATION_PRONE, float(args.failure_fraction)),
+        ("near_dependent", None, None, LABEL_NEAR_DEPENDENT, float(args.failure_fraction)),
+        ("bias_dominated", None, None, LABEL_BIAS_DOMINATED, float(args.failure_fraction)),
+    ]
+    if args.include_infeasible:
+        fixed_evals.append(
+            ("infeasible_stress", TASK_REGIME_INFEASIBLE, None, None, float(args.failure_fraction))
+        )
+
+    context_modes = (
+        ("real", "zero", "shuffled")
+        if args.context_ablation == "all"
+        else (args.context_ablation,)
+    )
+    for context_mode in context_modes:
+        for scenario_name, task_regime, failure_type, label_mask, frac in fixed_evals:
+            if frac > 0.0 and not _scenario_filter_has_rows(
                 table,
-                scenario_name=scenario_name,
-                split_id=split_id,
+                split_id=SPLIT_TRAIN,
                 task_feasibility_regime=task_regime,
-                episodes=max(1, int(args.episodes)),
-                failure_fraction=float(args.failure_fraction),
-                disturbance_fraction=float(args.disturbance_fraction),
-                phase=int(args.phase),
-            )
-        )
-    for difficulty_bin, difficulty_name in BIN_NAMES.items():
-        scenario_name = f"difficulty_{difficulty_name}"
-        if not _scenario_filter_has_rows(
-            table,
-            split_id=SPLIT_TRAIN,
-            difficulty_bin=difficulty_bin,
-        ):
-            print(f"[Scenario Eval] Skipping {scenario_name}: no matching scenarios")
-            continue
-        rows.append(
-            _evaluate_scenario(
-                runner,
-                table,
-                scenario_name=scenario_name,
-                split_id=SPLIT_TRAIN,
-                task_feasibility_regime=None,
-                difficulty_bin=difficulty_bin,
-                episodes=max(1, int(args.episodes)),
-                failure_fraction=float(args.failure_fraction),
-                disturbance_fraction=float(args.disturbance_fraction),
-                phase=int(args.phase),
-            )
-        )
-    for failure_type, failure_name in FAILURE_TYPE_NAMES.items():
-        scenario_name = f"failure_{failure_name}"
-        if not _scenario_filter_has_rows(
-            table,
-            split_id=SPLIT_TRAIN,
-            failure_type=failure_type,
-        ):
-            print(f"[Scenario Eval] Skipping {scenario_name}: no matching scenarios")
-            continue
-        rows.append(
-            _evaluate_scenario(
-                runner,
-                table,
-                scenario_name=scenario_name,
-                split_id=SPLIT_TRAIN,
-                task_feasibility_regime=None,
                 failure_type=failure_type,
-                episodes=max(1, int(args.episodes)),
-                failure_fraction=float(args.failure_fraction),
-                disturbance_fraction=float(args.disturbance_fraction),
-                phase=int(args.phase),
-            )
-        )
-    if not args.skip_targeted:
-        for scenario_name, split_id, task_regime in TARGETED_TASK_FEASIBLE_SCENARIO_EVALS:
-            if not _scenario_filter_has_rows(
-                table,
-                split_id=split_id,
-                task_feasibility_regime=task_regime,
+                authority_label_any_mask=label_mask,
             ):
                 print(f"[Scenario Eval] Skipping {scenario_name}: no matching scenarios")
                 continue
             rows.append(
-                _evaluate_targeted_scenario(
+                _evaluate_scenario(
                     runner,
                     table,
                     scenario_name=scenario_name,
-                    split_id=split_id,
+                    split_id=SPLIT_TRAIN,
                     task_feasibility_regime=task_regime,
                     episodes=max(1, int(args.episodes)),
-                    failure_fraction=float(args.targeted_failure_fraction),
-                    start_distance=float(args.targeted_start_distance),
+                    failure_fraction=frac,
+                    disturbance_fraction=0.0,
                     phase=int(args.phase),
+                    failure_type=failure_type,
+                    authority_label_any_mask=label_mask,
+                    context_ablation=context_mode,
+                    min_samples_per_split=int(args.min_samples_per_split),
+                    enforce_min_samples=bool(args.enforce_min_samples),
+                    ci_bootstrap_samples=int(args.ci_bootstrap_samples),
+                    ci_alpha=float(args.ci_alpha),
                 )
             )
+
+    targeted_task_evals = [
+        ("targeted_easy_feasible", SPLIT_TRAIN, TASK_REGIME_EASY_FEASIBLE),
+        ("targeted_hard_feasible", SPLIT_TRAIN, TASK_REGIME_HARD_FEASIBLE),
+        ("targeted_near_infeasible", SPLIT_TRAIN, TASK_REGIME_NEAR_INFEASIBLE),
+    ]
+    if args.include_infeasible:
+        targeted_task_evals.append(
+            ("targeted_infeasible_stress", SPLIT_TRAIN, TASK_REGIME_INFEASIBLE)
+        )
+    if not args.skip_targeted:
+        for context_mode in context_modes:
+            for scenario_name, split_id, task_regime in targeted_task_evals:
+                if not _scenario_filter_has_rows(
+                    table,
+                    split_id=split_id,
+                    task_feasibility_regime=task_regime,
+                ):
+                    print(f"[Scenario Eval] Skipping {scenario_name}: no matching scenarios")
+                    continue
+                rows.append(
+                    _evaluate_targeted_scenario(
+                        runner,
+                        table,
+                        scenario_name=scenario_name,
+                        split_id=split_id,
+                        task_feasibility_regime=task_regime,
+                        episodes=max(1, int(args.episodes)),
+                        failure_fraction=float(args.targeted_failure_fraction),
+                        start_distance=float(args.targeted_start_distance),
+                        phase=int(args.phase),
+                        context_ablation=context_mode,
+                        min_samples_per_split=int(args.min_samples_per_split),
+                        enforce_min_samples=bool(args.enforce_min_samples),
+                        ci_bootstrap_samples=int(args.ci_bootstrap_samples),
+                        ci_alpha=float(args.ci_alpha),
+                    )
+                )
 
     output_path = Path(
         args.output
@@ -840,6 +1133,36 @@ def main() -> None:
                     for key, value in row.items()
                     if isinstance(value, (float, int))
                 }
+            )
+    # Main adaptive claim gate:
+    # real_context > zero_context and shuffled_context on hard/near-boundary feasible splits.
+    if args.context_ablation == "all":
+        compare_scenarios = {"hard_feasible", "near_infeasible", "targeted_hard_feasible", "targeted_near_infeasible"}
+        by_key = {}
+        for row in rows:
+            scenario = str(row.get("scenario"))
+            context = str(row.get("context_ablation"))
+            if scenario in compare_scenarios:
+                by_key[(scenario, context)] = float(row.get("success_rate", 0.0))
+        for scenario in sorted(compare_scenarios):
+            real = by_key.get((scenario, "real"))
+            zero = by_key.get((scenario, "zero"))
+            shuffled = by_key.get((scenario, "shuffled"))
+            if real is None or zero is None or shuffled is None:
+                continue
+            claim_ok = bool(real > zero and real > shuffled)
+            print(
+                f"[Scenario Eval][Claim] {scenario}: real={real:.3f}, zero={zero:.3f}, "
+                f"shuffled={shuffled:.3f}, real_gt_both={claim_ok}",
+                flush=True,
+            )
+            delta_real_zero = real - zero
+            delta_real_shuffled = real - shuffled
+            print(
+                f"[Scenario Eval][ClaimDelta] {scenario}: "
+                f"real_minus_zero={delta_real_zero:.3f}, "
+                f"real_minus_shuffled={delta_real_shuffled:.3f}",
+                flush=True,
             )
     if args.wandb and wandb.run is not None:
         wandb.finish()

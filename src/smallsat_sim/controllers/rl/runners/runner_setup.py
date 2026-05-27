@@ -31,6 +31,9 @@ def build_checkpoint_file_names(env) -> dict[str, str]:
     )
     pretrained = "pretrained" if env.use_pretrained else None
     nominal = None if env.train_with_failures else "nominal"
+    scratch_failure = (
+        "scratchfail" if env.train_with_failures and not env.use_pretrained else None
+    )
     success_criterion = getattr(
         env.env_cfg.control.RL,
         "success_criterion",
@@ -60,6 +63,7 @@ def build_checkpoint_file_names(env) -> dict[str, str]:
             context_version,
             pretrained,
             task_tag,
+            scratch_failure,
             task_feasible_tag,
             failure_fraction_tag,
             nominal,

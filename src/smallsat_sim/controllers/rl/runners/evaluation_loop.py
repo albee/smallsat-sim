@@ -42,14 +42,23 @@ from smallsat_sim.utils.helpers_jax import (
 )
 
 
-def evaluate_runner(runner: Any, phase: int = 2) -> None:
+def evaluate_runner(
+    runner: Any,
+    phase: int = 2,
+    *,
+    allow_privileged_context: bool = False,
+) -> None:
     """
     Evaluate the runner policy.
 
     Adaptive evaluation must use ``phase == 2`` so runtime inputs come from
     measured state history and requested commands, not simulator force labels.
     """
-    if runner.env.use_adaptive_approach and int(phase) != 2:
+    if (
+        runner.env.use_adaptive_approach
+        and int(phase) != 2
+        and not bool(allow_privileged_context)
+    ):
         raise ValueError(
             "Adaptive evaluation must use phase=2. Phase 1 consumes privileged "
             "simulator force/wrench labels and is not a deployable input path."

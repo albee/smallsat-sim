@@ -3,7 +3,11 @@ from __future__ import annotations
 import jax.numpy as jnp
 
 from smallsat_sim.controllers.rl.runners.failure_scenarios import (
+    LABEL_BIAS_DOMINATED,
+    LABEL_NONLINEAR_MISMATCH,
+    TASK_REGIME_EASY_FEASIBLE,
     TASK_REGIME_HARD_FEASIBLE,
+    TASK_REGIME_NEAR_INFEASIBLE,
 )
 
 # VecEnv distribution order:
@@ -189,29 +193,63 @@ def build_authority_regime_curriculum(
             disturbance_fraction=disturbance_fraction,
         )
 
-    phases: list[dict] = [
-        {
-            "name": "nominal",
-            "epochs": int(nominal_epochs),
-            "active_failures": [],
-            "failure_fraction": 0.0,
-            "disturbance_fraction": 0.0,
-            "new_failure": None,
-            "difficulty_bin": None,
-            "authority_regime": None,
-        },
-        {
-            "name": "hard_feasible",
-            "epochs": int(phase_epochs),
-            "active_failures": list(FAILURE_ORDER),
-            "failure_fraction": float(failure_fraction),
-            "disturbance_fraction": 0.0,
-            "new_failure": None,
-            "difficulty_bin": None,
-            "authority_regime": None,
-            "task_feasibility_regime": TASK_REGIME_HARD_FEASIBLE,
-        },
+    weighted_mix = (
+        # 50% clean / nominal
+        ("nominal", 50, None, None),
+        # easy_feasible small amount only
+        ("easy_feasible", 2, TASK_REGIME_EASY_FEASIBLE, None),
+        # 35% hard_feasible task-conditioned (main target)
+        ("hard_feasible", 33, TASK_REGIME_HARD_FEASIBLE, None),
+        # 10% near_infeasible task-conditioned (smaller amount)
+        ("near_infeasible", 10, TASK_REGIME_NEAR_INFEASIBLE, None),
+        # 5% bias/nonlinear cases
+        (
+            "bias_or_nonlinear",
+            5,
+            None,
+            int(LABEL_BIAS_DOMINATED | LABEL_NONLINEAR_MISMATCH),
+        ),
+    )
+
+    total_weight = sum(weight for _, weight, _, _ in weighted_mix)
+    scaled_epochs = [
+        max(1, int(round(float(phase_epochs) * float(weight) / float(total_weight))))
+        for _, weight, _, _ in weighted_mix
     ]
+    diff = int(phase_epochs) - int(sum(scaled_epochs))
+    scaled_epochs[0] += diff
+
+    phases: list[dict] = []
+    if int(nominal_epochs) > 0:
+        phases.append(
+            {
+                "name": "warmup_nominal",
+                "epochs": int(nominal_epochs),
+                "active_failures": [],
+                "failure_fraction": 0.0,
+                "disturbance_fraction": 0.0,
+                "new_failure": None,
+                "difficulty_bin": None,
+                "authority_regime": None,
+            }
+        )
+
+    for (name, _weight, regime, label_mask), epochs in zip(weighted_mix, scaled_epochs):
+        is_nominal = name == "nominal"
+        phases.append(
+            {
+                "name": name,
+                "epochs": int(epochs),
+                "active_failures": [] if is_nominal else list(FAILURE_ORDER),
+                "failure_fraction": 0.0 if is_nominal else 1.0,
+                "disturbance_fraction": 0.0,
+                "new_failure": None,
+                "difficulty_bin": None,
+                "authority_regime": None,
+                "task_feasibility_regime": regime,
+                "authority_label_any_mask": label_mask,
+            }
+        )
+
     total_epochs = sum(int(phase["epochs"]) for phase in phases)
     return phases, total_epochs
-

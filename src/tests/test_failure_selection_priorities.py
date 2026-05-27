@@ -290,4 +290,6 @@ def test_failure_library_candidate_generation_includes_higher_order_faults() -> 
 
     assert max(n_faults) > 2
     assert 12 in n_faults
-    assert all(len({thruster for _, thruster in combo}) == len(combo) for combo in combos)
+    for combo in combos:
+        real_thrusters = [thruster for failure_type, thruster in combo if failure_type != 5]
+        assert len(set(real_thrusters)) == len(real_thrusters)

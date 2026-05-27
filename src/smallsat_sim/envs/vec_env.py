@@ -12,6 +12,7 @@ from smallsat_sim.envs.base_env import BaseEnv
 from smallsat_sim.envs.disturbances import (
     DisturbanceStatus,
     constant_force_apply_from_state,
+    constant_force_activate_state,
 )
 from smallsat_sim.envs.freeflyer_backend import (
     _compute_freeflyer_state_features,
@@ -1434,6 +1435,58 @@ class VecEnv(BaseEnv):
         constant_force_disturbance.const_force_disturbance(
             selected_indices,
             start_time=0.0 if start_time is None else start_time,
+        )
+        self._refresh_effect_states()
+        self._state = self._state.replace(disturbance_states=self.disturbance_states)
+
+    def set_constant_wrench_disturbances(
+        self,
+        env_indices: jnp.ndarray,
+        wrenches: jnp.ndarray,
+        start_time: float = 0.0,
+    ) -> None:
+        """
+        Set deterministic constant 6D wrench disturbances for selected envs.
+        """
+        if self.disturbances is None:
+            return
+
+        env_indices = jnp.asarray(env_indices, dtype=jnp.int32)
+        if env_indices.size == 0:
+            return
+
+        constant_force_disturbance = None
+        for disturbance in self.disturbances.disturbances:
+            if (
+                getattr(disturbance, "failure_type", None)
+                == DisturbanceStatus.CONSTANT_FORCE
+            ):
+                constant_force_disturbance = disturbance
+                break
+
+        if constant_force_disturbance is None:
+            return
+
+        wrenches = jnp.asarray(wrenches, dtype=jnp.float32)
+        if wrenches.ndim != 2 or wrenches.shape[-1] != 6:
+            raise ValueError("wrenches must have shape (num_selected_envs, 6).")
+        if wrenches.shape[0] != env_indices.shape[0]:
+            raise ValueError("env_indices and wrenches must have matching rows.")
+
+        const_force = jnp.asarray(constant_force_disturbance.const_force)
+        const_force = const_force.at[env_indices].set(wrenches)
+        start_times = jnp.asarray(constant_force_disturbance.start_times)
+        start_times = start_times.at[env_indices].set(float(start_time))
+
+        constant_force_disturbance.const_force = const_force
+        constant_force_disturbance.start_times = start_times
+        constant_force_disturbance.disturbed_envs = env_indices
+        constant_force_disturbance.state = constant_force_activate_state(
+            constant_force_disturbance.state,
+            env_indices,
+            start_times,
+            const_force,
+            constant_force_disturbance._key,
         )
         self._refresh_effect_states()
         self._state = self._state.replace(disturbance_states=self.disturbance_states)

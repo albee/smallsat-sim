@@ -1,8 +1,8 @@
 #!/bin/bash
 
 core_scripts=(
-  "experiments/rl_benchmarking/ppo_nominal.py"
   "experiments/rl_benchmarking/ppo_plain.py"
+  "experiments/rl_benchmarking/ppo_privileged_context_structured_sanity.py"
   "experiments/rl_benchmarking/ppo_adaptive_transformer_residual.py"
   "experiments/rl_benchmarking/ppo_adaptive_cross_attention_task_predictive.py"
 )
@@ -19,6 +19,11 @@ optional_control_scripts=(
 
 diagnostic_scripts=(
   "experiments/rl_benchmarking/counterfactual_demand_probe.py"
+)
+
+privileged_sanity_scripts=(
+  "experiments/rl_benchmarking/ppo_privileged_context_residual_sanity.py"
+  "experiments/rl_benchmarking/ppo_privileged_context_structured_sanity.py"
 )
 
 scenario_split_eval_scripts=(
@@ -45,6 +50,9 @@ fi
 if [ "${RUN_COUNTERFACTUAL_PROBE:-0}" = "1" ]; then
   scripts+=("${diagnostic_scripts[@]}")
 fi
+if [ "${RUN_PRIVILEGED_SANITY:-0}" = "1" ]; then
+  scripts+=("${privileged_sanity_scripts[@]}")
+fi
 if [ "${RUN_SCENARIO_SPLIT_EVAL:-0}" = "1" ] && [ "${RUN_ONLY_SCENARIO_SPLIT_EVAL:-0}" != "1" ]; then
   scripts+=("${scenario_split_eval_scripts[@]}")
 fi
@@ -56,12 +64,12 @@ export PYTHONPATH="$(pwd):${PYTHONPATH}"
 export SMALLSAT_ROLLOUT_BACKEND="${SMALLSAT_ROLLOUT_BACKEND:-freeflyer}"
 echo "Using RL rollout backend: ${SMALLSAT_ROLLOUT_BACKEND}"
 
-# The focused paper suite trains 600 clean nominal epochs, then fine-tunes for
-# 200 epochs on a 50/50 mixture of clean envs and task-aligned hard_feasible
-# actuator failures. Sparse effective-authority cases are sampled from the
-# same task-conditioned failure library rather than through separate sparse
-# experiment scripts. easy_feasible, near-infeasible, and infeasible rows are
-# evaluation/stress diagnostics.
+# The focused paper suite trains each policy from scratch with its native input
+# dimensions. Failure-training runs use a 50/50 mixture of clean envs and
+# task-aligned hard_feasible actuator failures from the start. Sparse
+# effective-authority cases are sampled from the same task-conditioned failure
+# library rather than through separate sparse experiment scripts. easy_feasible,
+# near-infeasible, and infeasible rows are evaluation/stress diagnostics.
 # The older difficulty and failure-type curricula remain available by setting
 # failure_curriculum_mode to "difficulty" or "type" in
 # src/smallsat_sim/envs/astrobee_rl/cfg/config.py.
@@ -91,6 +99,7 @@ fi
 #   RUN_EVAL=1 RUN_LOG=1 ./train_test_all.sh
 #   RUN_DEPLOY=1 RUN_LOG=1 ./train_test_all.sh
 #   RUN_COUNTERFACTUAL_PROBE=1 ./train_test_all.sh
+#   RUN_PRIVILEGED_SANITY=1 ./train_test_all.sh
 #   RUN_SCENARIO_SPLIT_EVAL=1 ./train_test_all.sh
 #   RUN_ONLY_SCENARIO_SPLIT_EVAL=1 ./train_test_all.sh
 #
@@ -107,10 +116,8 @@ fi
 # requires its weakest force/torque authority with failures active from reset;
 # use --skip-targeted only for quick smoke tests.
 #
-# Existing full-pose checkpoints are reused by the Python runners. Adaptive
-# variants warm-start from training_state_full_pose_nominal.pkl when it exists,
-# with extra context-input rows initialized to zero for fair comparison. Remove
-# the relevant checkpoint files if you want to force retraining a variant.
+# Existing checkpoints for the exact run/config are reused by the Python
+# runners. Remove the relevant checkpoint file to force a fresh run.
 COMMON_ARGS=(--headless)
 if [ "${RUN_WANDB:-1}" = "1" ]; then
   COMMON_ARGS+=(--wandb)

@@ -55,11 +55,16 @@ class Benchmarker(object):
         curriculum_failure_fraction: float | None = None,
         phase: int = 2,
         pretrain_only: bool = False,
+        allow_privileged_context: bool = False,
     ) -> None:
         """
         Train and evaluate the RL controller.
         """
-        if use_adaptive_approach and int(phase) != 2:
+        if (
+            use_adaptive_approach
+            and int(phase) != 2
+            and not bool(allow_privileged_context)
+        ):
             raise ValueError(
                 "Adaptive benchmark runs must use phase=2. Phase 1 uses privileged "
                 "simulator force/wrench labels as runtime context."
@@ -104,7 +109,10 @@ class Benchmarker(object):
                     "Set RUN_EVAL=1 in train_test_all.sh to enable it."
                 )
             else:
-                runner.evaluate(phase=phase)
+                runner.evaluate(
+                    phase=phase,
+                    allow_privileged_context=allow_privileged_context,
+                )
 
         # Save log if logging is enabled
         if self.args.log:

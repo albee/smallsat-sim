@@ -104,7 +104,7 @@ class EnvConfig(BaseEnvConfig):
 
             class PPO:
                 steps_per_epoch = 512
-                epochs = 800  # Overridden by authority curriculum: 600 clean + 200 hard-feasible
+                epochs = 800
                 max_ep_len = 512  # 25.6s at 20Hz; enough for 2m setpoint regulation without overlong episodes
                 gamma = 0.995
                 lam = 0.97
@@ -123,10 +123,12 @@ class EnvConfig(BaseEnvConfig):
                 initial_log_std = -1.0
                 log_std_min = float(np.log(0.05))
 
-            # Sequential failure curriculum knobs
-            curriculum_nominal_epochs = 600
-            curriculum_phase_epochs = 200
-            curriculum_failure_fraction = 0.5  # Failure fine-tuning: 50% clean, 50% hard-feasible failures
+            # Failure curriculum knobs. Failure-training runs start from random
+            # initialization and train directly on the task-conditioned failure
+            # mixture; nominal-only runs use PPO.epochs as their fallback length.
+            curriculum_nominal_epochs = 0
+            curriculum_phase_epochs = 800
+            curriculum_failure_fraction = 0.5
             curriculum_disturbance_fraction = 0.1
             curriculum_failure_ramp_epochs = 1
             curriculum_disturbance_ramp_epochs = 1
@@ -198,6 +200,9 @@ class EnvConfig(BaseEnvConfig):
             am_grad_clip_norm = 1.0
             am_kl_weight = 0.01
             am_checkpoint_interval = 10
+            # Cap the number of full-history windows used per AM update to avoid
+            # GPU OOM when (steps_per_epoch * num_envs) is large.
+            am_max_window_samples = 65536
 
             # Hyperparams for the evaluation loop
             episode_len = 512

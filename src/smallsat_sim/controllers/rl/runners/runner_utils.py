@@ -172,7 +172,7 @@ def load_trained_modules(ckpt_dir: str, ckpt_filename: str):
     return restored_state
 
 
-def _copy_value_with_optional_input_expansion(
+def _copy_value_if_shape_matches(
     target_value: jnp.ndarray,
     source_value: jnp.ndarray,
 ) -> jnp.ndarray | None:
@@ -180,14 +180,6 @@ def _copy_value_with_optional_input_expansion(
     source = jnp.asarray(source_value)
     if target.shape == source.shape:
         return source
-    if (
-        target.ndim == 2
-        and source.ndim == 2
-        and source.shape[0] <= target.shape[0]
-        and source.shape[1] == target.shape[1]
-    ):
-        expanded = jnp.zeros_like(target)
-        return expanded.at[: source.shape[0], :].set(source)
     return None
 
 
@@ -195,15 +187,14 @@ def align_checkpoint_state_to_model(target_state, source_state):
     """
     Align a checkpoint state to a model state.
 
-    This supports fair adaptive-policy warm starts from a state-only nominal
-    policy. Matching parameters are copied exactly; first-layer kernels with
-    extra adaptive-context input rows are copied in the state rows and zeroed in
-    the new context rows. Non-matching leaves keep their target initialization.
+    Matching parameters are copied exactly. Non-matching leaves keep their
+    target initialization so checkpoint loading does not silently create
+    zero-padded context inputs.
     """
     if isinstance(target_state, VariableState) and isinstance(
         source_state, VariableState
     ):
-        copied_value = _copy_value_with_optional_input_expansion(
+        copied_value = _copy_value_if_shape_matches(
             target_state.value,
             source_state.value,
         )
@@ -225,7 +216,7 @@ def align_checkpoint_state_to_model(target_state, source_state):
 
     if isinstance(target_state, np.ndarray) or _is_jax_array(target_state):
         if isinstance(source_state, np.ndarray) or _is_jax_array(source_state):
-            copied_value = _copy_value_with_optional_input_expansion(
+            copied_value = _copy_value_if_shape_matches(
                 target_state,
                 source_state,
             )

@@ -14,6 +14,14 @@ from smallsat_sim.model.astrobee.cfg import config as model_config
 from smallsat_sim.controllers.rl.runners.failure_scenarios import (
     AUTHORITY_REGIME_NAMES,
     FAILURE_TYPE_NAMES,
+    LABEL_BIAS_DOMINATED,
+    LABEL_COUPLED_FORCE_TORQUE,
+    LABEL_FORCE_DEGENERATE,
+    LABEL_NEAR_DEPENDENT,
+    LABEL_NONLINEAR_MISMATCH,
+    LABEL_SATURATION_PRONE,
+    LABEL_SYMMETRY_BREAKING,
+    LABEL_TORQUE_DEGENERATE,
     REGIME_AUTHORITY_LIMITED,
     REGIME_BIAS_LIMITED,
     REGIME_MARGINAL,
@@ -46,6 +54,17 @@ TASK_REGIME_BY_NAME = {
     "infeasible": TASK_REGIME_INFEASIBLE,
 }
 
+AUTHORITY_LABELS = (
+    (LABEL_SYMMETRY_BREAKING, "symmetry_breaking"),
+    (LABEL_TORQUE_DEGENERATE, "torque_degenerate"),
+    (LABEL_FORCE_DEGENERATE, "force_degenerate"),
+    (LABEL_COUPLED_FORCE_TORQUE, "coupled_force_torque"),
+    (LABEL_SATURATION_PRONE, "saturation_prone"),
+    (LABEL_NEAR_DEPENDENT, "near_dependent"),
+    (LABEL_BIAS_DOMINATED, "bias_dominated"),
+    (LABEL_NONLINEAR_MISMATCH, "nonlinear_mismatch"),
+)
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -72,8 +91,11 @@ def _parse_args() -> argparse.Namespace:
             "p90_feasibility_error",
             "bias_cancellation_error",
             "mean_authority_margin",
+            "targeted_task_utilization",
+            "horizon_max_utilization",
+            "horizon_mean_utilization",
         ),
-        default="p10_authority_margin",
+        default="horizon_max_utilization",
     )
     parser.add_argument("--descending", action="store_true")
     return parser.parse_args()
@@ -81,7 +103,17 @@ def _parse_args() -> argparse.Namespace:
 
 def _failure_label(failure_type: int, thruster: int) -> str:
     name = FAILURE_TYPE_NAMES.get(int(failure_type), "none")
+    if int(failure_type) == 5:
+        axis = int(thruster) % 6
+        sign = "+" if (int(thruster) // 6) % 2 == 0 else "-"
+        axis_name = ("Fx", "Fy", "Fz", "Tx", "Ty", "Tz")[axis]
+        return f"{name}@{sign}{axis_name}"
     return f"{name}@thruster{int(thruster)}"
+
+
+def _authority_label_string(mask: int) -> str:
+    labels = [name for bit, name in AUTHORITY_LABELS if int(mask) & int(bit)]
+    return ",".join(labels) if labels else "none"
 
 
 def main() -> None:
@@ -168,10 +200,14 @@ def main() -> None:
             f"p90_err={arrays['p90_feasibility_error'][scenario_id]:.3f} "
             f"target_err={arrays['targeted_task_error'][scenario_id]:.3f} "
             f"target_margin={arrays['targeted_task_margin'][scenario_id]:.3f} "
+            f"target_util={arrays.get('targeted_task_utilization', np.zeros_like(arrays['targeted_task_margin']))[scenario_id]:.3f} "
+            f"horizon_max_util={arrays.get('horizon_max_utilization', np.zeros_like(arrays['targeted_task_margin']))[scenario_id]:.3f} "
+            f"horizon_mean_util={arrays.get('horizon_mean_utilization', np.zeros_like(arrays['targeted_task_margin']))[scenario_id]:.3f} "
             f"target_force={np.array2string(targeted_wrench[:3], precision=3)} "
             f"target_torque={np.array2string(targeted_wrench[3:], precision=3)} "
             f"bias_err={arrays['bias_cancellation_error'][scenario_id]:.3f} "
             f"bias_norm={arrays['bias_wrench_norm'][scenario_id]:.3f} "
+            f"labels={_authority_label_string(arrays.get('authority_label_mask', np.zeros_like(arrays['difficulty_bin']))[scenario_id])} "
             f"failures={', '.join(failures)}"
         )
 

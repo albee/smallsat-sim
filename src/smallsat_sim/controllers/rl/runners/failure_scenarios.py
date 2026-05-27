@@ -30,6 +30,14 @@ REGIME_REDUNDANT = 0
 REGIME_MARGINAL = 1
 REGIME_AUTHORITY_LIMITED = 2
 REGIME_BIAS_LIMITED = 3
+LABEL_SYMMETRY_BREAKING = 1 << 0
+LABEL_TORQUE_DEGENERATE = 1 << 1
+LABEL_FORCE_DEGENERATE = 1 << 2
+LABEL_COUPLED_FORCE_TORQUE = 1 << 3
+LABEL_SATURATION_PRONE = 1 << 4
+LABEL_NEAR_DEPENDENT = 1 << 5
+LABEL_BIAS_DOMINATED = 1 << 6
+LABEL_NONLINEAR_MISMATCH = 1 << 7
 TASK_REGIME_EASY_FEASIBLE = 0
 TASK_REGIME_HARD_FEASIBLE = 1
 TASK_REGIME_NEAR_INFEASIBLE = 2
@@ -40,6 +48,7 @@ FAILURE_TYPE_NAMES = {
     2: "faulty_valve",
     3: "saturated_thrust",
     4: "thrust_instability",
+    5: "constant_disturbance",
 }
 SPLIT_NAMES = {
     SPLIT_TRAIN: "train",
@@ -73,7 +82,15 @@ SCENARIO_FAILURE_STATUS = {
     4: PerturbationStatus.THRUST_INSTABILITY.value,
 }
 _GP_SAMPLE_BANK: dict[tuple, tuple[jnp.ndarray, jnp.ndarray]] = {}
-_SCENARIO_CACHE_VERSION = "task-conditioned-higher-order-v2"
+_SCENARIO_CACHE_VERSION = "task-conditioned-horizon-utilization-v4"
+TASK_ERROR_INFEASIBLE_THRESHOLD = 0.25
+TASK_MARGIN_INFEASIBLE_THRESHOLD = -0.20
+TASK_MARGIN_NEAR_INFEASIBLE_THRESHOLD = 0.0
+TASK_MARGIN_HARD_FEASIBLE_THRESHOLD = 0.30
+TASK_ERROR_HARD_FEASIBLE_THRESHOLD = 0.10
+UTILIZATION_BIN_EASY_MAX = 0.30
+UTILIZATION_BIN_MEDIUM_MAX = 0.60
+UTILIZATION_BIN_HARD_MAX = 0.90
 
 
 def task_wrench_from_state_features(
@@ -139,6 +156,44 @@ def _scenario_cache_key(
     return digest.hexdigest()[:16]
 
 
+# Helper to generate a grid of unit directions in R^dim, including axes and random directions.
+def _unit_direction_grid(dim: int = 6, random_count: int = 4096) -> np.ndarray:
+    rng = np.random.default_rng(20260527)
+    random_dirs = rng.normal(size=(int(random_count), int(dim))).astype(np.float32)
+    random_dirs /= np.linalg.norm(random_dirs, axis=1, keepdims=True) + 1e-6
+
+    axes: list[np.ndarray] = []
+    for axis in range(dim):
+        unit = np.zeros((dim,), dtype=np.float32)
+        unit[axis] = 1.0
+        axes.append(unit.copy())
+        axes.append(-unit.copy())
+
+    mixed: list[np.ndarray] = []
+    for first in range(dim):
+        for second in range(first + 1, dim):
+            for sign_first, sign_second in (
+                (1.0, 1.0),
+                (1.0, -1.0),
+                (-1.0, 1.0),
+                (-1.0, -1.0),
+            ):
+                direction = np.zeros((dim,), dtype=np.float32)
+                direction[first] = sign_first
+                direction[second] = sign_second
+                direction /= np.linalg.norm(direction) + 1e-6
+                mixed.append(direction)
+
+    return np.concatenate(
+        [
+            random_dirs,
+            np.asarray(axes, dtype=np.float32),
+            np.asarray(mixed, dtype=np.float32),
+        ],
+        axis=0,
+    ).astype(np.float32)
+
+
 def _task_wrench_samples(mixer_t: np.ndarray, ctrl_high: np.ndarray) -> np.ndarray:
     nominal_map = mixer_t.T
     positive = np.sum(np.maximum(nominal_map, 0.0) * ctrl_high[None, :], axis=1)
@@ -146,20 +201,18 @@ def _task_wrench_samples(mixer_t: np.ndarray, ctrl_high: np.ndarray) -> np.ndarr
     axis_mag = 0.35 * np.minimum(np.abs(positive), np.abs(negative))
     axis_mag = np.maximum(axis_mag, 1e-3)
 
-    samples: list[np.ndarray] = []
+    direction_grid = _unit_direction_grid(dim=nominal_map.shape[0], random_count=4096)
+    scale = float(np.median(axis_mag))
+    task_wrenches = direction_grid * max(scale, 1e-3)
+
+    canonical: list[np.ndarray] = []
     for axis in range(nominal_map.shape[0]):
         unit = np.zeros((nominal_map.shape[0],), dtype=np.float32)
         unit[axis] = axis_mag[axis]
-        samples.append(unit.copy())
-        samples.append(-unit.copy())
-    for first in range(nominal_map.shape[0]):
-        second = (first + 1) % nominal_map.shape[0]
-        wrench = np.zeros((nominal_map.shape[0],), dtype=np.float32)
-        wrench[first] = 0.5 * axis_mag[first]
-        wrench[second] = 0.5 * axis_mag[second]
-        samples.append(wrench)
-        samples.append(-wrench)
-    return np.asarray(samples, dtype=np.float32)
+        canonical.append(unit.copy())
+        canonical.append(-unit.copy())
+
+    return np.concatenate([task_wrenches, np.asarray(canonical, dtype=np.float32)], axis=0)
 
 
 def _targeted_task_wrench_samples(
@@ -177,12 +230,22 @@ def _targeted_task_wrench_samples(
         unit[axis] = axis_mag[axis]
         samples.append(unit.copy())
         samples.append(-unit.copy())
+
     for first, second in ((0, 1), (0, 2), (1, 2), (3, 4), (3, 5), (4, 5)):
-        for sign_first, sign_second in ((1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)):
+        for sign_first, sign_second in (
+            (1.0, 1.0),
+            (1.0, -1.0),
+            (-1.0, 1.0),
+            (-1.0, -1.0),
+        ):
             wrench = np.zeros((nominal_map.shape[0],), dtype=np.float32)
             wrench[first] = sign_first * 0.5 * axis_mag[first]
             wrench[second] = sign_second * 0.5 * axis_mag[second]
             samples.append(wrench)
+
+    random_dirs = _unit_direction_grid(dim=nominal_map.shape[0], random_count=1024)
+    scale = float(np.median(axis_mag))
+    samples.extend(list((random_dirs * max(scale, 1e-3)).astype(np.float32)))
     return np.asarray(samples, dtype=np.float32)
 
 
@@ -202,6 +265,26 @@ def _projected_bounded_residual(
         grad = wrench_map.T @ residual
         u = np.clip(u - step_size * grad, lower, upper)
     return float(np.linalg.norm(wrench_map @ u - target_wrench))
+
+
+def _projected_bounded_residuals(
+    wrench_map: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    target_wrenches: np.ndarray,
+    *,
+    iterations: int = 32,
+) -> np.ndarray:
+    targets = np.asarray(target_wrenches, dtype=np.float32)
+    pinv_t = np.linalg.pinv(wrench_map).T
+    u = np.clip(targets @ pinv_t, lower[None, :], upper[None, :])
+    lipschitz = float(np.linalg.norm(wrench_map, ord=2) ** 2) + 1e-6
+    step_size = 1.0 / lipschitz
+    for _ in range(iterations):
+        residual = u @ wrench_map.T - targets
+        grad = residual @ wrench_map
+        u = np.clip(u - step_size * grad, lower[None, :], upper[None, :])
+    return np.linalg.norm(u @ wrench_map.T - targets, axis=1).astype(np.float32)
 
 
 def _max_feasible_wrench_scale(
@@ -246,6 +329,108 @@ def _max_feasible_wrench_scale(
     return lo
 
 
+def _max_feasible_wrench_scales(
+    wrench_map: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    target_wrenches: np.ndarray,
+    *,
+    tolerance: float = 0.05,
+    high: float = 4.0,
+    iterations: int = 7,
+) -> np.ndarray:
+    targets = np.asarray(target_wrenches, dtype=np.float32)
+    target_norms = np.linalg.norm(targets, axis=1) + 1e-6
+    lo = np.zeros((targets.shape[0],), dtype=np.float32)
+    hi = np.full((targets.shape[0],), float(high), dtype=np.float32)
+    for _ in range(iterations):
+        mid = 0.5 * (lo + hi)
+        scaled_targets = targets * mid[:, None]
+        residuals = _projected_bounded_residuals(
+            wrench_map,
+            lower,
+            upper,
+            scaled_targets,
+            iterations=16,
+        )
+        feasible = residuals / (mid * target_norms + 1e-6) <= tolerance
+        lo = np.where(feasible, mid, lo)
+        hi = np.where(feasible, hi, mid)
+    return lo.astype(np.float32)
+
+
+# Helper: minimum required utilization to achieve a target wrench along a horizon
+def _min_required_utilization(
+    wrench_map: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    target_wrench: np.ndarray,
+    *,
+    tolerance: float = 0.05,
+    iterations: int = 10,
+) -> tuple[float, float]:
+    """Approximate min eta such that target_wrench is feasible with u <= eta * upper."""
+    target_norm = float(np.linalg.norm(target_wrench)) + 1e-6
+    if target_norm <= 1e-5:
+        residual = _projected_bounded_residual(wrench_map, lower, upper, target_wrench)
+        return 0.0, residual
+
+    def feasible(eta: float) -> tuple[bool, float]:
+        scaled_upper = np.minimum(upper, np.maximum(lower, eta * upper))
+        residual = _projected_bounded_residual(
+            wrench_map,
+            lower,
+            scaled_upper,
+            target_wrench,
+            iterations=24,
+        )
+        return residual / target_norm <= tolerance, residual
+
+    ok_full, residual_full = feasible(1.0)
+    if not ok_full:
+        return float("inf"), residual_full
+
+    lo = 0.0
+    hi = 1.0
+    residual_hi = residual_full
+    for _ in range(iterations):
+        mid = 0.5 * (lo + hi)
+        ok_mid, residual_mid = feasible(mid)
+        if ok_mid:
+            hi = mid
+            residual_hi = residual_mid
+        else:
+            lo = mid
+    return float(hi), float(residual_hi)
+
+
+def _scenario_horizon_wrenches(targeted_wrench: np.ndarray, horizon: int = 16) -> np.ndarray:
+    horizon = max(1, int(horizon))
+    scales = np.linspace(1.0, 0.20, horizon, dtype=np.float32)
+    return scales[:, None] * targeted_wrench[None, :]
+
+
+def _horizon_utilization_metrics(
+    wrench_map: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    bias_wrench: np.ndarray,
+    targeted_wrench: np.ndarray,
+    *,
+    horizon: int = 16,
+) -> tuple[float, float, float]:
+    etas = []
+    residuals = []
+    for wrench in _scenario_horizon_wrenches(targeted_wrench, horizon=horizon):
+        net_wrench = wrench - bias_wrench
+        eta, residual = _min_required_utilization(wrench_map, lower, upper, net_wrench)
+        etas.append(eta)
+        residuals.append(residual / (float(np.linalg.norm(net_wrench)) + 1e-6))
+    etas_np = np.asarray(etas, dtype=np.float32)
+    residuals_np = np.asarray(residuals, dtype=np.float32)
+    return float(np.max(etas_np)), float(np.mean(etas_np)), float(np.max(residuals_np))
+
+
 def _scenario_bounds(
     failure_types: tuple[int, ...],
     thrusters: tuple[int, ...],
@@ -253,12 +438,21 @@ def _scenario_bounds(
     ctrl_low: np.ndarray,
     ctrl_high: np.ndarray,
     mild_effectiveness: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     effectiveness = np.ones((mixer_t.shape[0],), dtype=np.float32)
     lower = ctrl_low.copy()
     upper = ctrl_high.copy()
+    disturbance = np.zeros((mixer_t.shape[1],), dtype=np.float32)
+    nominal_map = mixer_t.T
     for failure_type, thruster in zip(failure_types, thrusters, strict=True):
-        if failure_type == 0:
+        if failure_type == 5:
+            axis = int(thruster) % nominal_map.shape[0]
+            sign = 1.0 if (int(thruster) // nominal_map.shape[0]) % 2 == 0 else -1.0
+            positive = np.sum(np.maximum(nominal_map[axis], 0.0) * ctrl_high)
+            negative = np.sum(np.minimum(nominal_map[axis], 0.0) * ctrl_high)
+            axis_mag = 0.15 * min(abs(float(positive)), abs(float(negative)))
+            disturbance[axis] += sign * max(axis_mag, 1e-3)
+        elif failure_type == 0:
             effectiveness[thruster] = 0.0
             lower[thruster] = 0.0
             upper[thruster] = 0.0
@@ -270,7 +464,37 @@ def _scenario_bounds(
         else:
             effectiveness[thruster] = min(effectiveness[thruster], mild_effectiveness)
             upper[thruster] = min(upper[thruster], mild_effectiveness * ctrl_high[thruster])
-    return effectiveness, lower, upper
+    return effectiveness, lower, upper, disturbance
+
+
+def _authority_label_mask(
+    failure_types: tuple[int, ...],
+    min_sv: float,
+    condition_number: float,
+    bias_wrench_norm: float,
+    targeted_utilization: float,
+    targeted_direction: np.ndarray,
+) -> int:
+    label_mask = 0
+    if len(failure_types) >= 2:
+        label_mask |= LABEL_SYMMETRY_BREAKING
+    force_norm = float(np.linalg.norm(targeted_direction[:3]))
+    torque_norm = float(np.linalg.norm(targeted_direction[3:]))
+    if torque_norm > 0.65:
+        label_mask |= LABEL_TORQUE_DEGENERATE
+    if force_norm > 0.65:
+        label_mask |= LABEL_FORCE_DEGENERATE
+    if force_norm > 0.25 and torque_norm > 0.25:
+        label_mask |= LABEL_COUPLED_FORCE_TORQUE
+    if targeted_utilization >= 0.75:
+        label_mask |= LABEL_SATURATION_PRONE
+    if condition_number > 50.0 or min_sv < 1e-3:
+        label_mask |= LABEL_NEAR_DEPENDENT
+    if bias_wrench_norm > 1e-4 or any(failure_type == 1 for failure_type in failure_types) or any(failure_type == 5 for failure_type in failure_types):
+        label_mask |= LABEL_BIAS_DOMINATED
+    if any(failure_type in (2, 3, 4) for failure_type in failure_types):
+        label_mask |= LABEL_NONLINEAR_MISMATCH
+    return int(label_mask)
 
 
 def _scenario_metrics(
@@ -297,9 +521,13 @@ def _scenario_metrics(
     float,
     np.ndarray,
     float,
+    float,
+    float,
+    int,
+    np.ndarray,
     np.ndarray,
 ]:
-    effectiveness, lower, upper = _scenario_bounds(
+    effectiveness, lower, upper, disturbance = _scenario_bounds(
         failure_types,
         thrusters,
         mixer_t,
@@ -315,28 +543,40 @@ def _scenario_metrics(
         singular_values[0] / max(singular_values[-1], 1e-8)
     ) if singular_values.size else float("inf")
 
-    errors = []
-    margins = []
-    for wrench in task_wrenches:
-        residual = _projected_bounded_residual(wrench_map, lower, upper, wrench)
-        errors.append(residual / (float(np.linalg.norm(wrench)) + 1e-6))
-        feasible_scale = _max_feasible_wrench_scale(
-            wrench_map, lower, upper, wrench
+    task_net_wrenches = task_wrenches - disturbance[None, :]
+    residuals = _projected_bounded_residuals(
+        wrench_map,
+        lower,
+        upper,
+        task_net_wrenches,
+        iterations=32,
+    )
+    errors_np = residuals / (np.linalg.norm(task_wrenches, axis=1) + 1e-6)
+    margins_np = (
+        _max_feasible_wrench_scales(wrench_map, lower, upper, task_net_wrenches)
+        - 1.0
+    )
+
+    targeted_net_wrenches = targeted_task_wrenches - disturbance[None, :]
+    targeted_residuals = _projected_bounded_residuals(
+        wrench_map,
+        lower,
+        upper,
+        targeted_net_wrenches,
+        iterations=32,
+    )
+    targeted_errors_np = targeted_residuals / (
+        np.linalg.norm(targeted_task_wrenches, axis=1) + 1e-6
+    )
+    targeted_margins_np = (
+        _max_feasible_wrench_scales(
+            wrench_map,
+            lower,
+            upper,
+            targeted_net_wrenches,
         )
-        margins.append(feasible_scale - 1.0)
-    errors_np = np.asarray(errors, dtype=np.float32)
-    margins_np = np.asarray(margins, dtype=np.float32)
-    targeted_errors = []
-    targeted_margins = []
-    for wrench in targeted_task_wrenches:
-        residual = _projected_bounded_residual(wrench_map, lower, upper, wrench)
-        targeted_errors.append(residual / (float(np.linalg.norm(wrench)) + 1e-6))
-        feasible_scale = _max_feasible_wrench_scale(
-            wrench_map, lower, upper, wrench
-        )
-        targeted_margins.append(feasible_scale - 1.0)
-    targeted_errors_np = np.asarray(targeted_errors, dtype=np.float32)
-    targeted_margins_np = np.asarray(targeted_margins, dtype=np.float32)
+        - 1.0
+    )
     feasible_mask = targeted_errors_np <= 0.10
     hard_feasible_mask = np.logical_and(
         feasible_mask,
@@ -364,12 +604,23 @@ def _scenario_metrics(
     targeted_direction = targeted_wrench / max(targeted_norm, 1e-6)
     targeted_authority_scale = max(1.0 + float(targeted_margins_np[target_idx]), 1e-6)
     targeted_utilization = float(1.0 / targeted_authority_scale)
+    bias_wrench = disturbance + wrench_map @ np.clip(np.zeros_like(lower), lower, upper)
+    horizon_max_utilization, horizon_mean_utilization, horizon_max_error = _horizon_utilization_metrics(
+        wrench_map,
+        lower,
+        upper,
+        bias_wrench,
+        targeted_wrench,
+        horizon=16,
+    )
+    if np.isfinite(horizon_max_utilization):
+        targeted_utilization = horizon_max_utilization
     zero_residual = _projected_bounded_residual(
-        wrench_map, lower, upper, np.zeros((wrench_map.shape[0],), dtype=np.float32)
+        wrench_map, lower, upper, -disturbance
     )
     nominal_scale = float(np.median(np.linalg.norm(task_wrenches, axis=1))) + 1e-6
     bias_cancellation_error = zero_residual / nominal_scale
-    bias_wrench = wrench_map @ np.clip(np.zeros_like(lower), lower, upper)
+    # bias_wrench = disturbance + wrench_map @ np.clip(np.zeros_like(lower), lower, upper)
     bias_wrench_norm = float(np.linalg.norm(bias_wrench))
     p10_margin = float(np.percentile(margins_np, 10.0))
     mean_margin = float(np.mean(margins_np))
@@ -382,6 +633,14 @@ def _scenario_metrics(
         authority_regime = REGIME_MARGINAL
     else:
         authority_regime = REGIME_REDUNDANT
+    authority_label_mask = _authority_label_mask(
+        failure_types,
+        min_sv,
+        condition_number,
+        bias_wrench_norm,
+        targeted_utilization,
+        targeted_direction,
+    )
     return (
         rank,
         min_sv,
@@ -397,16 +656,26 @@ def _scenario_metrics(
         float(targeted_margins_np[target_idx]),
         targeted_wrench,
         targeted_utilization,
+        horizon_max_utilization,
+        horizon_mean_utilization,
+        authority_label_mask,
+        disturbance.astype(np.float32),
         targeted_direction.astype(np.float32),
     )
 
 
 def _task_feasibility_regime(targeted_error: float, targeted_margin: float) -> int:
-    if targeted_error > 0.25 or targeted_margin < -0.20:
+    if (
+        targeted_error > TASK_ERROR_INFEASIBLE_THRESHOLD
+        or targeted_margin < TASK_MARGIN_INFEASIBLE_THRESHOLD
+    ):
         return TASK_REGIME_INFEASIBLE
-    if targeted_margin < 0.0:
+    if targeted_margin < TASK_MARGIN_NEAR_INFEASIBLE_THRESHOLD:
         return TASK_REGIME_NEAR_INFEASIBLE
-    if targeted_margin <= 0.30 and targeted_error <= 0.10:
+    if (
+        targeted_margin <= TASK_MARGIN_HARD_FEASIBLE_THRESHOLD
+        and targeted_error <= TASK_ERROR_HARD_FEASIBLE_THRESHOLD
+    ):
         return TASK_REGIME_HARD_FEASIBLE
     return TASK_REGIME_EASY_FEASIBLE
 
@@ -431,16 +700,19 @@ def _iter_failure_combos(
     sampled_per_fault_count = max(0, int(sampled_per_fault_count))
     fault_pool = [
         (failure_type, thruster)
-        for failure_type in range(len(FAILURE_TYPE_NAMES))
+        for failure_type in range(5)
         for thruster in range(n_thrusters)
     ]
+    # Constant disturbances are encoded as pseudo-thrusters 0..11:
+    # axes 0..5 positive, axes 6..11 negative.
+    fault_pool.extend((5, pseudo_axis) for pseudo_axis in range(12))
     combos_out: list[tuple[tuple[int, int], ...]] = []
     seen: set[tuple[tuple[int, int], ...]] = set()
 
     for n_faults in range(1, exhaustive_faults + 1):
         for combo in combinations(fault_pool, n_faults):
-            thrusters = tuple(item[1] for item in combo)
-            if len(set(thrusters)) != len(thrusters):
+            real_thrusters = tuple(item[1] for item in combo if item[0] != 5)
+            if len(set(real_thrusters)) != len(real_thrusters):
                 continue
             key = _failure_combo_key(combo)
             if key in seen:
@@ -458,18 +730,13 @@ def _iter_failure_combos(
         max_attempts = sampled_per_fault_count * 50
         while accepted < sampled_per_fault_count and attempts < max_attempts:
             attempts += 1
-            thrusters = rng.choice(n_thrusters, size=n_faults, replace=False)
-            failure_types = rng.integers(
-                0, len(FAILURE_TYPE_NAMES), size=n_faults, endpoint=False
-            )
+            sampled_indices = rng.choice(len(fault_pool), size=n_faults, replace=False)
+            raw_combo = tuple(fault_pool[int(idx)] for idx in sampled_indices)
+            real_thrusters = tuple(item[1] for item in raw_combo if item[0] != 5)
+            if len(set(real_thrusters)) != len(real_thrusters):
+                continue
             combo = tuple(
-                sorted(
-                    (
-                        (int(failure_type), int(thruster))
-                        for failure_type, thruster in zip(failure_types, thrusters)
-                    ),
-                    key=lambda item: item[1],
-                )
+                sorted(raw_combo, key=lambda item: (item[0] == 5, item[1], item[0]))
             )
             if combo in seen:
                 continue
@@ -530,6 +797,10 @@ def _build_scenario_table_cached(
             targeted_task_margin,
             targeted_task_wrench,
             targeted_task_utilization,
+            horizon_max_utilization,
+            horizon_mean_utilization,
+            authority_label_mask,
+            disturbance_wrench,
             targeted_task_direction,
         ) = _scenario_metrics(
             failure_types,
@@ -570,6 +841,10 @@ def _build_scenario_table_cached(
                 "targeted_task_margin": targeted_task_margin,
                 "targeted_task_wrench": targeted_task_wrench,
                 "targeted_task_utilization": targeted_task_utilization,
+                "horizon_max_utilization": horizon_max_utilization,
+                "horizon_mean_utilization": horizon_mean_utilization,
+                "authority_label_mask": authority_label_mask,
+                "disturbance_wrench": disturbance_wrench,
                 "targeted_task_direction": targeted_task_direction,
                 "task_feasibility_regime": task_feasibility_regime,
             }
@@ -606,6 +881,10 @@ def _build_scenario_table_cached(
             "targeted_task_margin": np.empty((0,), dtype=np.float32),
             "targeted_task_wrench": np.empty((0, 6), dtype=np.float32),
             "targeted_task_utilization": np.empty((0,), dtype=np.float32),
+            "horizon_max_utilization": np.empty((0,), dtype=np.float32),
+            "horizon_mean_utilization": np.empty((0,), dtype=np.float32),
+            "authority_label_mask": np.empty((0,), dtype=np.int32),
+            "disturbance_wrench": np.empty((0, 6), dtype=np.float32),
             "targeted_task_direction": np.empty((0, 6), dtype=np.float32),
         }
 
@@ -633,6 +912,10 @@ def _build_scenario_table_cached(
     targeted_margin_rows: list[float] = []
     targeted_wrench_rows: list[np.ndarray] = []
     targeted_utilization_rows: list[float] = []
+    horizon_max_utilization_rows: list[float] = []
+    horizon_mean_utilization_rows: list[float] = []
+    authority_label_rows: list[int] = []
+    disturbance_wrench_rows: list[np.ndarray] = []
     targeted_direction_rows: list[np.ndarray] = []
 
     for row_idx, row in enumerate(scenario_rows):
@@ -648,11 +931,11 @@ def _build_scenario_table_cached(
             split = SPLIT_TRAIN
 
         utilization = float(row["targeted_task_utilization"])
-        if utilization < 0.30:
+        if utilization < UTILIZATION_BIN_EASY_MAX:
             difficulty_bin = BIN_EASY
-        elif utilization < 0.60:
+        elif utilization < UTILIZATION_BIN_MEDIUM_MAX:
             difficulty_bin = BIN_MEDIUM
-        elif utilization < 0.90:
+        elif utilization < UTILIZATION_BIN_HARD_MAX:
             difficulty_bin = BIN_HARD
         else:
             difficulty_bin = BIN_NEAR_BOUNDARY
@@ -680,6 +963,10 @@ def _build_scenario_table_cached(
         targeted_margin_rows.append(row["targeted_task_margin"])
         targeted_wrench_rows.append(row["targeted_task_wrench"])
         targeted_utilization_rows.append(row["targeted_task_utilization"])
+        horizon_max_utilization_rows.append(row["horizon_max_utilization"])
+        horizon_mean_utilization_rows.append(row["horizon_mean_utilization"])
+        authority_label_rows.append(row["authority_label_mask"])
+        disturbance_wrench_rows.append(row["disturbance_wrench"])
         targeted_direction_rows.append(row["targeted_task_direction"])
 
     return {
@@ -714,6 +1001,14 @@ def _build_scenario_table_cached(
         "targeted_task_utilization": np.asarray(
             targeted_utilization_rows, dtype=np.float32
         ),
+        "horizon_max_utilization": np.asarray(
+            horizon_max_utilization_rows, dtype=np.float32
+        ),
+        "horizon_mean_utilization": np.asarray(
+            horizon_mean_utilization_rows, dtype=np.float32
+        ),
+        "authority_label_mask": np.asarray(authority_label_rows, dtype=np.int32),
+        "disturbance_wrench": np.asarray(disturbance_wrench_rows, dtype=np.float32),
         "targeted_task_direction": np.asarray(
             targeted_direction_rows, dtype=np.float32
         ),
@@ -864,9 +1159,25 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
             table.get("targeted_task_utilization", jnp.zeros_like(targeted_error))
         )
     )
+    horizon_max_utilization = np.asarray(
+        jax.device_get(table.get("horizon_max_utilization", targeted_utilization))
+    )
+    horizon_mean_utilization = np.asarray(
+        jax.device_get(table.get("horizon_mean_utilization", targeted_utilization))
+    )
     targeted_direction = np.asarray(
         jax.device_get(
             table.get("targeted_task_direction", jnp.zeros_like(targeted_wrench))
+        )
+    )
+    authority_label_mask = np.asarray(
+        jax.device_get(
+            table.get("authority_label_mask", jnp.zeros_like(table["difficulty_bin"]))
+        )
+    )
+    disturbance_wrench = np.asarray(
+        jax.device_get(
+            table.get("disturbance_wrench", jnp.zeros_like(targeted_wrench))
         )
     )
 
@@ -891,9 +1202,13 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
         "targeted_task_error",
         "targeted_task_margin",
         "targeted_task_utilization",
+        "horizon_max_utilization",
+        "horizon_mean_utilization",
+        "authority_label_mask",
     ]
     fieldnames.extend([f"targeted_wrench_{idx}" for idx in range(6)])
     fieldnames.extend([f"targeted_direction_{idx}" for idx in range(6)])
+    fieldnames.extend([f"disturbance_wrench_{idx}" for idx in range(6)])
     for idx in range(max_faults):
         fieldnames.extend(
             [
@@ -933,6 +1248,13 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
                 "targeted_task_utilization": float(
                     targeted_utilization[scenario_id]
                 ),
+                "horizon_max_utilization": float(
+                    horizon_max_utilization[scenario_id]
+                ),
+                "horizon_mean_utilization": float(
+                    horizon_mean_utilization[scenario_id]
+                ),
+                "authority_label_mask": int(authority_label_mask[scenario_id]),
             }
             for wrench_idx in range(6):
                 row[f"targeted_wrench_{wrench_idx}"] = float(
@@ -940,6 +1262,9 @@ def save_scenario_table_csv(table: dict[str, jnp.ndarray], path: str) -> None:
                 )
                 row[f"targeted_direction_{wrench_idx}"] = float(
                     targeted_direction[scenario_id, wrench_idx]
+                )
+                row[f"disturbance_wrench_{wrench_idx}"] = float(
+                    disturbance_wrench[scenario_id, wrench_idx]
                 )
             for fault_idx in range(max_faults):
                 failure_type = int(failure_types[scenario_id, fault_idx])
@@ -1010,6 +1335,21 @@ def scenario_selection_payload(
             )
         )
     )[scenario_indices_np]
+    horizon_max_utilization = np.asarray(
+        jax.device_get(
+            table.get("horizon_max_utilization", table["targeted_task_utilization"])
+        )
+    )[scenario_indices_np]
+    horizon_mean_utilization = np.asarray(
+        jax.device_get(
+            table.get("horizon_mean_utilization", table["targeted_task_utilization"])
+        )
+    )[scenario_indices_np]
+    authority_label_mask = np.asarray(
+        jax.device_get(
+            table.get("authority_label_mask", jnp.zeros_like(table["difficulty_bin"]))
+        )
+    )[scenario_indices_np]
     regimes = np.asarray(jax.device_get(table["authority_regime"]))[
         scenario_indices_np
     ]
@@ -1052,6 +1392,36 @@ def scenario_selection_payload(
         f"{prefix}/mean_targeted_task_margin": float(targeted_margin.mean()),
         f"{prefix}/mean_targeted_task_utilization": float(
             targeted_utilization.mean()
+        ),
+        f"{prefix}/mean_horizon_max_utilization": float(
+            horizon_max_utilization.mean()
+        ),
+        f"{prefix}/mean_horizon_mean_utilization": float(
+            horizon_mean_utilization.mean()
+        ),
+        f"{prefix}/label_symmetry_breaking_fraction": float(
+            ((authority_label_mask & LABEL_SYMMETRY_BREAKING) != 0).sum() / denom
+        ),
+        f"{prefix}/label_torque_degenerate_fraction": float(
+            ((authority_label_mask & LABEL_TORQUE_DEGENERATE) != 0).sum() / denom
+        ),
+        f"{prefix}/label_force_degenerate_fraction": float(
+            ((authority_label_mask & LABEL_FORCE_DEGENERATE) != 0).sum() / denom
+        ),
+        f"{prefix}/label_coupled_force_torque_fraction": float(
+            ((authority_label_mask & LABEL_COUPLED_FORCE_TORQUE) != 0).sum() / denom
+        ),
+        f"{prefix}/label_saturation_prone_fraction": float(
+            ((authority_label_mask & LABEL_SATURATION_PRONE) != 0).sum() / denom
+        ),
+        f"{prefix}/label_near_dependent_fraction": float(
+            ((authority_label_mask & LABEL_NEAR_DEPENDENT) != 0).sum() / denom
+        ),
+        f"{prefix}/label_bias_dominated_fraction": float(
+            ((authority_label_mask & LABEL_BIAS_DOMINATED) != 0).sum() / denom
+        ),
+        f"{prefix}/label_nonlinear_mismatch_fraction": float(
+            ((authority_label_mask & LABEL_NONLINEAR_MISMATCH) != 0).sum() / denom
         ),
         f"{prefix}/regime_redundant_fraction": float(
             (regimes == REGIME_REDUNDANT).sum() / denom
@@ -1133,6 +1503,7 @@ def sample_scenario_indices(
     authority_regime: int | None = None,
     task_feasibility_regime: int | None = None,
     failure_type: int | None = None,
+    authority_label_any_mask: int | None = None,
 ) -> jnp.ndarray:
     split = table["split"]
     mask = split == int(split_id)
@@ -1154,6 +1525,12 @@ def sample_scenario_indices(
             mask, jnp.any(table["failure_types"] == int(failure_type), axis=1)
         )
         mask = jnp.where(jnp.any(type_mask), type_mask, mask)
+    if authority_label_any_mask is not None:
+        label_mask = jnp.logical_and(
+            mask,
+            (table["authority_label_mask"] & int(authority_label_any_mask)) != 0,
+        )
+        mask = jnp.where(jnp.any(label_mask), label_mask, mask)
     logits = jnp.where(mask, 0.0, -jnp.inf)
     sampled = jax.random.categorical(key, logits, shape=(count,))
     return sampled.astype(jnp.int32)
@@ -1169,6 +1546,7 @@ def sample_task_conditioned_scenario_indices(
     authority_regime: int | None = None,
     task_feasibility_regime: int | None = None,
     failure_type: int | None = None,
+    authority_label_any_mask: int | None = None,
     alignment_temperature: float = 8.0,
 ) -> jnp.ndarray:
     """
@@ -1201,6 +1579,12 @@ def sample_task_conditioned_scenario_indices(
             mask, jnp.any(table["failure_types"] == int(failure_type), axis=1)
         )
         mask = jnp.where(jnp.any(type_mask), type_mask, mask)
+    if authority_label_any_mask is not None:
+        label_mask = jnp.logical_and(
+            mask,
+            (table["authority_label_mask"] & int(authority_label_any_mask)) != 0,
+        )
+        mask = jnp.where(jnp.any(label_mask), label_mask, mask)
 
     feasible_mask = jnp.logical_and(
         mask, table["task_feasibility_regime"] != TASK_REGIME_INFEASIBLE
@@ -1216,7 +1600,7 @@ def sample_task_conditioned_scenario_indices(
     task_dirs = task_wrenches / (
         jnp.linalg.norm(task_wrenches, axis=1, keepdims=True) + 1e-6
     )
-    alignment = jnp.abs(task_dirs @ scenario_dirs.T)
+    alignment = task_dirs @ scenario_dirs.T
     base_logits = jnp.where(mask, 0.0, -jnp.inf)
     logits = base_logits[None, :] + float(alignment_temperature) * alignment
     return jax.random.categorical(key, logits, axis=1).astype(jnp.int32)
@@ -1235,11 +1619,112 @@ def _scenario_rows_for_indices(
     thrusters = np.asarray(jax.device_get(table["thrusters"]))[scenario_indices_np]
 
     env_rows = np.repeat(selected_envs_np[:, None], failure_types.shape[1], axis=1)
-    valid = np.logical_and(failure_types >= 0, thrusters >= 0)
+    valid = np.logical_and.reduce(
+        (failure_types >= 0, thrusters >= 0, failure_types != 5)
+    )
     flat_envs = env_rows[valid].astype(np.int32)
     flat_thrusters = thrusters[valid].astype(np.int32)
     flat_failure_types = failure_types[valid].astype(np.int32)
     return flat_envs, flat_thrusters, flat_failure_types
+
+
+# Helper for constant disturbance pseudo-failures (failure_type == 5)
+def _constant_disturbance_rows_for_indices(
+    table: dict[str, jnp.ndarray],
+    selected_envs: jnp.ndarray,
+    scenario_indices: jnp.ndarray,
+    *,
+    wrench_dim: int = 6,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return per-env additive wrench disturbances encoded in selected scenarios.
+
+    Offline constant disturbances are encoded as failure_type == 5 with pseudo
+    thrusters 0..11: axes 0..5 are positive, axes 6..11 are negative. This
+    helper converts those pseudo-failures into one 6D disturbance wrench per
+    selected environment. The actual magnitude matches `_scenario_bounds`.
+    """
+    selected_envs_np = np.asarray(jax.device_get(selected_envs), dtype=np.int32)
+    scenario_indices_np = np.asarray(jax.device_get(scenario_indices), dtype=np.int32)
+    if selected_envs_np.size == 0:
+        return selected_envs_np, np.empty((0, wrench_dim), dtype=np.float32)
+
+    failure_types = np.asarray(jax.device_get(table["failure_types"]))[
+        scenario_indices_np
+    ]
+    pseudo_thrusters = np.asarray(jax.device_get(table["thrusters"]))[
+        scenario_indices_np
+    ]
+    disturbance_wrenches = np.asarray(
+        jax.device_get(
+            table.get(
+                "disturbance_wrench",
+                jnp.zeros_like(table["targeted_task_wrench"]),
+            )
+        )
+    )[scenario_indices_np]
+
+    valid = np.logical_and.reduce(
+        (failure_types == 5, pseudo_thrusters >= 0, failure_types >= 0)
+    )
+    if not np.any(valid):
+        return selected_envs_np, np.zeros(
+            (selected_envs_np.shape[0], wrench_dim), dtype=np.float32
+        )
+
+    return selected_envs_np, disturbance_wrenches[:, :wrench_dim].astype(np.float32)
+
+
+def _apply_constant_disturbance_scenarios(
+    env,
+    table: dict[str, jnp.ndarray],
+    selected_envs: jnp.ndarray,
+    scenario_indices: jnp.ndarray,
+) -> None:
+    """Apply constant-disturbance pseudo-failures if the environment supports them.
+
+    This intentionally uses optional hooks/attributes so the failure-library code
+    does not hard-depend on a single disturbance implementation. If no supported
+    runtime disturbance interface exists, the scenario table still works for
+    thruster failures and the constant-disturbance pseudo-failures are ignored at
+    application time.
+    """
+    env_rows_np, disturbances_np = _constant_disturbance_rows_for_indices(
+        table, selected_envs, scenario_indices
+    )
+    if env_rows_np.size == 0 or not np.any(np.abs(disturbances_np) > 0.0):
+        return
+
+    env_rows = jnp.asarray(env_rows_np, dtype=jnp.int32)
+    disturbances = jnp.asarray(disturbances_np, dtype=jnp.float32)
+
+    if hasattr(env, "set_constant_wrench_disturbances"):
+        env.set_constant_wrench_disturbances(env_rows, disturbances)
+        return
+
+    if hasattr(env, "set_constant_disturbances"):
+        env.set_constant_disturbances(env_rows, disturbances)
+        return
+
+    if hasattr(env, "constant_wrench_disturbance"):
+        current = jnp.asarray(env.constant_wrench_disturbance)
+        if current.ndim == 2 and current.shape[-1] >= disturbances.shape[-1]:
+            current = current.at[env_rows, : disturbances.shape[-1]].set(disturbances)
+            env.constant_wrench_disturbance = current
+            return
+
+    if hasattr(env, "constant_disturbance"):
+        current = jnp.asarray(env.constant_disturbance)
+        if current.ndim == 2 and current.shape[-1] >= disturbances.shape[-1]:
+            current = current.at[env_rows, : disturbances.shape[-1]].set(disturbances)
+            env.constant_disturbance = current
+            return
+
+    if hasattr(env, "disturbance_wrench"):
+        current = jnp.asarray(env.disturbance_wrench)
+        if current.ndim == 2 and current.shape[-1] >= disturbances.shape[-1]:
+            current = current.at[env_rows, : disturbances.shape[-1]].set(disturbances)
+            env.disturbance_wrench = current
+            return
 
 
 def _gp_samples_for_failure(perturbation, failure_status: int, key: jnp.ndarray):
@@ -1305,10 +1790,20 @@ def apply_failure_scenarios(
     if selected_envs.size == 0:
         return
 
+    _apply_constant_disturbance_scenarios(
+        env,
+        table,
+        selected_envs,
+        scenario_indices,
+    )
+
     flat_envs_np, flat_thrusters_np, flat_failure_types_np = _scenario_rows_for_indices(
         table, selected_envs, scenario_indices
     )
     if flat_envs_np.size == 0:
+        if hasattr(env, "_refresh_effect_states"):
+            env._refresh_effect_states()
+            env._state = env._state.replace(perturbation_states=env.perturbation_states)
         return
 
     flat_envs = jnp.asarray(flat_envs_np, dtype=jnp.int32)
@@ -1413,6 +1908,7 @@ def apply_sampled_failure_scenario_split(
     authority_regime: int | None = None,
     task_feasibility_regime: int | None = None,
     failure_type: int | None = None,
+    authority_label_any_mask: int | None = None,
     task_wrenches: jnp.ndarray | None = None,
     return_selection: bool = False,
 ) -> dict[str, float] | tuple[dict[str, float], jnp.ndarray, jnp.ndarray]:
@@ -1448,6 +1944,7 @@ def apply_sampled_failure_scenario_split(
             authority_regime=authority_regime,
             task_feasibility_regime=task_feasibility_regime,
             failure_type=failure_type,
+            authority_label_any_mask=authority_label_any_mask,
         )
     else:
         scenario_indices = sample_task_conditioned_scenario_indices(
@@ -1459,6 +1956,7 @@ def apply_sampled_failure_scenario_split(
             authority_regime=authority_regime,
             task_feasibility_regime=task_feasibility_regime,
             failure_type=failure_type,
+            authority_label_any_mask=authority_label_any_mask,
         )
     apply_failure_scenarios(
         env,
