@@ -213,10 +213,10 @@ def learn_runner(self) -> None:
     authority_logging_max_samples = max(0, authority_logging_max_samples)
     authority_logging_interval = max(1, authority_logging_interval)
     failure_env_count_quantum = max(
-        1, int(getattr(cfg, "curriculum_failure_env_count_quantum", 128))
+        1, int(getattr(cfg, "curriculum_failure_env_count_quantum", 1))
     )
     persistent_failure_assignments = bool(
-        getattr(cfg, "curriculum_persistent_failure_assignments", True)
+        getattr(cfg, "curriculum_persistent_failure_assignments", False)
     )
     persistent_refresh_interval = max(
         1, int(getattr(cfg, "curriculum_failure_assignment_refresh_interval", 10))

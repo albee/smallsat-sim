@@ -283,6 +283,72 @@ def _candidate_indices_cached(
     _SCENARIO_CANDIDATE_CACHE[cache_key] = candidates
     return candidates
 
+
+@jax.jit
+def _scenario_apply_kernel(
+    *,
+    thruster_mask: jnp.ndarray,
+    selected_envs: jnp.ndarray,
+    scenario_indices: jnp.ndarray,
+    active_env_mask: jnp.ndarray,
+    table_thrusters: jnp.ndarray,
+    table_valid: jnp.ndarray,
+    table_status: jnp.ndarray,
+    start_time_value: jnp.ndarray,
+    stuck_on_force: jnp.ndarray,
+    min_thruster_force: jnp.ndarray,
+    max_thruster_force: jnp.ndarray,
+    sample_key: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    thrusters = table_thrusters[scenario_indices]
+    valid = jnp.logical_and(table_valid[scenario_indices], active_env_mask[:, None])
+    status = table_status[scenario_indices]
+    env_rows = jnp.broadcast_to(selected_envs[:, None], thrusters.shape)
+    safe_envs = jnp.where(valid, env_rows, 0).astype(jnp.int32)
+    safe_thrusters = jnp.where(valid, thrusters, 0).astype(jnp.int32)
+
+    status_updates = jnp.zeros_like(thruster_mask).at[safe_envs, safe_thrusters].max(
+        jnp.where(valid, status, 0)
+    )
+    new_thruster_mask = jnp.where(status_updates != 0, status_updates, thruster_mask)
+
+    failure_status_values = jnp.asarray(
+        [
+            SCENARIO_FAILURE_STATUS[0],
+            SCENARIO_FAILURE_STATUS[1],
+            SCENARIO_FAILURE_STATUS[2],
+            SCENARIO_FAILURE_STATUS[3],
+            SCENARIO_FAILURE_STATUS[4],
+        ],
+        dtype=jnp.int32,
+    )
+
+    def build_start_times_for_type(failure_status_value: jnp.ndarray) -> jnp.ndarray:
+        type_mask = jnp.logical_and(valid, status == failure_status_value)
+        return jnp.zeros_like(thruster_mask, dtype=jnp.float32).at[
+            safe_envs, safe_thrusters
+        ].max(jnp.where(type_mask, start_time_value.astype(jnp.float32), 0.0))
+
+    start_times_by_type = jax.vmap(build_start_times_for_type)(failure_status_values)
+
+    sampled_force = jax.random.uniform(
+        sample_key,
+        shape=safe_thrusters.shape,
+        minval=min_thruster_force[safe_thrusters],
+        maxval=max_thruster_force[safe_thrusters],
+    )
+    stuck_on_mask_slots = jnp.logical_and(
+        valid, status == jnp.int32(SCENARIO_FAILURE_STATUS[1])
+    )
+    stuck_on_mask_matrix = jnp.zeros_like(stuck_on_force, dtype=bool).at[
+        safe_envs, safe_thrusters
+    ].max(stuck_on_mask_slots)
+    stuck_on_updates = jnp.zeros_like(stuck_on_force).at[safe_envs, safe_thrusters].max(
+        jnp.where(stuck_on_mask_slots, sampled_force, 0.0)
+    )
+    new_stuck_on_force = jnp.where(stuck_on_mask_matrix, stuck_on_updates, stuck_on_force)
+    return new_thruster_mask, start_times_by_type, new_stuck_on_force
+
 SPLIT_TRAIN = 0
 SPLIT_SEMANTIC_EVAL = 1
 SPLIT_STRESS_TEST = 2
@@ -2080,63 +2146,70 @@ def apply_failure_scenarios(
     table = _attach_scenario_apply_cache(table)
     selected_envs = jnp.asarray(selected_envs, dtype=jnp.int32)
     scenario_indices = jnp.asarray(scenario_indices, dtype=jnp.int32)
-    thrusters = jnp.asarray(table["thrusters"], dtype=jnp.int32)[scenario_indices]
-    valid = jnp.asarray(table["_apply_failure_valid_mask"], dtype=bool)[
-        scenario_indices
-    ]
+    table_thrusters = jnp.asarray(table["thrusters"], dtype=jnp.int32)
+    table_valid = jnp.asarray(table["_apply_failure_valid_mask"], dtype=bool)
+    table_status = jnp.asarray(table["_apply_failure_status"], dtype=jnp.int32)
+    active_env_mask_arr = (
+        jnp.ones((selected_envs.shape[0],), dtype=bool)
+        if active_env_mask is None
+        else jnp.asarray(active_env_mask, dtype=bool)
+    )
+    valid_now = table_valid[scenario_indices]
+    status_now = table_status[scenario_indices]
     if active_env_mask is not None:
-        env_active = jnp.asarray(active_env_mask, dtype=bool)[:, None]
-        valid = jnp.logical_and(valid, env_active)
-    status = jnp.asarray(table["_apply_failure_status"], dtype=jnp.int32)[
-        scenario_indices
-    ]
-    if not bool(jnp.any(valid)):
+        valid_now = jnp.logical_and(valid_now, active_env_mask_arr[:, None])
+    if not bool(jnp.any(valid_now)):
         if hasattr(env, "_refresh_effect_states"):
             env._refresh_effect_states()
             env._state = env._state.replace(perturbation_states=env.perturbation_states)
         timing["refresh"] = time.perf_counter() - timing_start
         return timing
-    env_rows = jnp.broadcast_to(selected_envs[:, None], thrusters.shape)
-    safe_envs = jnp.where(valid, env_rows, 0).astype(jnp.int32)
-    safe_thrusters = jnp.where(valid, thrusters, 0).astype(jnp.int32)
-
-    # Update the shared env/thruster failure mask once. This avoids the slow
-    # interactive registration path, which grouped scenarios by type/thruster and
-    # repeatedly synchronized with the host.
-    thruster_mask = jnp.asarray(Perturbation.thruster_mask)
-    status_updates = jnp.zeros_like(thruster_mask).at[
-        safe_envs, safe_thrusters
-    ].max(jnp.where(valid, status, 0))
-    Perturbation.thruster_mask = jnp.where(
-        status_updates != 0, status_updates, thruster_mask
+    start_time_value = jnp.asarray(
+        0.0 if start_time is None else start_time, dtype=jnp.float32
     )
+    subkeys = jax.random.split(key, 6)
+    stuck_on_force = jnp.asarray(env.perturbations.perturbations[1].stuck_on_force)
+    min_force = jnp.asarray(env.perturbations.perturbations[1].min_thruster_force)
+    max_force = jnp.asarray(env.perturbations.perturbations[1].max_thruster_force)
+    (
+        new_thruster_mask,
+        start_times_by_type,
+        new_stuck_on_force,
+    ) = _scenario_apply_kernel(
+        thruster_mask=jnp.asarray(Perturbation.thruster_mask),
+        selected_envs=selected_envs,
+        scenario_indices=scenario_indices,
+        active_env_mask=active_env_mask_arr,
+        table_thrusters=table_thrusters,
+        table_valid=table_valid,
+        table_status=table_status,
+        start_time_value=start_time_value,
+        stuck_on_force=stuck_on_force,
+        min_thruster_force=min_force,
+        max_thruster_force=max_force,
+        sample_key=subkeys[1],
+    )
+    Perturbation.thruster_mask = new_thruster_mask
     if _STRICT_TIMING:
         jax.block_until_ready(Perturbation.thruster_mask)
     timing["expand_scatter"] = time.perf_counter() - timing_start
 
     timing_start = time.perf_counter()
-    start_time_value = jnp.asarray(
-        0.0 if start_time is None else start_time, dtype=jnp.float32
-    )
-    subkeys = jax.random.split(key, 6)
     perturbations = env.perturbations.perturbations
 
+    type_present = jnp.asarray(
+        [
+            jnp.any(jnp.logical_and(valid_now, status_now == int(SCENARIO_FAILURE_STATUS[idx])))
+            for idx in range(5)
+        ]
+    )
     for failure_type, failure_status in SCENARIO_FAILURE_STATUS.items():
-        type_mask = jnp.logical_and(valid, status == int(failure_status))
-        if not bool(jnp.any(type_mask)):
+        start_times = start_times_by_type[failure_type]
+        if not bool(type_present[failure_type]):
             # No selected fault of this type in the current sampled batch.
             # Keep the freshly reset perturbation state untouched.
             continue
         perturbation = perturbations[failure_type]
-        base_start_times = getattr(
-            perturbation,
-            "start_times",
-            jnp.zeros((env.num_envs, env.act_dim), dtype=jnp.float32),
-        )
-        start_times = jnp.zeros_like(base_start_times).at[
-            safe_envs, safe_thrusters
-        ].max(jnp.where(type_mask, start_time_value.astype(base_start_times.dtype), 0.0))
-
         perturbation.start_times = start_times
         if failure_type == 0:
             perturbation.state = PerturbationState(
@@ -2146,29 +2219,13 @@ def apply_failure_scenarios(
                 start_times=start_times,
             )
         elif failure_type == 1:
-            stuck_force = jnp.asarray(perturbation.stuck_on_force)
-            min_force = perturbation.min_thruster_force[safe_thrusters]
-            max_force = perturbation.max_thruster_force[safe_thrusters]
-            sampled_force = jax.random.uniform(
-                subkeys[1],
-                shape=safe_thrusters.shape,
-                minval=min_force,
-                maxval=max_force,
-            )
-            force_mask = jnp.zeros(stuck_force.shape, dtype=bool).at[
-                safe_envs, safe_thrusters
-            ].max(type_mask)
-            force_updates = jnp.zeros_like(stuck_force).at[
-                safe_envs, safe_thrusters
-            ].max(jnp.where(type_mask, sampled_force, 0.0))
-            stuck_force = jnp.where(force_mask, force_updates, stuck_force)
-            perturbation.stuck_on_force = stuck_force
+            perturbation.stuck_on_force = new_stuck_on_force
             perturbation.state = PerturbationState(
                 rng=perturbation._key,
                 thruster_mask=Perturbation.thruster_mask,
                 failure_value=failure_status,
                 start_times=start_times,
-                max_thruster_force=stuck_force,
+                max_thruster_force=new_stuck_on_force,
             )
         else:
             x_data, y_data = _gp_samples_for_failure(
