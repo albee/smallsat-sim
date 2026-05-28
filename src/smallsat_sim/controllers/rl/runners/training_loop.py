@@ -356,6 +356,10 @@ def learn_runner(self) -> None:
             setup_disturb_reset_duration = 0.0
             setup_task_wrench_duration = 0.0
             setup_scenario_duration = 0.0
+            setup_scenario_select_duration = 0.0
+            setup_scenario_sample_duration = 0.0
+            setup_scenario_apply_duration = 0.0
+            setup_scenario_payload_duration = 0.0
             setup_random_disturbance_duration = 0.0
             disturbance_ramp = min(
                 1.0, float(phase_epoch + 1) / float(disturbance_ramp_epochs)
@@ -467,6 +471,18 @@ def learn_runner(self) -> None:
                             )
                             setup_scenario_duration += (
                                 time.perf_counter() - setup_detail_start
+                            )
+                            setup_scenario_select_duration += float(
+                                active_scenario_payload.pop("_timing/select", 0.0)
+                            )
+                            setup_scenario_sample_duration += float(
+                                active_scenario_payload.pop("_timing/sample", 0.0)
+                            )
+                            setup_scenario_apply_duration += float(
+                                active_scenario_payload.pop("_timing/apply", 0.0)
+                            )
+                            setup_scenario_payload_duration += float(
+                                active_scenario_payload.pop("_timing/payload", 0.0)
                             )
                         else:
                             setup_detail_start = time.perf_counter()
@@ -1326,6 +1342,10 @@ def learn_runner(self) -> None:
                 setup_disturb_reset=setup_disturb_reset_duration,
                 setup_task_wrench=setup_task_wrench_duration,
                 setup_scenario=setup_scenario_duration,
+                setup_scenario_select=setup_scenario_select_duration,
+                setup_scenario_sample=setup_scenario_sample_duration,
+                setup_scenario_apply=setup_scenario_apply_duration,
+                setup_scenario_payload=setup_scenario_payload_duration,
                 setup_random_disturbance=setup_random_disturbance_duration,
             )
             print(

@@ -18,6 +18,10 @@ class EpochTiming:
     setup_disturb_reset: float = 0.0
     setup_task_wrench: float = 0.0
     setup_scenario: float = 0.0
+    setup_scenario_select: float = 0.0
+    setup_scenario_sample: float = 0.0
+    setup_scenario_apply: float = 0.0
+    setup_scenario_payload: float = 0.0
     setup_random_disturbance: float = 0.0
 
     @property
@@ -45,6 +49,10 @@ def format_epoch_timing_line(
         f"disturb_reset {timing.setup_disturb_reset:.2f}s, "
         f"task_wrench {timing.setup_task_wrench:.2f}s, "
         f"scenario {timing.setup_scenario:.2f}s, "
+        f"scenario_select {timing.setup_scenario_select:.2f}s, "
+        f"scenario_sample {timing.setup_scenario_sample:.2f}s, "
+        f"scenario_apply {timing.setup_scenario_apply:.2f}s, "
+        f"scenario_payload {timing.setup_scenario_payload:.2f}s, "
         f"random_disturbance {timing.setup_random_disturbance:.2f}s | "
         f"update {timing.update:.2f}s | "
         f"logging {timing.logging:.2f}s | "

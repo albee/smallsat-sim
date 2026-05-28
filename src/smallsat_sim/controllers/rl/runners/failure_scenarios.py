@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import os
+import time
 from functools import lru_cache
 from itertools import combinations
 
@@ -1929,18 +1930,27 @@ def apply_sampled_failure_scenario_split(
     task_wrenches: jnp.ndarray | None = None,
     return_selection: bool = False,
 ) -> dict[str, float] | tuple[dict[str, float], jnp.ndarray, jnp.ndarray]:
+    select_duration = 0.0
+    sample_duration = 0.0
+    apply_duration = 0.0
+    payload_duration = 0.0
     num_perturbed = int(env.num_envs * max(0.0, min(1.0, fraction_perturbed_envs)))
     if num_perturbed <= 0:
         payload = scenario_selection_payload(
             table,
             jnp.empty((0,), dtype=jnp.int32),
         )
+        payload["_timing/select"] = select_duration
+        payload["_timing/sample"] = sample_duration
+        payload["_timing/apply"] = apply_duration
+        payload["_timing/payload"] = payload_duration
         if return_selection:
             empty = jnp.empty((0,), dtype=jnp.int32)
             return payload, empty, empty
         return payload
 
     select_key, scenario_key, apply_key = jax.random.split(key, 3)
+    timing_start = time.perf_counter()
     has_perturbation, has_disturbance = env._get_active_failure_masks()
     clean_envs = jnp.logical_not(jnp.logical_or(has_perturbation, has_disturbance))
     disturbed_only_envs = jnp.logical_and(
@@ -1951,6 +1961,9 @@ def apply_sampled_failure_scenario_split(
         num_perturbed,
         [clean_envs, disturbed_only_envs, has_perturbation],
     )
+    jax.block_until_ready(selected_envs)
+    select_duration = time.perf_counter() - timing_start
+    timing_start = time.perf_counter()
     if failure_sampling_mix:
         mix_entries = [
             entry for entry in failure_sampling_mix if int(entry["weight"]) > 0
@@ -2041,6 +2054,9 @@ def apply_sampled_failure_scenario_split(
             failure_type=failure_type,
             authority_label_any_mask=authority_label_any_mask,
         )
+    jax.block_until_ready(scenario_indices)
+    sample_duration = time.perf_counter() - timing_start
+    timing_start = time.perf_counter()
     apply_failure_scenarios(
         env,
         key=apply_key,
@@ -2049,7 +2065,16 @@ def apply_sampled_failure_scenario_split(
         scenario_indices=scenario_indices,
         start_time=start_time,
     )
+    if Perturbation.thruster_mask is not None:
+        jax.block_until_ready(Perturbation.thruster_mask)
+    apply_duration = time.perf_counter() - timing_start
+    timing_start = time.perf_counter()
     payload = scenario_selection_payload(table, scenario_indices)
+    payload_duration = time.perf_counter() - timing_start
+    payload["_timing/select"] = select_duration
+    payload["_timing/sample"] = sample_duration
+    payload["_timing/apply"] = apply_duration
+    payload["_timing/payload"] = payload_duration
     if return_selection:
         return payload, selected_envs, scenario_indices
     return payload
