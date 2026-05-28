@@ -108,10 +108,22 @@ def test_training_and_adaptation_are_authority_curriculum_only() -> None:
     with open(adaptation_training_path, encoding="utf-8") as file:
         adaptation_src = file.read()
 
-    assert "build_authority_regime_curriculum(" in training_src
-    assert "build_authority_regime_curriculum(" in adaptation_src
+    assert "build_authority_regime_curriculum_v2(" in training_src
+    assert "build_authority_regime_curriculum_v2(" in adaptation_src
     assert "build_failure_curriculum(" not in training_src
     assert "build_failure_curriculum(" not in adaptation_src
     assert "build_difficulty_curriculum(" not in training_src
     assert "build_difficulty_curriculum(" not in adaptation_src
 
+
+def test_training_resets_disturbances_when_resampling_failures() -> None:
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    training_loop_path = os.path.join(
+        repo_root, "src", "smallsat_sim", "controllers", "rl", "runners", "training_loop.py"
+    )
+
+    with open(training_loop_path, encoding="utf-8") as file:
+        training_src = file.read()
+
+    assert "if hasattr(self.env, \"reset_disturbances\"):" in training_src
+    assert "apply_sampled_failure_scenario_split(" in training_src

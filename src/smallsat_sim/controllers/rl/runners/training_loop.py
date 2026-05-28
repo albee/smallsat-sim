@@ -403,6 +403,12 @@ def learn_runner(self) -> None:
                         applied_failure_fraction = current_failure_fraction
                         applied_failure_env_count = current_failure_env_count
                         self.env.reset_perturbations()
+                        # Scenario-applied disturbances can be attached to sampled
+                        # failure cases even when curriculum disturbance fraction is
+                        # zero. Reset them here to prevent cross-epoch accumulation
+                        # from inflating failed_env_count beyond failure_fraction.
+                        if hasattr(self.env, "reset_disturbances"):
+                            self.env.reset_disturbances()
                         if (
                             use_controllable_failure_scenarios
                             and failure_scenario_table is not None
