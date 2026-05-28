@@ -1353,6 +1353,7 @@ def scenario_selection_payload(
     *,
     prefix: str = "scenario",
 ) -> dict[str, float]:
+    scenario_indices = jnp.asarray(scenario_indices, dtype=jnp.int32)
     scenario_indices_np = np.asarray(jax.device_get(scenario_indices), dtype=np.int32)
     if scenario_indices_np.size == 0:
         return {
@@ -1363,71 +1364,42 @@ def scenario_selection_payload(
             f"{prefix}/bin_near_boundary_fraction": 0.0,
         }
 
-    bins = np.asarray(jax.device_get(table["difficulty_bin"]))[scenario_indices_np]
-    splits = np.asarray(jax.device_get(table["split"]))[scenario_indices_np]
+    def selected_np(values: jnp.ndarray) -> np.ndarray:
+        return np.asarray(jax.device_get(jnp.asarray(values)[scenario_indices]))
+
+    bins = selected_np(table["difficulty_bin"])
+    splits = selected_np(table["split"])
     is_stress = np.asarray(
-        jax.device_get(table.get("is_stress", jnp.zeros_like(table["split"])))
-    )[scenario_indices_np]
-    n_faults = np.asarray(jax.device_get(table["n_faults"]))[scenario_indices_np]
-    failure_types = np.asarray(jax.device_get(table["failure_types"]))[
-        scenario_indices_np
-    ]
-    active_thruster_count = np.asarray(jax.device_get(table["active_thruster_count"]))[
-        scenario_indices_np
-    ]
-    p90_error = np.asarray(jax.device_get(table["p90_feasibility_error"]))[
-        scenario_indices_np
-    ]
-    mean_error = np.asarray(jax.device_get(table["mean_feasibility_error"]))[
-        scenario_indices_np
-    ]
-    bias_error = np.asarray(jax.device_get(table["bias_cancellation_error"]))[
-        scenario_indices_np
-    ]
-    bias_norm = np.asarray(jax.device_get(table["bias_wrench_norm"]))[
-        scenario_indices_np
-    ]
-    p10_margin = np.asarray(jax.device_get(table["p10_authority_margin"]))[
-        scenario_indices_np
-    ]
-    mean_margin = np.asarray(jax.device_get(table["mean_authority_margin"]))[
-        scenario_indices_np
-    ]
-    targeted_error = np.asarray(jax.device_get(table["targeted_task_error"]))[
-        scenario_indices_np
-    ]
-    targeted_margin = np.asarray(jax.device_get(table["targeted_task_margin"]))[
-        scenario_indices_np
-    ]
-    targeted_utilization = np.asarray(
-        jax.device_get(
-            table.get(
-                "targeted_task_utilization",
-                jnp.zeros_like(table["targeted_task_margin"]),
-            )
+        selected_np(table.get("is_stress", jnp.zeros_like(table["split"])))
+    )
+    n_faults = selected_np(table["n_faults"])
+    failure_types = selected_np(table["failure_types"])
+    active_thruster_count = selected_np(table["active_thruster_count"])
+    p90_error = selected_np(table["p90_feasibility_error"])
+    mean_error = selected_np(table["mean_feasibility_error"])
+    bias_error = selected_np(table["bias_cancellation_error"])
+    bias_norm = selected_np(table["bias_wrench_norm"])
+    p10_margin = selected_np(table["p10_authority_margin"])
+    mean_margin = selected_np(table["mean_authority_margin"])
+    targeted_error = selected_np(table["targeted_task_error"])
+    targeted_margin = selected_np(table["targeted_task_margin"])
+    targeted_utilization = selected_np(
+        table.get(
+            "targeted_task_utilization",
+            jnp.zeros_like(table["targeted_task_margin"]),
         )
-    )[scenario_indices_np]
-    horizon_max_utilization = np.asarray(
-        jax.device_get(
-            table.get("horizon_max_utilization", table["targeted_task_utilization"])
-        )
-    )[scenario_indices_np]
-    horizon_mean_utilization = np.asarray(
-        jax.device_get(
-            table.get("horizon_mean_utilization", table["targeted_task_utilization"])
-        )
-    )[scenario_indices_np]
-    authority_label_mask = np.asarray(
-        jax.device_get(
-            table.get("authority_label_mask", jnp.zeros_like(table["difficulty_bin"]))
-        )
-    )[scenario_indices_np]
-    regimes = np.asarray(jax.device_get(table["authority_regime"]))[
-        scenario_indices_np
-    ]
-    task_regimes = np.asarray(jax.device_get(table["task_feasibility_regime"]))[
-        scenario_indices_np
-    ]
+    )
+    horizon_max_utilization = selected_np(
+        table.get("horizon_max_utilization", table["targeted_task_utilization"])
+    )
+    horizon_mean_utilization = selected_np(
+        table.get("horizon_mean_utilization", table["targeted_task_utilization"])
+    )
+    authority_label_mask = selected_np(
+        table.get("authority_label_mask", jnp.zeros_like(table["difficulty_bin"]))
+    )
+    regimes = selected_np(table["authority_regime"])
+    task_regimes = selected_np(table["task_feasibility_regime"])
     denom = float(max(scenario_indices_np.size, 1))
     return {
         f"{prefix}/num_selected": float(scenario_indices_np.size),
