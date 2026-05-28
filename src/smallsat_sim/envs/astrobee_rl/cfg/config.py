@@ -150,6 +150,10 @@ class EnvConfig(BaseEnvConfig):
             curriculum_failure_start_time_max = 25.0
             curriculum_disturbance_start_time_min = 0.0
             curriculum_disturbance_start_time_max = 25.0
+            curriculum_failure_assignment_mode = "persistent"  # "persistent" or "legacy"
+            curriculum_failure_env_count_quantum = 64
+            curriculum_failure_assignment_refresh_fraction = 0.02
+            curriculum_failure_assignment_refresh_interval = 10
             authority_logging_interval = 10
             authority_logging_max_samples = 8192
             training_checkpoint_interval = 10

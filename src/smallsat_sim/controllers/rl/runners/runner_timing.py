@@ -14,19 +14,6 @@ class EpochTiming:
     setup: float = 0.0
     sync: float = 0.0
     reset: float = 0.0
-    setup_perturb_reset: float = 0.0
-    setup_disturb_reset: float = 0.0
-    setup_task_wrench: float = 0.0
-    setup_scenario: float = 0.0
-    setup_scenario_select: float = 0.0
-    setup_scenario_sample: float = 0.0
-    setup_scenario_apply: float = 0.0
-    setup_apply_disturbance: float = 0.0
-    setup_apply_expand_scatter: float = 0.0
-    setup_apply_state_build: float = 0.0
-    setup_apply_refresh: float = 0.0
-    setup_scenario_payload: float = 0.0
-    setup_random_disturbance: float = 0.0
 
     @property
     def other_rollout(self) -> float:
@@ -49,19 +36,6 @@ def format_epoch_timing_line(
         f"rollout {timing.rollout:.2f}s "
         f"(setup {timing.setup:.2f}s, scan {timing.scan:.2f}s, sync {timing.sync:.2f}s, "
         f"buffer {timing.buffer:.2f}s, reset {timing.reset:.2f}s, other {timing.other_rollout:.2f}s) | "
-        f"setup_detail perturb_reset {timing.setup_perturb_reset:.2f}s, "
-        f"disturb_reset {timing.setup_disturb_reset:.2f}s, "
-        f"task_wrench {timing.setup_task_wrench:.2f}s, "
-        f"scenario {timing.setup_scenario:.2f}s, "
-        f"scenario_select {timing.setup_scenario_select:.2f}s, "
-        f"scenario_sample {timing.setup_scenario_sample:.2f}s, "
-        f"scenario_apply {timing.setup_scenario_apply:.2f}s, "
-        f"apply_disturbance {timing.setup_apply_disturbance:.2f}s, "
-        f"apply_expand_scatter {timing.setup_apply_expand_scatter:.2f}s, "
-        f"apply_state_build {timing.setup_apply_state_build:.2f}s, "
-        f"apply_refresh {timing.setup_apply_refresh:.2f}s, "
-        f"scenario_payload {timing.setup_scenario_payload:.2f}s, "
-        f"random_disturbance {timing.setup_random_disturbance:.2f}s | "
         f"update {timing.update:.2f}s | "
         f"logging {timing.logging:.2f}s | "
         f"eval {timing.eval:.2f}s | "
