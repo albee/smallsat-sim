@@ -29,6 +29,50 @@ def _sample_bucket_size(count: int) -> int:
     c = max(int(count), 1)
     return int(1 << (c - 1).bit_length())
 
+
+def _scenario_sampling_mask(
+    table: dict[str, jnp.ndarray],
+    *,
+    split_id: int,
+    difficulty_bin: int | None = None,
+    authority_regime: int | None = None,
+    task_feasibility_regime: int | None = None,
+    failure_type: int | None = None,
+    authority_label_any_mask: int | None = None,
+    prefer_feasible: bool = False,
+) -> jnp.ndarray:
+    mask = table["split"] == int(split_id)
+    if difficulty_bin is not None:
+        bin_mask = jnp.logical_and(mask, table["difficulty_bin"] == int(difficulty_bin))
+        mask = jnp.where(jnp.any(bin_mask), bin_mask, mask)
+    if authority_regime is not None:
+        regime_mask = jnp.logical_and(
+            mask, table["authority_regime"] == int(authority_regime)
+        )
+        mask = jnp.where(jnp.any(regime_mask), regime_mask, mask)
+    if task_feasibility_regime is not None:
+        task_mask = jnp.logical_and(
+            mask, table["task_feasibility_regime"] == int(task_feasibility_regime)
+        )
+        mask = jnp.where(jnp.any(task_mask), task_mask, mask)
+    if failure_type is not None:
+        type_mask = jnp.logical_and(
+            mask, jnp.any(table["failure_types"] == int(failure_type), axis=1)
+        )
+        mask = jnp.where(jnp.any(type_mask), type_mask, mask)
+    if authority_label_any_mask is not None:
+        label_mask = jnp.logical_and(
+            mask,
+            (table["authority_label_mask"] & int(authority_label_any_mask)) != 0,
+        )
+        mask = jnp.where(jnp.any(label_mask), label_mask, mask)
+    if prefer_feasible:
+        feasible_mask = jnp.logical_and(
+            mask, table["task_feasibility_regime"] != TASK_REGIME_INFEASIBLE
+        )
+        mask = jnp.where(jnp.any(feasible_mask), feasible_mask, mask)
+    return mask
+
 SPLIT_TRAIN = 0
 SPLIT_SEMANTIC_EVAL = 1
 SPLIT_STRESS_TEST = 2
@@ -1562,32 +1606,16 @@ def sample_scenario_indices(
 ) -> jnp.ndarray:
     if count <= 0:
         return jnp.empty((0,), dtype=jnp.int32)
-    split = table["split"]
-    mask = split == int(split_id)
-    if difficulty_bin is not None:
-        bin_mask = jnp.logical_and(mask, table["difficulty_bin"] == int(difficulty_bin))
-        mask = jnp.where(jnp.any(bin_mask), bin_mask, mask)
-    if authority_regime is not None:
-        regime_mask = jnp.logical_and(
-            mask, table["authority_regime"] == int(authority_regime)
-        )
-        mask = jnp.where(jnp.any(regime_mask), regime_mask, mask)
-    if task_feasibility_regime is not None:
-        task_mask = jnp.logical_and(
-            mask, table["task_feasibility_regime"] == int(task_feasibility_regime)
-        )
-        mask = jnp.where(jnp.any(task_mask), task_mask, mask)
-    if failure_type is not None:
-        type_mask = jnp.logical_and(
-            mask, jnp.any(table["failure_types"] == int(failure_type), axis=1)
-        )
-        mask = jnp.where(jnp.any(type_mask), type_mask, mask)
-    if authority_label_any_mask is not None:
-        label_mask = jnp.logical_and(
-            mask,
-            (table["authority_label_mask"] & int(authority_label_any_mask)) != 0,
-        )
-        mask = jnp.where(jnp.any(label_mask), label_mask, mask)
+    mask = _scenario_sampling_mask(
+        table,
+        split_id=split_id,
+        difficulty_bin=difficulty_bin,
+        authority_regime=authority_regime,
+        task_feasibility_regime=task_feasibility_regime,
+        failure_type=failure_type,
+        authority_label_any_mask=authority_label_any_mask,
+        prefer_feasible=False,
+    )
     logits = jnp.where(mask, 0.0, -jnp.inf)
     bucket_count = _sample_bucket_size(count)
     sampled = jax.random.categorical(key, logits, shape=(bucket_count,))
@@ -1626,36 +1654,16 @@ def sample_task_conditioned_scenario_indices(
             axis=0,
         )
 
-    mask = table["split"] == int(split_id)
-    if difficulty_bin is not None:
-        bin_mask = jnp.logical_and(mask, table["difficulty_bin"] == int(difficulty_bin))
-        mask = jnp.where(jnp.any(bin_mask), bin_mask, mask)
-    if authority_regime is not None:
-        regime_mask = jnp.logical_and(
-            mask, table["authority_regime"] == int(authority_regime)
-        )
-        mask = jnp.where(jnp.any(regime_mask), regime_mask, mask)
-    if task_feasibility_regime is not None:
-        task_mask = jnp.logical_and(
-            mask, table["task_feasibility_regime"] == int(task_feasibility_regime)
-        )
-        mask = jnp.where(jnp.any(task_mask), task_mask, mask)
-    if failure_type is not None:
-        type_mask = jnp.logical_and(
-            mask, jnp.any(table["failure_types"] == int(failure_type), axis=1)
-        )
-        mask = jnp.where(jnp.any(type_mask), type_mask, mask)
-    if authority_label_any_mask is not None:
-        label_mask = jnp.logical_and(
-            mask,
-            (table["authority_label_mask"] & int(authority_label_any_mask)) != 0,
-        )
-        mask = jnp.where(jnp.any(label_mask), label_mask, mask)
-
-    feasible_mask = jnp.logical_and(
-        mask, table["task_feasibility_regime"] != TASK_REGIME_INFEASIBLE
+    mask = _scenario_sampling_mask(
+        table,
+        split_id=split_id,
+        difficulty_bin=difficulty_bin,
+        authority_regime=authority_regime,
+        task_feasibility_regime=task_feasibility_regime,
+        failure_type=failure_type,
+        authority_label_any_mask=authority_label_any_mask,
+        prefer_feasible=True,
     )
-    mask = jnp.where(jnp.any(feasible_mask), feasible_mask, mask)
 
     scenario_dirs = table.get("targeted_task_direction")
     if scenario_dirs is None:
@@ -2062,18 +2070,18 @@ def apply_sampled_failure_scenario_split(
         mix_choice = jax.random.permutation(
             scenario_key, jnp.asarray(mix_choice_np, dtype=jnp.int32)
         )
-        scenario_indices = jnp.zeros((num_perturbed,), dtype=jnp.int32)
-        scenario_keys = jax.random.split(scenario_key, max(len(mix_entries), 1))
         selected_task_wrenches = (
             None if task_wrenches is None else jnp.asarray(task_wrenches)[selected_envs]
         )
-        for mix_idx, mix_entry in enumerate(mix_entries):
-            env_mask = mix_choice == mix_idx
-            env_count = int(jnp.sum(env_mask))
-            if env_count <= 0:
-                continue
-            sampled = (
-                sample_scenario_indices(
+        if selected_task_wrenches is None:
+            scenario_indices = jnp.zeros((num_perturbed,), dtype=jnp.int32)
+            scenario_keys = jax.random.split(scenario_key, max(len(mix_entries), 1))
+            for mix_idx, mix_entry in enumerate(mix_entries):
+                env_mask = mix_choice == mix_idx
+                env_count = int(jnp.sum(env_mask))
+                if env_count <= 0:
+                    continue
+                sampled = sample_scenario_indices(
                     scenario_keys[mix_idx],
                     table,
                     split_id=split_id,
@@ -2084,22 +2092,60 @@ def apply_sampled_failure_scenario_split(
                     failure_type=failure_type,
                     authority_label_any_mask=mix_entry.get("authority_label_any_mask"),
                 )
-                if selected_task_wrenches is None
-                else sample_task_conditioned_scenario_indices(
-                    scenario_keys[mix_idx],
-                    table,
-                    split_id=split_id,
-                    task_wrenches=selected_task_wrenches[env_mask],
-                    difficulty_bin=difficulty_bin,
-                    authority_regime=authority_regime,
-                    task_feasibility_regime=mix_entry.get("task_feasibility_regime"),
-                    failure_type=failure_type,
-                    authority_label_any_mask=mix_entry.get("authority_label_any_mask"),
+                scenario_indices = scenario_indices.at[
+                    jnp.where(env_mask, size=env_count)[0]
+                ].set(sampled)
+        else:
+            # Vectorized conditioned sampling across all mixed entries in one call.
+            scenario_dirs = table.get("targeted_task_direction")
+            if scenario_dirs is None:
+                scenario_dirs = table["targeted_task_wrench"] / (
+                    jnp.linalg.norm(table["targeted_task_wrench"], axis=1, keepdims=True)
+                    + 1e-6
                 )
+            mix_masks = jnp.stack(
+                [
+                    _scenario_sampling_mask(
+                        table,
+                        split_id=split_id,
+                        difficulty_bin=difficulty_bin,
+                        authority_regime=authority_regime,
+                        task_feasibility_regime=mix_entry.get(
+                            "task_feasibility_regime"
+                        ),
+                        failure_type=failure_type,
+                        authority_label_any_mask=mix_entry.get(
+                            "authority_label_any_mask"
+                        ),
+                        prefer_feasible=True,
+                    )
+                    for mix_entry in mix_entries
+                ],
+                axis=0,
             )
-            scenario_indices = scenario_indices.at[jnp.where(env_mask, size=env_count)[0]].set(
-                sampled
+            task_dirs = selected_task_wrenches / (
+                jnp.linalg.norm(selected_task_wrenches, axis=1, keepdims=True) + 1e-6
             )
+            bucket_count = _sample_bucket_size(num_perturbed)
+            pad_rows = bucket_count - num_perturbed
+            if pad_rows > 0:
+                task_dirs = jnp.concatenate(
+                    [task_dirs, jnp.repeat(task_dirs[:1, :], pad_rows, axis=0)],
+                    axis=0,
+                )
+                mix_choice_padded = jnp.concatenate(
+                    [mix_choice, jnp.zeros((pad_rows,), dtype=mix_choice.dtype)],
+                    axis=0,
+                )
+            else:
+                mix_choice_padded = mix_choice
+            row_masks = mix_masks[mix_choice_padded]
+            alignment = task_dirs @ scenario_dirs.T
+            logits = jnp.where(row_masks, 0.0, -jnp.inf) + 8.0 * alignment
+            sampled_all = jax.random.categorical(
+                scenario_key, logits, axis=1
+            ).astype(jnp.int32)
+            scenario_indices = sampled_all[:num_perturbed]
     elif task_wrenches is None:
         scenario_indices = sample_scenario_indices(
             scenario_key,
