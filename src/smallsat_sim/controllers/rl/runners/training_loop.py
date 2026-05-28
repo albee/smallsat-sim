@@ -352,6 +352,11 @@ def learn_runner(self) -> None:
             global_epoch += 1
             epoch_start_time = time.perf_counter()
             setup_start_time = time.perf_counter()
+            setup_perturb_reset_duration = 0.0
+            setup_disturb_reset_duration = 0.0
+            setup_task_wrench_duration = 0.0
+            setup_scenario_duration = 0.0
+            setup_random_disturbance_duration = 0.0
             disturbance_ramp = min(
                 1.0, float(phase_epoch + 1) / float(disturbance_ramp_epochs)
             )
@@ -402,19 +407,28 @@ def learn_runner(self) -> None:
                     if should_resample_failures:
                         applied_failure_fraction = current_failure_fraction
                         applied_failure_env_count = current_failure_env_count
+                        setup_detail_start = time.perf_counter()
                         self.env.reset_perturbations()
+                        setup_perturb_reset_duration += (
+                            time.perf_counter() - setup_detail_start
+                        )
                         # Scenario-applied disturbances can be attached to sampled
                         # failure cases even when curriculum disturbance fraction is
                         # zero. Reset them here to prevent cross-epoch accumulation
                         # from inflating failed_env_count beyond failure_fraction.
                         if hasattr(self.env, "reset_disturbances"):
+                            setup_detail_start = time.perf_counter()
                             self.env.reset_disturbances()
+                            setup_disturb_reset_duration += (
+                                time.perf_counter() - setup_detail_start
+                            )
                         if (
                             use_controllable_failure_scenarios
                             and failure_scenario_table is not None
                         ):
                             current_task_wrenches = None
                             if use_task_conditioned_failure_sampling:
+                                setup_detail_start = time.perf_counter()
                                 current_states = _compute_state_features(
                                     self.env.state_struct.mjx_batch,
                                     self.reference_point,
@@ -427,6 +441,11 @@ def learn_runner(self) -> None:
                                     kp_att=float(getattr(pd_gains, "Kp_q", 3.0)),
                                     kd_att=float(getattr(pd_gains, "Kd_q", 5.0)),
                                 )
+                                jax.block_until_ready(current_task_wrenches)
+                                setup_task_wrench_duration += (
+                                    time.perf_counter() - setup_detail_start
+                                )
+                            setup_detail_start = time.perf_counter()
                             (
                                 active_scenario_payload,
                                 _selected_envs,
@@ -446,22 +465,37 @@ def learn_runner(self) -> None:
                                 task_wrenches=current_task_wrenches,
                                 return_selection=True,
                             )
+                            setup_scenario_duration += (
+                                time.perf_counter() - setup_detail_start
+                            )
                         else:
+                            setup_detail_start = time.perf_counter()
                             self.env.apply_random_perturbations(
                                 key=perturb_key,
                                 fraction_perturbed_envs=applied_failure_fraction,
                                 perturbation_distribution=phase_distribution,
                                 start_time=failure_start_time,
                             )
+                            setup_scenario_duration += (
+                                time.perf_counter() - setup_detail_start
+                            )
                 if phase_uses_disturbances:
                     if should_resample_disturbances:
                         applied_disturbance_fraction = current_disturbance_fraction
                         if hasattr(self.env, "reset_disturbances"):
+                            setup_detail_start = time.perf_counter()
                             self.env.reset_disturbances()
+                            setup_disturb_reset_duration += (
+                                time.perf_counter() - setup_detail_start
+                            )
+                        setup_detail_start = time.perf_counter()
                         self.env.apply_random_disturbance(
                             key=disturb_key,
                             fraction_disturbed_envs=applied_disturbance_fraction,
                             start_time=disturbance_start_time,
+                        )
+                        setup_random_disturbance_duration += (
+                            time.perf_counter() - setup_detail_start
                         )
             # Accumulate rollout stats to emit once per epoch
             setup_duration = time.perf_counter() - setup_start_time
@@ -1288,6 +1322,11 @@ def learn_runner(self) -> None:
                 setup=setup_duration,
                 sync=sync_duration,
                 reset=reset_duration,
+                setup_perturb_reset=setup_perturb_reset_duration,
+                setup_disturb_reset=setup_disturb_reset_duration,
+                setup_task_wrench=setup_task_wrench_duration,
+                setup_scenario=setup_scenario_duration,
+                setup_random_disturbance=setup_random_disturbance_duration,
             )
             print(
                 format_epoch_timing_line(
