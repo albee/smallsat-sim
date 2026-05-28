@@ -111,6 +111,7 @@ def evaluate_policy_checkpoint(
                     start_time=None,
                     failure_sampling_mix=failure_sampling_mix,
                     task_wrenches=task_wrenches,
+                    apply_constant_disturbance_scenarios=disturbance_fraction > 0.0,
                 )
             else:
                 runner.env.apply_random_perturbations(

@@ -20,6 +20,15 @@ from smallsat_sim.envs.perturbations_rl import Perturbation
 
 _STRICT_TIMING = bool(int(os.environ.get("SMALLSAT_STRICT_TIMING", "0")))
 
+
+def _sample_bucket_size(count: int) -> int:
+    """
+    Quantize dynamic sample counts to a small set of bucket sizes to reduce
+    JAX recompilation churn across curriculum epochs.
+    """
+    c = max(int(count), 1)
+    return int(1 << (c - 1).bit_length())
+
 SPLIT_TRAIN = 0
 SPLIT_SEMANTIC_EVAL = 1
 SPLIT_STRESS_TEST = 2
@@ -1551,6 +1560,8 @@ def sample_scenario_indices(
     failure_type: int | None = None,
     authority_label_any_mask: int | None = None,
 ) -> jnp.ndarray:
+    if count <= 0:
+        return jnp.empty((0,), dtype=jnp.int32)
     split = table["split"]
     mask = split == int(split_id)
     if difficulty_bin is not None:
@@ -1578,8 +1589,9 @@ def sample_scenario_indices(
         )
         mask = jnp.where(jnp.any(label_mask), label_mask, mask)
     logits = jnp.where(mask, 0.0, -jnp.inf)
-    sampled = jax.random.categorical(key, logits, shape=(count,))
-    return sampled.astype(jnp.int32)
+    bucket_count = _sample_bucket_size(count)
+    sampled = jax.random.categorical(key, logits, shape=(bucket_count,))
+    return sampled[:count].astype(jnp.int32)
 
 
 def sample_task_conditioned_scenario_indices(
@@ -1605,6 +1617,14 @@ def sample_task_conditioned_scenario_indices(
     count = int(task_wrenches.shape[0])
     if count == 0:
         return jnp.empty((0,), dtype=jnp.int32)
+    bucket_count = _sample_bucket_size(count)
+    pad_rows = bucket_count - count
+    if pad_rows > 0:
+        pad_value = task_wrenches[:1, :]
+        task_wrenches = jnp.concatenate(
+            [task_wrenches, jnp.repeat(pad_value, pad_rows, axis=0)],
+            axis=0,
+        )
 
     mask = table["split"] == int(split_id)
     if difficulty_bin is not None:
@@ -1649,7 +1669,8 @@ def sample_task_conditioned_scenario_indices(
     alignment = task_dirs @ scenario_dirs.T
     base_logits = jnp.where(mask, 0.0, -jnp.inf)
     logits = base_logits[None, :] + float(alignment_temperature) * alignment
-    return jax.random.categorical(key, logits, axis=1).astype(jnp.int32)
+    sampled = jax.random.categorical(key, logits, axis=1).astype(jnp.int32)
+    return sampled[:count]
 
 
 def _scenario_rows_for_indices(
@@ -1697,14 +1718,13 @@ def _constant_disturbance_rows_for_indices(
     )[scenario_indices]
     has_disturbance = jnp.asarray(
         table["_apply_has_constant_disturbance"], dtype=bool
-    )[scenario_indices][:, None]
-    disturbances = jnp.where(
-        has_disturbance,
-        disturbance_wrenches[:, :wrench_dim],
-        jnp.zeros((selected_envs.shape[0], wrench_dim), dtype=jnp.float32),
-    )
+    )[scenario_indices]
+    if not bool(jnp.any(has_disturbance)):
+        return jnp.empty((0,), dtype=jnp.int32), jnp.zeros((0, wrench_dim), dtype=jnp.float32)
 
-    return selected_envs, disturbances
+    env_rows = selected_envs[has_disturbance]
+    disturbances = disturbance_wrenches[has_disturbance, :wrench_dim].astype(jnp.float32)
+    return env_rows, disturbances
 
 
 def _apply_constant_disturbance_scenarios(
@@ -1724,7 +1744,7 @@ def _apply_constant_disturbance_scenarios(
     env_rows, disturbances = _constant_disturbance_rows_for_indices(
         table, selected_envs, scenario_indices
     )
-    if int(env_rows.shape[0]) == 0 or not bool(jnp.any(jnp.abs(disturbances) > 0.0)):
+    if int(env_rows.shape[0]) == 0:
         return
 
     if hasattr(env, "set_constant_wrench_disturbances"):
@@ -1816,6 +1836,7 @@ def apply_failure_scenarios(
     selected_envs: jnp.ndarray,
     scenario_indices: jnp.ndarray,
     start_time: float | None,
+    apply_constant_disturbance_scenarios: bool = True,
 ) -> dict[str, float]:
     timing = {
         "disturbance": 0.0,
@@ -1827,12 +1848,13 @@ def apply_failure_scenarios(
         return timing
 
     timing_start = time.perf_counter()
-    _apply_constant_disturbance_scenarios(
-        env,
-        table,
-        selected_envs,
-        scenario_indices,
-    )
+    if apply_constant_disturbance_scenarios:
+        _apply_constant_disturbance_scenarios(
+            env,
+            table,
+            selected_envs,
+            scenario_indices,
+        )
     timing["disturbance"] = time.perf_counter() - timing_start
 
     timing_start = time.perf_counter()
@@ -1879,6 +1901,10 @@ def apply_failure_scenarios(
 
     for failure_type, failure_status in SCENARIO_FAILURE_STATUS.items():
         type_mask = jnp.logical_and(valid, status == int(failure_status))
+        if not bool(jnp.any(type_mask)):
+            # No selected fault of this type in the current sampled batch.
+            # Keep the freshly reset perturbation state untouched.
+            continue
         perturbation = perturbations[failure_type]
         base_start_times = getattr(
             perturbation,
@@ -1960,6 +1986,7 @@ def apply_sampled_failure_scenario_split(
     authority_label_any_mask: int | None = None,
     failure_sampling_mix: tuple[dict, ...] | list[dict] | None = None,
     task_wrenches: jnp.ndarray | None = None,
+    apply_constant_disturbance_scenarios: bool = True,
     return_selection: bool = False,
 ) -> dict[str, float] | tuple[dict[str, float], jnp.ndarray, jnp.ndarray]:
     select_duration = 0.0
@@ -2108,6 +2135,7 @@ def apply_sampled_failure_scenario_split(
         selected_envs=selected_envs,
         scenario_indices=scenario_indices,
         start_time=start_time,
+        apply_constant_disturbance_scenarios=apply_constant_disturbance_scenarios,
     )
     if _STRICT_TIMING and Perturbation.thruster_mask is not None:
         jax.block_until_ready(Perturbation.thruster_mask)

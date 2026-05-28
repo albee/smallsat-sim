@@ -244,6 +244,7 @@ def train_adaptation_module_on_policy_runner(self) -> None:
                     task_feasibility_regime=phase_task_feasibility_regime,
                     failure_sampling_mix=phase_failure_sampling_mix,
                     task_wrenches=current_task_wrenches,
+                    apply_constant_disturbance_scenarios=phase_disturbance_fraction > 0.0,
                 )
             else:
                 self.env.apply_random_perturbations(

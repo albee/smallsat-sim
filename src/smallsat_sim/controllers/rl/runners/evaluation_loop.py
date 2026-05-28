@@ -205,6 +205,7 @@ def evaluate_runner(
                     fraction_perturbed_envs=0.4,
                     start_time=failure_start_time,
                     task_wrenches=task_wrenches,
+                    apply_constant_disturbance_scenarios=False,
                 )
             else:
                 runner.env.apply_random_perturbations(

@@ -471,6 +471,7 @@ def learn_runner(self) -> None:
                                 authority_label_any_mask=phase_authority_label_any_mask,
                                 failure_sampling_mix=phase_failure_sampling_mix,
                                 task_wrenches=current_task_wrenches,
+                                apply_constant_disturbance_scenarios=phase_uses_disturbances,
                                 return_selection=True,
                             )
                             setup_scenario_duration += (
