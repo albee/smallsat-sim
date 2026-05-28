@@ -1845,6 +1845,7 @@ def apply_failure_scenarios(
     scenario_indices: jnp.ndarray,
     start_time: float | None,
     apply_constant_disturbance_scenarios: bool = True,
+    active_env_mask: jnp.ndarray | None = None,
 ) -> dict[str, float]:
     timing = {
         "disturbance": 0.0,
@@ -1873,6 +1874,9 @@ def apply_failure_scenarios(
     valid = jnp.asarray(table["_apply_failure_valid_mask"], dtype=bool)[
         scenario_indices
     ]
+    if active_env_mask is not None:
+        env_active = jnp.asarray(active_env_mask, dtype=bool)[:, None]
+        valid = jnp.logical_and(valid, env_active)
     status = jnp.asarray(table["_apply_failure_status"], dtype=jnp.int32)[
         scenario_indices
     ]
@@ -2033,9 +2037,13 @@ def apply_sampled_failure_scenario_split(
     disturbed_only_envs = jnp.logical_and(
         has_disturbance, jnp.logical_not(has_perturbation)
     )
+    bucket_count = _sample_bucket_size(num_perturbed)
+    active_env_mask = (
+        jnp.arange(bucket_count, dtype=jnp.int32) < jnp.int32(num_perturbed)
+    )
     selected_envs = env._select_envs_with_priority(
         select_key,
-        num_perturbed,
+        bucket_count,
         [clean_envs, disturbed_only_envs, has_perturbation],
     )
     if _STRICT_TIMING:
@@ -2070,14 +2078,22 @@ def apply_sampled_failure_scenario_split(
         mix_choice = jax.random.permutation(
             scenario_key, jnp.asarray(mix_choice_np, dtype=jnp.int32)
         )
+        if bucket_count > num_perturbed:
+            mix_choice = jnp.concatenate(
+                [
+                    mix_choice,
+                    jnp.zeros((bucket_count - num_perturbed,), dtype=jnp.int32),
+                ],
+                axis=0,
+            )
         selected_task_wrenches = (
             None if task_wrenches is None else jnp.asarray(task_wrenches)[selected_envs]
         )
         if selected_task_wrenches is None:
-            scenario_indices = jnp.zeros((num_perturbed,), dtype=jnp.int32)
+            scenario_indices = jnp.zeros((bucket_count,), dtype=jnp.int32)
             scenario_keys = jax.random.split(scenario_key, max(len(mix_entries), 1))
             for mix_idx, mix_entry in enumerate(mix_entries):
-                env_mask = mix_choice == mix_idx
+                env_mask = jnp.logical_and(mix_choice == mix_idx, active_env_mask)
                 env_count = int(jnp.sum(env_mask))
                 if env_count <= 0:
                     continue
@@ -2126,7 +2142,6 @@ def apply_sampled_failure_scenario_split(
             task_dirs = selected_task_wrenches / (
                 jnp.linalg.norm(selected_task_wrenches, axis=1, keepdims=True) + 1e-6
             )
-            bucket_count = _sample_bucket_size(num_perturbed)
             pad_rows = bucket_count - num_perturbed
             if pad_rows > 0:
                 task_dirs = jnp.concatenate(
@@ -2145,13 +2160,13 @@ def apply_sampled_failure_scenario_split(
             sampled_all = jax.random.categorical(
                 scenario_key, logits, axis=1
             ).astype(jnp.int32)
-            scenario_indices = sampled_all[:num_perturbed]
+            scenario_indices = sampled_all[:bucket_count]
     elif task_wrenches is None:
         scenario_indices = sample_scenario_indices(
             scenario_key,
             table,
             split_id=split_id,
-            count=num_perturbed,
+            count=bucket_count,
             difficulty_bin=difficulty_bin,
             authority_regime=authority_regime,
             task_feasibility_regime=task_feasibility_regime,
@@ -2159,11 +2174,24 @@ def apply_sampled_failure_scenario_split(
             authority_label_any_mask=authority_label_any_mask,
         )
     else:
+        selected_task_wrenches = jnp.asarray(task_wrenches)[selected_envs]
+        if bucket_count > num_perturbed:
+            selected_task_wrenches = jnp.concatenate(
+                [
+                    selected_task_wrenches[:num_perturbed],
+                    jnp.repeat(
+                        selected_task_wrenches[:1],
+                        bucket_count - num_perturbed,
+                        axis=0,
+                    ),
+                ],
+                axis=0,
+            )
         scenario_indices = sample_task_conditioned_scenario_indices(
             scenario_key,
             table,
             split_id=split_id,
-            task_wrenches=jnp.asarray(task_wrenches)[selected_envs],
+            task_wrenches=selected_task_wrenches,
             difficulty_bin=difficulty_bin,
             authority_regime=authority_regime,
             task_feasibility_regime=task_feasibility_regime,
@@ -2182,12 +2210,13 @@ def apply_sampled_failure_scenario_split(
         scenario_indices=scenario_indices,
         start_time=start_time,
         apply_constant_disturbance_scenarios=apply_constant_disturbance_scenarios,
+        active_env_mask=active_env_mask,
     )
     if _STRICT_TIMING and Perturbation.thruster_mask is not None:
         jax.block_until_ready(Perturbation.thruster_mask)
     apply_duration = time.perf_counter() - timing_start
     timing_start = time.perf_counter()
-    payload = scenario_selection_payload(table, scenario_indices)
+    payload = scenario_selection_payload(table, scenario_indices[:num_perturbed])
     payload_duration = time.perf_counter() - timing_start
     payload["_timing/select"] = select_duration
     payload["_timing/sample"] = sample_duration
@@ -2198,5 +2227,5 @@ def apply_sampled_failure_scenario_split(
     payload["_timing/apply_state_build"] = apply_detail["state_build"]
     payload["_timing/apply_refresh"] = apply_detail["refresh"]
     if return_selection:
-        return payload, selected_envs, scenario_indices
+        return payload, selected_envs[:num_perturbed], scenario_indices[:num_perturbed]
     return payload
