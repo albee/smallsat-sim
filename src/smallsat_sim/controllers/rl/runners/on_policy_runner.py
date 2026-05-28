@@ -141,40 +141,67 @@ class OnPolicyRunner(object):
         if getattr(self.agent.actor, "adaptive_policy_mode", "direct") != "residual":
             return
         ckpt_cfg = getattr(self.rl_cfg, "nominal_actor_checkpoint", None)
-        candidate_names = []
-        if ckpt_cfg:
-            candidate_names.append(str(ckpt_cfg))
-        candidate_names.extend(
-            [
-                "training_state_nominal.pkl",
-                "training_state.pkl",
-                "pretraining_state_nominal.pkl",
-                "pretraining_state.pkl",
-                self.pretraining_state_file_name,
-            ]
-        )
-        chosen = None
-        for name in candidate_names:
-            if os.path.isfile(os.path.join(self.ckpt_dir, name)):
-                chosen = name
-                break
-        if chosen is None:
-            searched = ", ".join(candidate_names)
-            raise FileNotFoundError(
-                "[Residual Policy] residual mode requires a nominal actor checkpoint. "
-                f"Searched: {searched}"
+        if not ckpt_cfg:
+            raise ValueError(
+                "[Residual Policy] nominal_actor_checkpoint must be set when "
+                "adaptive_policy_mode='residual'."
             )
-        restored = load_trained_modules(self.ckpt_dir, chosen)
+        chosen = str(ckpt_cfg)
+        candidate_path = os.path.join(self.ckpt_dir, chosen)
+        if os.path.isfile(chosen):
+            candidate_path = chosen
+        elif not os.path.isfile(candidate_path):
+            raise FileNotFoundError(
+                "[Residual Policy] nominal_actor_checkpoint not found. "
+                f"Tried: {chosen} and {candidate_path}"
+            )
+        ckpt_dir = os.path.dirname(candidate_path)
+        ckpt_name = os.path.basename(candidate_path)
+        restored = load_trained_modules(f"{ckpt_dir}/", ckpt_name)
         actor_state = restored.get("actor_model")
         if actor_state is None:
             raise KeyError(f"[Residual Policy] actor_model missing in {chosen}.")
-        target_state = nnx.state(self.agent.actor.state_mu_net)
-        source_state = actor_state.get("mu_net", actor_state) if isinstance(
-            actor_state, Mapping
-        ) else actor_state
-        aligned = align_checkpoint_state_to_model(target_state, source_state)
-        nnx.update(self.agent.actor.state_mu_net, aligned)
+        self._initialize_nominal_branch_from_actor_state(actor_state)
         print(f"[Residual Policy] Loaded nominal actor branch from {chosen}.")
+
+    def _initialize_nominal_branch_from_actor_state(self, actor_state) -> None:
+        target_state = nnx.state(self.agent.actor.state_mu_net)
+        if not isinstance(actor_state, Mapping):
+            aligned = align_checkpoint_state_to_model(target_state, actor_state)
+            nnx.update(self.agent.actor.state_mu_net, aligned)
+            return
+
+        # Preferred legacy nominal path: state-only/direct checkpoint exposes mu_net.
+        if "mu_net" in actor_state:
+            aligned = align_checkpoint_state_to_model(target_state, actor_state["mu_net"])
+            nnx.update(self.agent.actor.state_mu_net, aligned)
+            return
+
+        # FiLM nominal fallback: copy shared state trunk from film_state_net and
+        # set the final state->action layer from film_out (zero-context FiLM case).
+        if "film_state_net" in actor_state and "film_out" in actor_state:
+            aligned = align_checkpoint_state_to_model(
+                target_state, actor_state["film_state_net"]
+            )
+            aligned_layers = aligned.get("layers")
+            if isinstance(aligned_layers, Mapping):
+                linear_keys = [
+                    k
+                    for k, v in aligned_layers.items()
+                    if isinstance(v, Mapping) and "kernel" in v and "bias" in v
+                ]
+                if linear_keys:
+                    last_linear_key = linear_keys[-1]
+                    aligned_layers[last_linear_key] = align_checkpoint_state_to_model(
+                        aligned_layers[last_linear_key],
+                        actor_state["film_out"],
+                    )
+            nnx.update(self.agent.actor.state_mu_net, aligned)
+            return
+
+        # Last-resort compatibility: shape-align any available actor fields.
+        aligned = align_checkpoint_state_to_model(target_state, actor_state)
+        nnx.update(self.agent.actor.state_mu_net, aligned)
 
     def pretrain(self, strategy: str = "supervised_learning") -> None:
         """

@@ -57,12 +57,30 @@ if [ "${RUN_SCENARIO_SPLIT_EVAL:-0}" = "1" ] && [ "${RUN_ONLY_SCENARIO_SPLIT_EVA
   scripts+=("${scenario_split_eval_scripts[@]}")
 fi
 
+# Residual-policy runs require an explicit nominal checkpoint. Ensure the
+# nominal baseline run is included first whenever a residual script is selected.
+needs_nominal=0
+has_nominal=0
+for file in "${scripts[@]}"; do
+  if [ "$file" = "experiments/rl_benchmarking/ppo_adaptive_transformer_residual.py" ]; then
+    needs_nominal=1
+  fi
+  if [ "$file" = "experiments/rl_benchmarking/ppo_plain.py" ]; then
+    has_nominal=1
+  fi
+done
+if [ "$needs_nominal" = "1" ] && [ "$has_nominal" = "0" ]; then
+  scripts=("experiments/rl_benchmarking/ppo_plain.py" "${scripts[@]}")
+fi
+
 # Ensure repository root is on PYTHONPATH so `experiments` can be imported
 export PYTHONPATH="$(pwd):${PYTHONPATH}"
 
 # Fast tuning default
 export SMALLSAT_ROLLOUT_BACKEND="${SMALLSAT_ROLLOUT_BACKEND:-freeflyer}"
 echo "Using RL rollout backend: ${SMALLSAT_ROLLOUT_BACKEND}"
+export SMALLSAT_NOMINAL_CKPT_ALIAS="${SMALLSAT_NOMINAL_CKPT_ALIAS:-nominal_actor_baseline.pkl}"
+echo "Nominal checkpoint alias: ${SMALLSAT_NOMINAL_CKPT_ALIAS}"
 
 # The focused paper suite trains each policy from scratch with its native input
 # dimensions. Failure-training runs use a 50/50 mixture of clean envs and

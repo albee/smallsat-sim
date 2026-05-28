@@ -21,6 +21,7 @@ from smallsat_sim.controllers.rl.runners.adaptive_context import (
 )
 from smallsat_sim.controllers.rl.runners.curriculum import (
     build_authority_regime_curriculum_v2,
+    build_residual_policy_curriculum,
     phase_failure_fraction as get_phase_failure_fraction,
     uniform_failure_distribution,
 )
@@ -152,14 +153,23 @@ def train_adaptation_module_on_policy_runner(self) -> None:
             f"[AM Curriculum] mode='{curriculum_mode}' is deprecated; using semantic authority curriculum.",
             flush=True,
         )
-    curriculum_phases, curriculum_total_epochs = build_authority_regime_curriculum_v2(
-        train_with_failures=bool(self.env.train_with_failures),
-        fallback_epochs=int(self.epochs),
-        nominal_epochs=int(cfg.curriculum_nominal_epochs),
-        phase_epochs=int(cfg.curriculum_phase_epochs),
-        failure_fraction=float(cfg.curriculum_failure_fraction),
-        disturbance_fraction=float(cfg.curriculum_disturbance_fraction),
-    )
+    adaptive_policy_mode = str(getattr(self.env, "adaptive_policy_mode", "direct"))
+    if adaptive_policy_mode == "residual":
+        curriculum_phases, curriculum_total_epochs = build_residual_policy_curriculum(
+            train_with_failures=bool(self.env.train_with_failures),
+            fallback_epochs=int(self.epochs),
+        )
+    else:
+        curriculum_phases, curriculum_total_epochs = (
+            build_authority_regime_curriculum_v2(
+                train_with_failures=bool(self.env.train_with_failures),
+                fallback_epochs=int(self.epochs),
+                nominal_epochs=int(cfg.curriculum_nominal_epochs),
+                phase_epochs=int(cfg.curriculum_phase_epochs),
+                failure_fraction=float(cfg.curriculum_failure_fraction),
+                disturbance_fraction=float(cfg.curriculum_disturbance_fraction),
+            )
+        )
     phase_end_epochs = []
     running_epoch = 0
     for phase in curriculum_phases:

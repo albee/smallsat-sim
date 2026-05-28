@@ -14,6 +14,8 @@ benchmarker.train_and_evaluate(
     use_adaptive_approach=True,
     am_architecture="transformer_cross_attention",
     adaptive_context_mode="structured",
+    adaptive_policy_mode="direct",
+    context_fusion="film",
     phase=1,
     allow_privileged_context=True,
 )

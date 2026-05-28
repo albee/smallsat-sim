@@ -1,4 +1,5 @@
 import os
+import shutil
 from pathlib import Path
 
 import jax
@@ -53,6 +54,12 @@ class Benchmarker(object):
         am_predict_tracking_weight: float | None = None,
         am_predict_authority_weight: float | None = None,
         curriculum_failure_fraction: float | None = None,
+        adaptive_policy_mode: str | None = None,
+        context_fusion: str | None = None,
+        residual_scale: float | None = None,
+        frozen_nominal_actor: bool | None = None,
+        nominal_actor_checkpoint: str | None = None,
+        nominal_ckpt_export_name: str | None = None,
         phase: int = 2,
         pretrain_only: bool = False,
         allow_privileged_context: bool = False,
@@ -78,6 +85,11 @@ class Benchmarker(object):
             use_adaptive_approach=use_adaptive_approach,
             am_architecture=am_architecture,
             adaptive_context_mode=adaptive_context_mode,
+            adaptive_policy_mode=adaptive_policy_mode,
+            context_fusion=context_fusion,
+            residual_scale=residual_scale,
+            frozen_nominal_actor=frozen_nominal_actor,
+            nominal_actor_checkpoint=nominal_actor_checkpoint,
             use_task_conditioned_am=use_task_conditioned_am,
             am_predict_delta_weight=am_predict_delta_weight,
             am_predict_tracking_weight=am_predict_tracking_weight,
@@ -114,6 +126,16 @@ class Benchmarker(object):
                     allow_privileged_context=allow_privileged_context,
                 )
 
+        if nominal_ckpt_export_name:
+            src_ckpt = os.path.join(runner.ckpt_dir, runner.training_state_file_name)
+            dst_ckpt = os.path.join(runner.ckpt_dir, str(nominal_ckpt_export_name))
+            if not os.path.isfile(src_ckpt):
+                raise FileNotFoundError(
+                    f"Nominal checkpoint export source missing: {src_ckpt}"
+                )
+            shutil.copyfile(src_ckpt, dst_ckpt)
+            print(f"Exported nominal checkpoint alias: {dst_ckpt}")
+
         # Save log if logging is enabled
         if self.args.log:
             env.logger.save_log()
@@ -133,6 +155,11 @@ class Benchmarker(object):
         am_predict_tracking_weight: float | None = None,
         am_predict_authority_weight: float | None = None,
         curriculum_failure_fraction: float | None = None,
+        adaptive_policy_mode: str | None = None,
+        context_fusion: str | None = None,
+        residual_scale: float | None = None,
+        frozen_nominal_actor: bool | None = None,
+        nominal_actor_checkpoint: str | None = None,
         phase: int = 2,
         ckpt_name: str | None = None,
         test_pd: bool = False,
@@ -180,6 +207,11 @@ class Benchmarker(object):
             use_adaptive_approach=use_adaptive_approach,
             am_architecture=am_architecture,
             adaptive_context_mode=adaptive_context_mode,
+            adaptive_policy_mode=adaptive_policy_mode,
+            context_fusion=context_fusion,
+            residual_scale=residual_scale,
+            frozen_nominal_actor=frozen_nominal_actor,
+            nominal_actor_checkpoint=nominal_actor_checkpoint,
             use_task_conditioned_am=use_task_conditioned_am,
             am_predict_delta_weight=am_predict_delta_weight,
             am_predict_tracking_weight=am_predict_tracking_weight,

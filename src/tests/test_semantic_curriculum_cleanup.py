@@ -110,6 +110,10 @@ def test_training_and_adaptation_are_authority_curriculum_only() -> None:
 
     assert "build_authority_regime_curriculum_v2(" in training_src
     assert "build_authority_regime_curriculum_v2(" in adaptation_src
+    assert "build_residual_policy_curriculum(" in training_src
+    assert "build_residual_policy_curriculum(" in adaptation_src
+    assert 'adaptive_policy_mode == "residual"' in training_src
+    assert 'adaptive_policy_mode == "residual"' in adaptation_src
     assert "build_failure_curriculum(" not in training_src
     assert "build_failure_curriculum(" not in adaptation_src
     assert "build_difficulty_curriculum(" not in training_src

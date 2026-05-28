@@ -222,3 +222,134 @@ def build_authority_regime_curriculum_v2(
         },
     ]
     return phases, total_epochs
+
+
+def build_residual_policy_curriculum(
+    *,
+    train_with_failures: bool,
+    fallback_epochs: int,
+) -> tuple[list[dict], int]:
+    """
+    Residual-policy curriculum with immediate failed-environment exposure.
+
+    This is used when the policy is residual and starts from a trained nominal
+    actor baseline. Failure data appears early (no 0->50% long ramp).
+    """
+    if not train_with_failures:
+        phases = [
+            {
+                "name": "nominal_only",
+                "epochs": 1000,
+                "active_failures": [],
+                "failure_fraction": 0.0,
+                "disturbance_fraction": 0.0,
+                "new_failure": None,
+                "difficulty_bin": None,
+                "authority_regime": None,
+                "task_feasibility_regime": None,
+                "authority_label_any_mask": None,
+            }
+        ]
+        return phases, 1000
+
+    phase1_epochs = 100
+    phase2_epochs = 200
+    default_total_epochs = 1000
+    total_epochs = max(int(fallback_epochs), default_total_epochs)
+    phase3_epochs = max(0, total_epochs - phase1_epochs - phase2_epochs)
+
+    phases = [
+        {
+            "name": "residual_warmup",
+            "epochs": phase1_epochs,
+            "active_failures": list(FAILURE_ORDER),
+            "failure_fraction": 0.20,
+            "disturbance_fraction": 0.0,
+            "new_failure": None,
+            "difficulty_bin": None,
+            "authority_regime": None,
+            "task_feasibility_regime": None,
+            "authority_label_any_mask": None,
+            "failure_sampling_mix": (
+                {
+                    "name": "easy_feasible",
+                    "weight": 80,
+                    "task_feasibility_regime": TASK_REGIME_EASY_FEASIBLE,
+                    "authority_label_any_mask": None,
+                },
+                {
+                    "name": "hard_feasible",
+                    "weight": 20,
+                    "task_feasibility_regime": TASK_REGIME_HARD_FEASIBLE,
+                    "authority_label_any_mask": None,
+                },
+            ),
+        },
+        {
+            "name": "residual_main",
+            "epochs": phase2_epochs,
+            "active_failures": list(FAILURE_ORDER),
+            "failure_fraction": 0.40,
+            "disturbance_fraction": 0.0,
+            "new_failure": None,
+            "difficulty_bin": None,
+            "authority_regime": None,
+            "task_feasibility_regime": None,
+            "authority_label_any_mask": None,
+            "failure_sampling_mix": (
+                {
+                    "name": "easy_feasible",
+                    "weight": 30,
+                    "task_feasibility_regime": TASK_REGIME_EASY_FEASIBLE,
+                    "authority_label_any_mask": None,
+                },
+                {
+                    "name": "hard_feasible",
+                    "weight": 70,
+                    "task_feasibility_regime": TASK_REGIME_HARD_FEASIBLE,
+                    "authority_label_any_mask": None,
+                },
+            ),
+        },
+        {
+            "name": "residual_target",
+            "epochs": phase3_epochs,
+            "active_failures": list(FAILURE_ORDER),
+            "failure_fraction": 0.50,
+            "disturbance_fraction": 0.0,
+            "new_failure": None,
+            "difficulty_bin": None,
+            "authority_regime": None,
+            "task_feasibility_regime": None,
+            "authority_label_any_mask": None,
+            "failure_sampling_mix": (
+                {
+                    "name": "easy_feasible",
+                    "weight": 15,
+                    "task_feasibility_regime": TASK_REGIME_EASY_FEASIBLE,
+                    "authority_label_any_mask": None,
+                },
+                {
+                    "name": "hard_feasible",
+                    "weight": 70,
+                    "task_feasibility_regime": TASK_REGIME_HARD_FEASIBLE,
+                    "authority_label_any_mask": None,
+                },
+                {
+                    "name": "near_infeasible",
+                    "weight": 10,
+                    "task_feasibility_regime": TASK_REGIME_NEAR_INFEASIBLE,
+                    "authority_label_any_mask": None,
+                },
+                {
+                    "name": "bias_or_nonlinear",
+                    "weight": 5,
+                    "task_feasibility_regime": None,
+                    "authority_label_any_mask": int(
+                        LABEL_BIAS_DOMINATED | LABEL_NONLINEAR_MISMATCH
+                    ),
+                },
+            ),
+        },
+    ]
+    return phases, total_epochs

@@ -29,6 +29,7 @@ class AstrobeeEnvVectorized(VecEnv):
         context_fusion: str | None = None,
         residual_scale: float | None = None,
         frozen_nominal_actor: bool | None = None,
+        nominal_actor_checkpoint: str | None = None,
         use_task_conditioned_am: bool | None = None,
         am_predict_delta_weight: float | None = None,
         am_predict_tracking_weight: float | None = None,
@@ -65,6 +66,10 @@ class AstrobeeEnvVectorized(VecEnv):
             self.env_cfg.control.RL.residual_scale = float(residual_scale)
         if frozen_nominal_actor is not None:
             self.env_cfg.control.RL.frozen_nominal_actor = bool(frozen_nominal_actor)
+        if nominal_actor_checkpoint is not None:
+            self.env_cfg.control.RL.nominal_actor_checkpoint = str(
+                nominal_actor_checkpoint
+            )
         if use_task_conditioned_am is not None:
             self.env_cfg.control.RL.use_task_conditioned_am = use_task_conditioned_am
         if am_predict_delta_weight is not None:

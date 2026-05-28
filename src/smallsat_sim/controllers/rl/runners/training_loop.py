@@ -15,6 +15,7 @@ from smallsat_sim.controllers.rl.runners.rollout import (
 )
 from smallsat_sim.controllers.rl.runners.curriculum import (
     build_authority_regime_curriculum_v2,
+    build_residual_policy_curriculum,
     phase_failure_fraction as get_phase_failure_fraction,
     uniform_failure_distribution,
 )
@@ -324,14 +325,21 @@ def learn_runner(self) -> None:
             f"[Curriculum] mode='{curriculum_mode}' is deprecated; using semantic authority curriculum.",
             flush=True,
         )
-    phases, total_epochs = build_authority_regime_curriculum_v2(
-        train_with_failures=bool(self.env.train_with_failures),
-        fallback_epochs=int(cfg.PPO.epochs),
-        nominal_epochs=nominal_epochs,
-        phase_epochs=phase_epochs,
-        failure_fraction=failure_fraction,
-        disturbance_fraction=disturbance_fraction,
-    )
+    adaptive_policy_mode = str(getattr(self.env, "adaptive_policy_mode", "direct"))
+    if adaptive_policy_mode == "residual":
+        phases, total_epochs = build_residual_policy_curriculum(
+            train_with_failures=bool(self.env.train_with_failures),
+            fallback_epochs=int(cfg.PPO.epochs),
+        )
+    else:
+        phases, total_epochs = build_authority_regime_curriculum_v2(
+            train_with_failures=bool(self.env.train_with_failures),
+            fallback_epochs=int(cfg.PPO.epochs),
+            nominal_epochs=nominal_epochs,
+            phase_epochs=phase_epochs,
+            failure_fraction=failure_fraction,
+            disturbance_fraction=disturbance_fraction,
+        )
     # Align runner/agent epoch counts with the curriculum length
     self.epochs = total_epochs
     if hasattr(self.agent, "epochs"):
