@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import replace
 import hashlib
 import os
 import time
@@ -73,6 +74,173 @@ def _scenario_sampling_mask(
         )
         mask = jnp.where(jnp.any(feasible_mask), feasible_mask, mask)
     return mask
+
+
+def sample_scenario_indices_batch(
+    key: jnp.ndarray,
+    table: dict[str, jnp.ndarray],
+    *,
+    split_id: int,
+    count: int,
+    difficulty_bin: int | None = None,
+    authority_regime: int | None = None,
+    task_feasibility_regime: int | None = None,
+    failure_type: int | None = None,
+    authority_label_any_mask: int | None = None,
+    failure_sampling_mix: tuple[dict, ...] | list[dict] | None = None,
+    task_wrenches: jnp.ndarray | None = None,
+) -> jnp.ndarray:
+    if count <= 0:
+        return jnp.empty((0,), dtype=jnp.int32)
+    if failure_sampling_mix:
+        mix_entries = [
+            entry for entry in failure_sampling_mix if int(entry["weight"]) > 0
+        ]
+        if not mix_entries:
+            mix_entries = [{"weight": 1, "task_feasibility_regime": task_feasibility_regime}]
+        weights_np = np.asarray(
+            [float(entry["weight"]) for entry in mix_entries], dtype=np.float64
+        )
+        weights_np = weights_np / max(float(weights_np.sum()), 1e-8)
+        raw_counts = weights_np * float(count)
+        mix_counts = np.floor(raw_counts).astype(np.int32)
+        remainder = int(count - int(mix_counts.sum()))
+        if remainder > 0:
+            order = np.argsort(-(raw_counts - mix_counts))
+            mix_counts[order[:remainder]] += 1
+        mix_choice_np = np.concatenate(
+            [
+                np.full(int(c), mix_idx, dtype=np.int32)
+                for mix_idx, c in enumerate(mix_counts)
+                if int(c) > 0
+            ]
+        )
+        mix_choice = jax.random.permutation(key, jnp.asarray(mix_choice_np, dtype=jnp.int32))
+        scenario_indices = jnp.zeros((count,), dtype=jnp.int32)
+        scenario_keys = jax.random.split(key, max(len(mix_entries), 1))
+        if task_wrenches is None:
+            for mix_idx, mix_entry in enumerate(mix_entries):
+                env_mask = mix_choice == mix_idx
+                env_count = int(jnp.sum(env_mask))
+                if env_count <= 0:
+                    continue
+                sampled = sample_scenario_indices(
+                    scenario_keys[mix_idx],
+                    table,
+                    split_id=split_id,
+                    count=env_count,
+                    difficulty_bin=difficulty_bin,
+                    authority_regime=authority_regime,
+                    task_feasibility_regime=mix_entry.get("task_feasibility_regime"),
+                    failure_type=failure_type,
+                    authority_label_any_mask=mix_entry.get("authority_label_any_mask"),
+                )
+                scenario_indices = scenario_indices.at[
+                    jnp.where(env_mask, size=env_count)[0]
+                ].set(sampled)
+        else:
+            scenario_dirs_full = table.get("targeted_task_direction")
+            if scenario_dirs_full is None:
+                scenario_dirs_full = table["targeted_task_wrench"] / (
+                    jnp.linalg.norm(table["targeted_task_wrench"], axis=1, keepdims=True)
+                    + 1e-6
+                )
+            for mix_idx, mix_entry in enumerate(mix_entries):
+                env_mask = mix_choice == mix_idx
+                env_count = int(jnp.sum(env_mask))
+                if env_count <= 0:
+                    continue
+                candidates = _candidate_indices_cached(
+                    table,
+                    split_id=split_id,
+                    difficulty_bin=difficulty_bin,
+                    authority_regime=authority_regime,
+                    task_feasibility_regime=mix_entry.get("task_feasibility_regime"),
+                    failure_type=failure_type,
+                    authority_label_any_mask=mix_entry.get("authority_label_any_mask"),
+                    prefer_feasible=True,
+                )
+                task_dirs = task_wrenches[env_mask] / (
+                    jnp.linalg.norm(task_wrenches[env_mask], axis=1, keepdims=True) + 1e-6
+                )
+                bucket_mix = _sample_bucket_size(env_count)
+                if bucket_mix > env_count:
+                    task_dirs = jnp.concatenate(
+                        [task_dirs, jnp.repeat(task_dirs[:1, :], bucket_mix - env_count, axis=0)],
+                        axis=0,
+                    )
+                alignment = task_dirs @ scenario_dirs_full[candidates].T
+                logits = 8.0 * alignment
+                sampled_local = jax.random.categorical(
+                    scenario_keys[mix_idx], logits, axis=1
+                ).astype(jnp.int32)[:env_count]
+                sampled = candidates[sampled_local]
+                scenario_indices = scenario_indices.at[
+                    jnp.where(env_mask, size=env_count)[0]
+                ].set(sampled)
+        return scenario_indices
+    if task_wrenches is None:
+        return sample_scenario_indices(
+            key,
+            table,
+            split_id=split_id,
+            count=count,
+            difficulty_bin=difficulty_bin,
+            authority_regime=authority_regime,
+            task_feasibility_regime=task_feasibility_regime,
+            failure_type=failure_type,
+            authority_label_any_mask=authority_label_any_mask,
+        )
+    return sample_task_conditioned_scenario_indices(
+        key,
+        table,
+        split_id=split_id,
+        task_wrenches=task_wrenches,
+        difficulty_bin=difficulty_bin,
+        authority_regime=authority_regime,
+        task_feasibility_regime=task_feasibility_regime,
+        failure_type=failure_type,
+        authority_label_any_mask=authority_label_any_mask,
+    )
+
+
+def clear_failure_effects_for_envs(env, env_indices: jnp.ndarray) -> None:
+    env_indices = jnp.asarray(env_indices, dtype=jnp.int32)
+    if int(env_indices.shape[0]) == 0:
+        return
+    if getattr(Perturbation, "thruster_mask", None) is not None:
+        Perturbation.thruster_mask = Perturbation.thruster_mask.at[env_indices, :].set(
+            PerturbationStatus.OPERATIONAL.value
+        )
+    if hasattr(env, "set_constant_wrench_disturbances"):
+        zeros = jnp.zeros((env_indices.shape[0], 6), dtype=jnp.float32)
+        env.set_constant_wrench_disturbances(env_indices, zeros)
+    for idx, perturbation in enumerate(getattr(env.perturbations, "perturbations", ())):
+        if hasattr(perturbation, "start_times"):
+            perturbation.start_times = perturbation.start_times.at[env_indices, :].set(0.0)
+        if idx == 1 and hasattr(perturbation, "stuck_on_force") and hasattr(
+            perturbation, "max_thruster_force"
+        ):
+            row_force = jnp.broadcast_to(
+                jnp.asarray(perturbation.max_thruster_force)[None, :],
+                (env_indices.shape[0], env.act_dim),
+            )
+            perturbation.stuck_on_force = perturbation.stuck_on_force.at[
+                env_indices, :
+            ].set(row_force)
+        state = getattr(perturbation, "state", None)
+        if state is not None:
+            state_kwargs = {"thruster_mask": Perturbation.thruster_mask}
+            if hasattr(perturbation, "start_times"):
+                state_kwargs["start_times"] = perturbation.start_times
+            if idx == 1 and hasattr(perturbation, "stuck_on_force"):
+                state_kwargs["max_thruster_force"] = perturbation.stuck_on_force
+            perturbation.state = replace(state, **state_kwargs)
+    env._refresh_effect_states()
+    env._state = env._state.replace(
+        perturbation_states=env.perturbation_states,
+        disturbance_states=env.disturbance_states,
+    )
 
 
 def _candidate_indices_cached(
@@ -2041,6 +2209,7 @@ def apply_sampled_failure_scenario_split(
     failure_sampling_mix: tuple[dict, ...] | list[dict] | None = None,
     task_wrenches: jnp.ndarray | None = None,
     apply_constant_disturbance_scenarios: bool = True,
+    emit_payload: bool = True,
     return_selection: bool = False,
 ) -> dict[str, float] | tuple[dict[str, float], jnp.ndarray, jnp.ndarray]:
     select_duration = 0.0
@@ -2055,9 +2224,13 @@ def apply_sampled_failure_scenario_split(
     }
     num_perturbed = int(env.num_envs * max(0.0, min(1.0, fraction_perturbed_envs)))
     if num_perturbed <= 0:
-        payload = scenario_selection_payload(
-            table,
-            jnp.empty((0,), dtype=jnp.int32),
+        payload = (
+            scenario_selection_payload(
+                table,
+                jnp.empty((0,), dtype=jnp.int32),
+            )
+            if emit_payload
+            else {}
         )
         payload["_timing/select"] = select_duration
         payload["_timing/sample"] = sample_duration
@@ -2256,7 +2429,9 @@ def apply_sampled_failure_scenario_split(
         jax.block_until_ready(Perturbation.thruster_mask)
     apply_duration = time.perf_counter() - timing_start
     timing_start = time.perf_counter()
-    payload = scenario_selection_payload(table, scenario_indices[:num_perturbed])
+    payload = {}
+    if emit_payload:
+        payload = scenario_selection_payload(table, scenario_indices[:num_perturbed])
     payload_duration = time.perf_counter() - timing_start
     payload["_timing/select"] = select_duration
     payload["_timing/sample"] = sample_duration

@@ -23,10 +23,14 @@ from smallsat_sim.controllers.rl.runners.failure_scenarios import (
     SPLIT_STRESS_TEST,
     SPLIT_TRAIN,
     apply_sampled_failure_scenario_split,
+    apply_failure_scenarios,
     build_failure_scenario_table,
+    clear_failure_effects_for_envs,
     precompute_scenario_gp_samples,
+    sample_scenario_indices_batch,
     scenario_authority_regime_counts,
     scenario_bin_counts,
+    scenario_selection_payload,
     scenario_split_counts,
     scenario_task_regime_counts,
     save_scenario_table_csv,
@@ -208,6 +212,24 @@ def learn_runner(self) -> None:
     authority_logging_interval = int(getattr(cfg, "authority_logging_interval", 10))
     authority_logging_max_samples = max(0, authority_logging_max_samples)
     authority_logging_interval = max(1, authority_logging_interval)
+    failure_env_count_quantum = max(
+        1, int(getattr(cfg, "curriculum_failure_env_count_quantum", 128))
+    )
+    persistent_failure_assignments = bool(
+        getattr(cfg, "curriculum_persistent_failure_assignments", True)
+    )
+    persistent_refresh_interval = max(
+        1, int(getattr(cfg, "curriculum_failure_assignment_refresh_interval", 10))
+    )
+    persistent_refresh_fraction = max(
+        0.0,
+        min(
+            1.0,
+            float(
+                getattr(cfg, "curriculum_failure_assignment_refresh_fraction", 0.0)
+            ),
+        ),
+    )
     checkpoint_interval = int(getattr(cfg, "training_checkpoint_interval", 10))
     checkpoint_interval = max(1, checkpoint_interval)
     curriculum_mode = str(getattr(cfg, "failure_curriculum_mode", "authority"))
@@ -306,6 +328,8 @@ def learn_runner(self) -> None:
     # Reuse only effect-free configs. Effect-enabled configs snapshot failure
     # states, so they must be rebuilt after each curriculum resample.
     step_config_cache: dict[bool, object] = {}
+    persistent_failed_mask = jnp.zeros((self.env.num_envs,), dtype=bool)
+    persistent_scenario_indices = -jnp.ones((self.env.num_envs,), dtype=jnp.int32)
 
     for phase_idx, phase in enumerate(phases):
         phase_name = phase["name"]
@@ -373,8 +397,18 @@ def learn_runner(self) -> None:
                 phase, curriculum_epoch
             )
             current_disturbance_fraction = phase_disturbance_fraction * disturbance_ramp
-            current_failure_env_count = int(
+            current_failure_env_count_raw = int(
                 self.env.num_envs * max(0.0, min(1.0, current_failure_fraction))
+            )
+            current_failure_env_count = int(
+                (current_failure_env_count_raw // failure_env_count_quantum)
+                * failure_env_count_quantum
+            )
+            current_failure_env_count = min(
+                current_failure_env_count, self.env.num_envs
+            )
+            current_failure_fraction_effective = float(
+                current_failure_env_count / max(self.env.num_envs, 1)
             )
             epoch_key = self._take_keys()
             (
@@ -413,23 +447,32 @@ def learn_runner(self) -> None:
             if self.env.train_with_failures and phase_uses_effects:
                 if phase_uses_perturbations:
                     if should_resample_failures:
-                        applied_failure_fraction = current_failure_fraction
+                        applied_failure_fraction = current_failure_fraction_effective
                         applied_failure_env_count = current_failure_env_count
-                        setup_detail_start = time.perf_counter()
-                        self.env.reset_perturbations()
-                        setup_perturb_reset_duration += (
-                            time.perf_counter() - setup_detail_start
+                        use_persistent_delta = bool(
+                            persistent_failure_assignments
+                            and use_controllable_failure_scenarios
+                            and failure_scenario_table is not None
                         )
-                        # Scenario-applied disturbances can be attached to sampled
-                        # failure cases even when curriculum disturbance fraction is
-                        # zero. Reset them here to prevent cross-epoch accumulation
-                        # from inflating failed_env_count beyond failure_fraction.
-                        if hasattr(self.env, "reset_disturbances"):
+                        if not use_persistent_delta or phase_epoch == 0:
                             setup_detail_start = time.perf_counter()
-                            self.env.reset_disturbances()
-                            setup_disturb_reset_duration += (
+                            self.env.reset_perturbations()
+                            setup_perturb_reset_duration += (
                                 time.perf_counter() - setup_detail_start
                             )
+                            if hasattr(self.env, "reset_disturbances"):
+                                setup_detail_start = time.perf_counter()
+                                self.env.reset_disturbances()
+                                setup_disturb_reset_duration += (
+                                    time.perf_counter() - setup_detail_start
+                                )
+                            if use_persistent_delta and phase_epoch == 0:
+                                persistent_failed_mask = jnp.zeros(
+                                    (self.env.num_envs,), dtype=bool
+                                )
+                                persistent_scenario_indices = -jnp.ones(
+                                    (self.env.num_envs,), dtype=jnp.int32
+                                )
                         if (
                             use_controllable_failure_scenarios
                             and failure_scenario_table is not None
@@ -454,26 +497,110 @@ def learn_runner(self) -> None:
                                     time.perf_counter() - setup_detail_start
                                 )
                             setup_detail_start = time.perf_counter()
-                            (
-                                active_scenario_payload,
-                                _selected_envs,
-                                _scenario_indices,
-                            ) = apply_sampled_failure_scenario_split(
-                                self.env,
-                                key=perturb_key,
-                                table=failure_scenario_table,
-                                split_id=failure_scenario_split_id,
-                                fraction_perturbed_envs=applied_failure_fraction,
-                                start_time=failure_start_time,
-                                difficulty_bin=phase_difficulty_bin,
-                                authority_regime=phase_authority_regime,
-                                task_feasibility_regime=phase_task_feasibility_regime,
-                                authority_label_any_mask=phase_authority_label_any_mask,
-                                failure_sampling_mix=phase_failure_sampling_mix,
-                                task_wrenches=current_task_wrenches,
-                                apply_constant_disturbance_scenarios=phase_uses_disturbances,
-                                return_selection=True,
-                            )
+                            if use_persistent_delta:
+                                all_envs = jnp.arange(self.env.num_envs, dtype=jnp.int32)
+                                failed_envs = all_envs[persistent_failed_mask]
+                                nominal_envs = all_envs[jnp.logical_not(persistent_failed_mask)]
+                                current_failed_count = int(failed_envs.shape[0])
+                                desired_failed_count = int(applied_failure_env_count)
+                                add_count = max(0, desired_failed_count - current_failed_count)
+                                remove_count = max(0, current_failed_count - desired_failed_count)
+                                key_add, key_remove, key_refresh, key_sample, key_apply = jax.random.split(
+                                    perturb_key, 5
+                                )
+                                entering = (
+                                    jax.random.permutation(key_add, nominal_envs)[:add_count]
+                                    if add_count > 0
+                                    else jnp.empty((0,), dtype=jnp.int32)
+                                )
+                                exiting = (
+                                    jax.random.permutation(key_remove, failed_envs)[:remove_count]
+                                    if remove_count > 0
+                                    else jnp.empty((0,), dtype=jnp.int32)
+                                )
+                                if int(exiting.shape[0]) > 0:
+                                    clear_failure_effects_for_envs(self.env, exiting)
+                                    persistent_failed_mask = persistent_failed_mask.at[exiting].set(False)
+                                    persistent_scenario_indices = persistent_scenario_indices.at[exiting].set(-1)
+                                persistent_failed_mask = persistent_failed_mask.at[entering].set(True)
+                                failed_after = all_envs[persistent_failed_mask]
+                                refresh_count = 0
+                                if int(failed_after.shape[0]) > 0:
+                                    refresh_count = int(
+                                        float(failed_after.shape[0]) * persistent_refresh_fraction
+                                    )
+                                    if (
+                                        persistent_refresh_fraction <= 0.0
+                                        and phase_epoch % persistent_refresh_interval == 0
+                                    ):
+                                        refresh_count = 0
+                                refreshed = (
+                                    jax.random.permutation(key_refresh, failed_after)[:refresh_count]
+                                    if refresh_count > 0
+                                    else jnp.empty((0,), dtype=jnp.int32)
+                                )
+                                changed_envs = jnp.unique(
+                                    jnp.concatenate([entering, refreshed], axis=0)
+                                )
+                                if int(changed_envs.shape[0]) > 0:
+                                    changed_wrenches = (
+                                        None
+                                        if current_task_wrenches is None
+                                        else current_task_wrenches[changed_envs]
+                                    )
+                                    sampled = sample_scenario_indices_batch(
+                                        key_sample,
+                                        failure_scenario_table,
+                                        split_id=failure_scenario_split_id,
+                                        count=int(changed_envs.shape[0]),
+                                        difficulty_bin=phase_difficulty_bin,
+                                        authority_regime=phase_authority_regime,
+                                        task_feasibility_regime=phase_task_feasibility_regime,
+                                        authority_label_any_mask=phase_authority_label_any_mask,
+                                        failure_sampling_mix=phase_failure_sampling_mix,
+                                        task_wrenches=changed_wrenches,
+                                    )
+                                    persistent_scenario_indices = persistent_scenario_indices.at[
+                                        changed_envs
+                                    ].set(sampled)
+                                    apply_failure_scenarios(
+                                        self.env,
+                                        key=key_apply,
+                                        table=failure_scenario_table,
+                                        selected_envs=changed_envs,
+                                        scenario_indices=sampled,
+                                        start_time=failure_start_time,
+                                        apply_constant_disturbance_scenarios=phase_uses_disturbances,
+                                    )
+                                if global_epoch % authority_logging_interval == 0:
+                                    active_scenarios = persistent_scenario_indices[failed_after]
+                                    active_scenario_payload = scenario_selection_payload(
+                                        failure_scenario_table, active_scenarios
+                                    )
+                                else:
+                                    active_scenario_payload = {}
+                            else:
+                                (
+                                    active_scenario_payload,
+                                    _selected_envs,
+                                    _scenario_indices,
+                                ) = apply_sampled_failure_scenario_split(
+                                    self.env,
+                                    key=perturb_key,
+                                    table=failure_scenario_table,
+                                    split_id=failure_scenario_split_id,
+                                    fraction_perturbed_envs=applied_failure_fraction,
+                                    start_time=failure_start_time,
+                                    difficulty_bin=phase_difficulty_bin,
+                                    authority_regime=phase_authority_regime,
+                                    task_feasibility_regime=phase_task_feasibility_regime,
+                                    authority_label_any_mask=phase_authority_label_any_mask,
+                                    failure_sampling_mix=phase_failure_sampling_mix,
+                                    task_wrenches=current_task_wrenches,
+                                    apply_constant_disturbance_scenarios=phase_uses_disturbances,
+                                    emit_payload=(global_epoch % authority_logging_interval == 0),
+                                    return_selection=True,
+                                )
                             setup_scenario_duration += (
                                 time.perf_counter() - setup_detail_start
                             )
