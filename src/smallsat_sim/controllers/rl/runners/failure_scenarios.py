@@ -89,6 +89,109 @@ TASK_ERROR_HARD_FEASIBLE_THRESHOLD = 0.10
 UTILIZATION_BIN_EASY_MAX = 0.30
 UTILIZATION_BIN_MEDIUM_MAX = 0.60
 UTILIZATION_BIN_HARD_MAX = 0.90
+
+
+def _attach_scenario_apply_cache(
+    table: dict[str, jnp.ndarray],
+) -> dict[str, jnp.ndarray]:
+    """Attach precomputed tensors used by per-epoch scenario application."""
+    if "_apply_failure_valid_mask" in table and "_apply_failure_status" in table:
+        return table
+
+    num_rows = int(jnp.asarray(table["split"]).shape[0])
+    if "failure_types" in table and "thrusters" in table:
+        failure_types = jnp.asarray(table["failure_types"], dtype=jnp.int32)
+        thrusters = jnp.asarray(table["thrusters"], dtype=jnp.int32)
+    else:
+        failure_types = jnp.full((num_rows, 1), -1, dtype=jnp.int32)
+        thrusters = jnp.full((num_rows, 1), -1, dtype=jnp.int32)
+    disturbance_wrench = jnp.asarray(
+        table.get(
+            "disturbance_wrench",
+            jnp.zeros_like(table["targeted_task_wrench"]),
+        ),
+        dtype=jnp.float32,
+    )
+
+    failure_valid_mask = (failure_types >= 0) & (thrusters >= 0) & (failure_types != 5)
+    # Lookup from failure_type -> perturbation status used in thruster_mask.
+    failure_status_lut = jnp.asarray(
+        [
+            PerturbationStatus.STUCK_OFF.value,
+            PerturbationStatus.STUCK_ON.value,
+            PerturbationStatus.FAULTY_VALVE.value,
+            PerturbationStatus.SATURATED_THRUST.value,
+            PerturbationStatus.THRUST_INSTABILITY.value,
+            -1,  # constant disturbance pseudo-failure is not a thruster perturbation
+        ],
+        dtype=jnp.int32,
+    )
+    clipped_types = jnp.clip(failure_types, 0, failure_status_lut.shape[0] - 1)
+    failure_status = jnp.take(failure_status_lut, clipped_types)
+    failure_status = jnp.where(failure_valid_mask, failure_status, -1)
+    has_constant_disturbance = jnp.any((failure_types == 5) & (thrusters >= 0), axis=1)
+
+    table["_apply_failure_valid_mask"] = failure_valid_mask
+    table["_apply_failure_status"] = failure_status
+    table["_apply_has_constant_disturbance"] = has_constant_disturbance
+    table["_apply_disturbance_wrench"] = disturbance_wrench
+    table["_apply_split_train_mask"] = table["split"] == int(SPLIT_TRAIN)
+    table["_apply_split_semantic_eval_mask"] = table["split"] == int(SPLIT_SEMANTIC_EVAL)
+    table["_apply_split_stress_test_mask"] = table["split"] == int(SPLIT_STRESS_TEST)
+    return table
+
+
+def _filtered_candidate_indices(
+    table: dict[str, jnp.ndarray],
+    *,
+    split_id: int,
+    difficulty_bin: int | None = None,
+    authority_regime: int | None = None,
+    task_feasibility_regime: int | None = None,
+    failure_type: int | None = None,
+    authority_label_any_mask: int | None = None,
+    prefer_feasible: bool = False,
+) -> jnp.ndarray:
+    """Return candidate scenario indices with graceful fallback at each filter step."""
+    table = _attach_scenario_apply_cache(table)
+    if int(split_id) == SPLIT_TRAIN:
+        mask = jnp.asarray(table["_apply_split_train_mask"], dtype=bool)
+    elif int(split_id) == SPLIT_SEMANTIC_EVAL:
+        mask = jnp.asarray(table["_apply_split_semantic_eval_mask"], dtype=bool)
+    else:
+        mask = jnp.asarray(table["_apply_split_stress_test_mask"], dtype=bool)
+
+    if difficulty_bin is not None:
+        bin_mask = jnp.logical_and(mask, table["difficulty_bin"] == int(difficulty_bin))
+        mask = jnp.where(jnp.any(bin_mask), bin_mask, mask)
+    if authority_regime is not None:
+        regime_mask = jnp.logical_and(mask, table["authority_regime"] == int(authority_regime))
+        mask = jnp.where(jnp.any(regime_mask), regime_mask, mask)
+    if task_feasibility_regime is not None:
+        task_mask = jnp.logical_and(
+            mask, table["task_feasibility_regime"] == int(task_feasibility_regime)
+        )
+        mask = jnp.where(jnp.any(task_mask), task_mask, mask)
+    if failure_type is not None:
+        type_mask = jnp.logical_and(
+            mask, jnp.any(table["failure_types"] == int(failure_type), axis=1)
+        )
+        mask = jnp.where(jnp.any(type_mask), type_mask, mask)
+    if authority_label_any_mask is not None:
+        label_mask = jnp.logical_and(
+            mask,
+            (table["authority_label_mask"] & int(authority_label_any_mask)) != 0,
+        )
+        mask = jnp.where(jnp.any(label_mask), label_mask, mask)
+    if prefer_feasible:
+        feasible_mask = jnp.logical_and(
+            mask, table["task_feasibility_regime"] != TASK_REGIME_INFEASIBLE
+        )
+        mask = jnp.where(jnp.any(feasible_mask), feasible_mask, mask)
+
+    return jnp.where(mask)[0].astype(jnp.int32)
+
+
 def task_wrench_from_state_features(
     states: jnp.ndarray,
     *,
@@ -1049,7 +1152,9 @@ def build_failure_scenario_table(
     if os.path.isfile(cache_path):
         print(f"[Failure Scenarios] Loading cached scenario table: {cache_path}", flush=True)
         with np.load(cache_path) as cached:
-            return {key: jnp.asarray(cached[key]) for key in cached.files}
+            return _attach_scenario_apply_cache(
+                {key: jnp.asarray(cached[key]) for key in cached.files}
+            )
 
     print(
         "[Failure Scenarios] Building scenario table "
@@ -1073,7 +1178,9 @@ def build_failure_scenario_table(
     )
     np.savez_compressed(cache_path, **table)
     print(f"[Failure Scenarios] Cached scenario table: {cache_path}", flush=True)
-    return {key: jnp.asarray(value) for key, value in table.items()}
+    return _attach_scenario_apply_cache(
+        {key: jnp.asarray(value) for key, value in table.items()}
+    )
 
 
 def scenario_split_counts(table: dict[str, jnp.ndarray]) -> dict[str, int]:
@@ -1524,35 +1631,22 @@ def sample_scenario_indices(
     failure_type: int | None = None,
     authority_label_any_mask: int | None = None,
 ) -> jnp.ndarray:
-    split = table["split"]
-    mask = split == int(split_id)
-    if difficulty_bin is not None:
-        bin_mask = jnp.logical_and(mask, table["difficulty_bin"] == int(difficulty_bin))
-        mask = jnp.where(jnp.any(bin_mask), bin_mask, mask)
-    if authority_regime is not None:
-        regime_mask = jnp.logical_and(
-            mask, table["authority_regime"] == int(authority_regime)
-        )
-        mask = jnp.where(jnp.any(regime_mask), regime_mask, mask)
-    if task_feasibility_regime is not None:
-        task_mask = jnp.logical_and(
-            mask, table["task_feasibility_regime"] == int(task_feasibility_regime)
-        )
-        mask = jnp.where(jnp.any(task_mask), task_mask, mask)
-    if failure_type is not None:
-        type_mask = jnp.logical_and(
-            mask, jnp.any(table["failure_types"] == int(failure_type), axis=1)
-        )
-        mask = jnp.where(jnp.any(type_mask), type_mask, mask)
-    if authority_label_any_mask is not None:
-        label_mask = jnp.logical_and(
-            mask,
-            (table["authority_label_mask"] & int(authority_label_any_mask)) != 0,
-        )
-        mask = jnp.where(jnp.any(label_mask), label_mask, mask)
-    logits = jnp.where(mask, 0.0, -jnp.inf)
-    sampled = jax.random.categorical(key, logits, shape=(count,))
-    return sampled.astype(jnp.int32)
+    candidates = _filtered_candidate_indices(
+        table,
+        split_id=split_id,
+        difficulty_bin=difficulty_bin,
+        authority_regime=authority_regime,
+        task_feasibility_regime=task_feasibility_regime,
+        failure_type=failure_type,
+        authority_label_any_mask=authority_label_any_mask,
+    )
+    if int(candidates.shape[0]) == 0:
+        candidates = jnp.arange(table["split"].shape[0], dtype=jnp.int32)
+    if count <= 0:
+        return jnp.empty((0,), dtype=jnp.int32)
+    logits = jnp.zeros((candidates.shape[0],), dtype=jnp.float32)
+    sampled_local = jax.random.categorical(key, logits, shape=(count,))
+    return candidates[sampled_local].astype(jnp.int32)
 
 
 def sample_task_conditioned_scenario_indices(
@@ -1579,36 +1673,18 @@ def sample_task_conditioned_scenario_indices(
     if count == 0:
         return jnp.empty((0,), dtype=jnp.int32)
 
-    mask = table["split"] == int(split_id)
-    if difficulty_bin is not None:
-        bin_mask = jnp.logical_and(mask, table["difficulty_bin"] == int(difficulty_bin))
-        mask = jnp.where(jnp.any(bin_mask), bin_mask, mask)
-    if authority_regime is not None:
-        regime_mask = jnp.logical_and(
-            mask, table["authority_regime"] == int(authority_regime)
-        )
-        mask = jnp.where(jnp.any(regime_mask), regime_mask, mask)
-    if task_feasibility_regime is not None:
-        task_mask = jnp.logical_and(
-            mask, table["task_feasibility_regime"] == int(task_feasibility_regime)
-        )
-        mask = jnp.where(jnp.any(task_mask), task_mask, mask)
-    if failure_type is not None:
-        type_mask = jnp.logical_and(
-            mask, jnp.any(table["failure_types"] == int(failure_type), axis=1)
-        )
-        mask = jnp.where(jnp.any(type_mask), type_mask, mask)
-    if authority_label_any_mask is not None:
-        label_mask = jnp.logical_and(
-            mask,
-            (table["authority_label_mask"] & int(authority_label_any_mask)) != 0,
-        )
-        mask = jnp.where(jnp.any(label_mask), label_mask, mask)
-
-    feasible_mask = jnp.logical_and(
-        mask, table["task_feasibility_regime"] != TASK_REGIME_INFEASIBLE
+    candidates = _filtered_candidate_indices(
+        table,
+        split_id=split_id,
+        difficulty_bin=difficulty_bin,
+        authority_regime=authority_regime,
+        task_feasibility_regime=task_feasibility_regime,
+        failure_type=failure_type,
+        authority_label_any_mask=authority_label_any_mask,
+        prefer_feasible=True,
     )
-    mask = jnp.where(jnp.any(feasible_mask), feasible_mask, mask)
+    if int(candidates.shape[0]) == 0:
+        candidates = jnp.arange(table["split"].shape[0], dtype=jnp.int32)
 
     scenario_dirs = table.get("targeted_task_direction")
     if scenario_dirs is None:
@@ -1616,35 +1692,33 @@ def sample_task_conditioned_scenario_indices(
             jnp.linalg.norm(table["targeted_task_wrench"], axis=1, keepdims=True)
             + 1e-6
         )
+    scenario_dirs = scenario_dirs[candidates]
     task_dirs = task_wrenches / (
         jnp.linalg.norm(task_wrenches, axis=1, keepdims=True) + 1e-6
     )
     alignment = task_dirs @ scenario_dirs.T
-    base_logits = jnp.where(mask, 0.0, -jnp.inf)
-    logits = base_logits[None, :] + float(alignment_temperature) * alignment
-    return jax.random.categorical(key, logits, axis=1).astype(jnp.int32)
+    logits = float(alignment_temperature) * alignment
+    sampled_local = jax.random.categorical(key, logits, axis=1).astype(jnp.int32)
+    return candidates[sampled_local].astype(jnp.int32)
 
 
 def _scenario_rows_for_indices(
     table: dict[str, jnp.ndarray],
     selected_envs: jnp.ndarray,
     scenario_indices: jnp.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    selected_envs_np = np.asarray(jax.device_get(selected_envs), dtype=np.int32)
-    scenario_indices_np = np.asarray(jax.device_get(scenario_indices), dtype=np.int32)
-    failure_types = np.asarray(jax.device_get(table["failure_types"]))[
-        scenario_indices_np
-    ]
-    thrusters = np.asarray(jax.device_get(table["thrusters"]))[scenario_indices_np]
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    table = _attach_scenario_apply_cache(table)
+    selected_envs = jnp.asarray(selected_envs, dtype=jnp.int32)
+    scenario_indices = jnp.asarray(scenario_indices, dtype=jnp.int32)
+    thrusters = jnp.asarray(table["thrusters"], dtype=jnp.int32)[scenario_indices]
+    valid = jnp.asarray(table["_apply_failure_valid_mask"], dtype=bool)[scenario_indices]
+    status = jnp.asarray(table["_apply_failure_status"], dtype=jnp.int32)[scenario_indices]
 
-    env_rows = np.repeat(selected_envs_np[:, None], failure_types.shape[1], axis=1)
-    valid = np.logical_and.reduce(
-        (failure_types >= 0, thrusters >= 0, failure_types != 5)
-    )
-    flat_envs = env_rows[valid].astype(np.int32)
-    flat_thrusters = thrusters[valid].astype(np.int32)
-    flat_failure_types = failure_types[valid].astype(np.int32)
-    return flat_envs, flat_thrusters, flat_failure_types
+    env_rows = jnp.broadcast_to(selected_envs[:, None], thrusters.shape)
+    flat_envs = env_rows[valid].astype(jnp.int32)
+    flat_thrusters = thrusters[valid].astype(jnp.int32)
+    flat_status = status[valid].astype(jnp.int32)
+    return flat_envs, flat_thrusters, flat_status
 
 
 # Helper for constant disturbance pseudo-failures (failure_type == 5)
@@ -1654,7 +1728,7 @@ def _constant_disturbance_rows_for_indices(
     scenario_indices: jnp.ndarray,
     *,
     wrench_dim: int = 6,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Return per-env additive wrench disturbances encoded in selected scenarios.
 
     Offline constant disturbances are encoded as failure_type == 5 with pseudo
@@ -1662,35 +1736,25 @@ def _constant_disturbance_rows_for_indices(
     helper converts those pseudo-failures into one 6D disturbance wrench per
     selected environment. The actual magnitude matches `_scenario_bounds`.
     """
-    selected_envs_np = np.asarray(jax.device_get(selected_envs), dtype=np.int32)
-    scenario_indices_np = np.asarray(jax.device_get(scenario_indices), dtype=np.int32)
-    if selected_envs_np.size == 0:
-        return selected_envs_np, np.empty((0, wrench_dim), dtype=np.float32)
+    table = _attach_scenario_apply_cache(table)
+    selected_envs = jnp.asarray(selected_envs, dtype=jnp.int32)
+    scenario_indices = jnp.asarray(scenario_indices, dtype=jnp.int32)
+    if selected_envs.size == 0:
+        return selected_envs, jnp.zeros((0, wrench_dim), dtype=jnp.float32)
 
-    failure_types = np.asarray(jax.device_get(table["failure_types"]))[
-        scenario_indices_np
-    ]
-    pseudo_thrusters = np.asarray(jax.device_get(table["thrusters"]))[
-        scenario_indices_np
-    ]
-    disturbance_wrenches = np.asarray(
-        jax.device_get(
-            table.get(
-                "disturbance_wrench",
-                jnp.zeros_like(table["targeted_task_wrench"]),
-            )
-        )
-    )[scenario_indices_np]
-
-    valid = np.logical_and.reduce(
-        (failure_types == 5, pseudo_thrusters >= 0, failure_types >= 0)
+    disturbance_wrenches = jnp.asarray(
+        table["_apply_disturbance_wrench"], dtype=jnp.float32
+    )[scenario_indices]
+    has_disturbance = jnp.asarray(
+        table["_apply_has_constant_disturbance"], dtype=bool
+    )[scenario_indices][:, None]
+    disturbances = jnp.where(
+        has_disturbance,
+        disturbance_wrenches[:, :wrench_dim],
+        jnp.zeros((selected_envs.shape[0], wrench_dim), dtype=jnp.float32),
     )
-    if not np.any(valid):
-        return selected_envs_np, np.zeros(
-            (selected_envs_np.shape[0], wrench_dim), dtype=np.float32
-        )
 
-    return selected_envs_np, disturbance_wrenches[:, :wrench_dim].astype(np.float32)
+    return selected_envs, disturbances
 
 
 def _apply_constant_disturbance_scenarios(
@@ -1707,14 +1771,11 @@ def _apply_constant_disturbance_scenarios(
     thruster failures and the constant-disturbance pseudo-failures are ignored at
     application time.
     """
-    env_rows_np, disturbances_np = _constant_disturbance_rows_for_indices(
+    env_rows, disturbances = _constant_disturbance_rows_for_indices(
         table, selected_envs, scenario_indices
     )
-    if env_rows_np.size == 0 or not np.any(np.abs(disturbances_np) > 0.0):
+    if int(env_rows.shape[0]) == 0 or not bool(jnp.any(jnp.abs(disturbances) > 0.0)):
         return
-
-    env_rows = jnp.asarray(env_rows_np, dtype=jnp.int32)
-    disturbances = jnp.asarray(disturbances_np, dtype=jnp.float32)
 
     if hasattr(env, "set_constant_wrench_disturbances"):
         env.set_constant_wrench_disturbances(env_rows, disturbances)
@@ -1816,22 +1877,14 @@ def apply_failure_scenarios(
         scenario_indices,
     )
 
-    flat_envs_np, flat_thrusters_np, flat_failure_types_np = _scenario_rows_for_indices(
+    flat_envs, flat_thrusters, flat_status = _scenario_rows_for_indices(
         table, selected_envs, scenario_indices
     )
-    if flat_envs_np.size == 0:
+    if int(flat_envs.shape[0]) == 0:
         if hasattr(env, "_refresh_effect_states"):
             env._refresh_effect_states()
             env._state = env._state.replace(perturbation_states=env.perturbation_states)
         return
-
-    flat_envs = jnp.asarray(flat_envs_np, dtype=jnp.int32)
-    flat_thrusters = jnp.asarray(flat_thrusters_np, dtype=jnp.int32)
-    flat_status = jnp.asarray(
-        [SCENARIO_FAILURE_STATUS[int(ft)] for ft in flat_failure_types_np],
-        dtype=jnp.int32,
-    )
-
     # Update the shared env/thruster failure mask once. This avoids the slow
     # interactive registration path, which grouped scenarios by type/thruster and
     # repeatedly synchronized with the host.
@@ -1847,9 +1900,9 @@ def apply_failure_scenarios(
     perturbations = env.perturbations.perturbations
 
     for failure_type, failure_status in SCENARIO_FAILURE_STATUS.items():
-        type_mask_np = flat_failure_types_np == failure_type
-        type_envs_np = flat_envs_np[type_mask_np]
-        type_thrusters_np = flat_thrusters_np[type_mask_np]
+        type_mask = flat_status == int(SCENARIO_FAILURE_STATUS[failure_type])
+        type_envs = flat_envs[type_mask]
+        type_thrusters = flat_thrusters[type_mask]
         perturbation = perturbations[failure_type]
         base_start_times = getattr(
             perturbation,
@@ -1857,9 +1910,7 @@ def apply_failure_scenarios(
             jnp.zeros((env.num_envs, env.act_dim), dtype=jnp.float32),
         )
         start_times = jnp.zeros_like(base_start_times)
-        if type_envs_np.size > 0:
-            type_envs = jnp.asarray(type_envs_np, dtype=jnp.int32)
-            type_thrusters = jnp.asarray(type_thrusters_np, dtype=jnp.int32)
+        if int(type_envs.shape[0]) > 0:
             start_times = start_times.at[type_envs, type_thrusters].set(
                 start_time_value.astype(start_times.dtype)
             )
@@ -1874,9 +1925,7 @@ def apply_failure_scenarios(
             )
         elif failure_type == 1:
             stuck_force = jnp.asarray(perturbation.stuck_on_force)
-            if type_envs_np.size > 0:
-                type_envs = jnp.asarray(type_envs_np, dtype=jnp.int32)
-                type_thrusters = jnp.asarray(type_thrusters_np, dtype=jnp.int32)
+            if int(type_envs.shape[0]) > 0:
                 min_force = perturbation.min_thruster_force[type_thrusters]
                 max_force = perturbation.max_thruster_force[type_thrusters]
                 sampled_force = jax.random.uniform(
@@ -1987,36 +2036,70 @@ def apply_sampled_failure_scenario_split(
         selected_task_wrenches = (
             None if task_wrenches is None else jnp.asarray(task_wrenches)[selected_envs]
         )
+        mix_candidate_cache: dict[tuple[int | None, int | None], jnp.ndarray] = {}
+        mix_dir_cache: dict[tuple[int | None, int | None], jnp.ndarray] = {}
         for mix_idx, mix_entry in enumerate(mix_entries):
             env_mask = mix_choice == mix_idx
             env_count = int(jnp.sum(env_mask))
             if env_count <= 0:
                 continue
-            sampled = (
-                sample_scenario_indices(
-                    scenario_keys[mix_idx],
-                    table,
-                    split_id=split_id,
-                    count=env_count,
-                    difficulty_bin=difficulty_bin,
-                    authority_regime=authority_regime,
-                    task_feasibility_regime=mix_entry.get("task_feasibility_regime"),
-                    failure_type=failure_type,
-                    authority_label_any_mask=mix_entry.get("authority_label_any_mask"),
-                )
-                if selected_task_wrenches is None
-                else sample_task_conditioned_scenario_indices(
-                    scenario_keys[mix_idx],
-                    table,
-                    split_id=split_id,
-                    task_wrenches=selected_task_wrenches[env_mask],
-                    difficulty_bin=difficulty_bin,
-                    authority_regime=authority_regime,
-                    task_feasibility_regime=mix_entry.get("task_feasibility_regime"),
-                    failure_type=failure_type,
-                    authority_label_any_mask=mix_entry.get("authority_label_any_mask"),
-                )
+            cache_key = (
+                (
+                    None
+                    if mix_entry.get("task_feasibility_regime") is None
+                    else int(mix_entry.get("task_feasibility_regime"))
+                ),
+                (
+                    None
+                    if mix_entry.get("authority_label_any_mask") is None
+                    else int(mix_entry.get("authority_label_any_mask"))
+                ),
             )
+            candidates = mix_candidate_cache.get(cache_key)
+            if candidates is None:
+                candidates = _filtered_candidate_indices(
+                    table,
+                    split_id=split_id,
+                    difficulty_bin=difficulty_bin,
+                    authority_regime=authority_regime,
+                    task_feasibility_regime=mix_entry.get("task_feasibility_regime"),
+                    failure_type=failure_type,
+                    authority_label_any_mask=mix_entry.get("authority_label_any_mask"),
+                    prefer_feasible=selected_task_wrenches is not None,
+                )
+                if int(candidates.shape[0]) == 0:
+                    candidates = jnp.arange(table["split"].shape[0], dtype=jnp.int32)
+                mix_candidate_cache[cache_key] = candidates
+            if selected_task_wrenches is None:
+                logits = jnp.zeros((candidates.shape[0],), dtype=jnp.float32)
+                sampled_local = jax.random.categorical(
+                    scenario_keys[mix_idx], logits, shape=(env_count,)
+                )
+                sampled = candidates[sampled_local].astype(jnp.int32)
+            else:
+                scenario_dirs = mix_dir_cache.get(cache_key)
+                if scenario_dirs is None:
+                    scenario_dirs = table.get("targeted_task_direction")
+                    if scenario_dirs is None:
+                        scenario_dirs = table["targeted_task_wrench"] / (
+                            jnp.linalg.norm(
+                                table["targeted_task_wrench"], axis=1, keepdims=True
+                            )
+                            + 1e-6
+                        )
+                    scenario_dirs = scenario_dirs[candidates]
+                    mix_dir_cache[cache_key] = scenario_dirs
+                task_dirs = selected_task_wrenches[env_mask] / (
+                    jnp.linalg.norm(
+                        selected_task_wrenches[env_mask], axis=1, keepdims=True
+                    )
+                    + 1e-6
+                )
+                logits = 8.0 * (task_dirs @ scenario_dirs.T)
+                sampled_local = jax.random.categorical(
+                    scenario_keys[mix_idx], logits, axis=1
+                ).astype(jnp.int32)
+                sampled = candidates[sampled_local].astype(jnp.int32)
             scenario_indices = scenario_indices.at[jnp.where(env_mask, size=env_count)[0]].set(
                 sampled
             )
