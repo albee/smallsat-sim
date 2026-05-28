@@ -359,6 +359,10 @@ def learn_runner(self) -> None:
             setup_scenario_select_duration = 0.0
             setup_scenario_sample_duration = 0.0
             setup_scenario_apply_duration = 0.0
+            setup_apply_disturbance_duration = 0.0
+            setup_apply_expand_scatter_duration = 0.0
+            setup_apply_state_build_duration = 0.0
+            setup_apply_refresh_duration = 0.0
             setup_scenario_payload_duration = 0.0
             setup_random_disturbance_duration = 0.0
             disturbance_ramp = min(
@@ -480,6 +484,26 @@ def learn_runner(self) -> None:
                             )
                             setup_scenario_apply_duration += float(
                                 active_scenario_payload.pop("_timing/apply", 0.0)
+                            )
+                            setup_apply_disturbance_duration += float(
+                                active_scenario_payload.pop(
+                                    "_timing/apply_disturbance", 0.0
+                                )
+                            )
+                            setup_apply_expand_scatter_duration += float(
+                                active_scenario_payload.pop(
+                                    "_timing/apply_expand_scatter", 0.0
+                                )
+                            )
+                            setup_apply_state_build_duration += float(
+                                active_scenario_payload.pop(
+                                    "_timing/apply_state_build", 0.0
+                                )
+                            )
+                            setup_apply_refresh_duration += float(
+                                active_scenario_payload.pop(
+                                    "_timing/apply_refresh", 0.0
+                                )
                             )
                             setup_scenario_payload_duration += float(
                                 active_scenario_payload.pop("_timing/payload", 0.0)
@@ -1345,6 +1369,10 @@ def learn_runner(self) -> None:
                 setup_scenario_select=setup_scenario_select_duration,
                 setup_scenario_sample=setup_scenario_sample_duration,
                 setup_scenario_apply=setup_scenario_apply_duration,
+                setup_apply_disturbance=setup_apply_disturbance_duration,
+                setup_apply_expand_scatter=setup_apply_expand_scatter_duration,
+                setup_apply_state_build=setup_apply_state_build_duration,
+                setup_apply_refresh=setup_apply_refresh_duration,
                 setup_scenario_payload=setup_scenario_payload_duration,
                 setup_random_disturbance=setup_random_disturbance_duration,
             )

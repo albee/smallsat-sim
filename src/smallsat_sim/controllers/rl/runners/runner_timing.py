@@ -21,6 +21,10 @@ class EpochTiming:
     setup_scenario_select: float = 0.0
     setup_scenario_sample: float = 0.0
     setup_scenario_apply: float = 0.0
+    setup_apply_disturbance: float = 0.0
+    setup_apply_expand_scatter: float = 0.0
+    setup_apply_state_build: float = 0.0
+    setup_apply_refresh: float = 0.0
     setup_scenario_payload: float = 0.0
     setup_random_disturbance: float = 0.0
 
@@ -52,6 +56,10 @@ def format_epoch_timing_line(
         f"scenario_select {timing.setup_scenario_select:.2f}s, "
         f"scenario_sample {timing.setup_scenario_sample:.2f}s, "
         f"scenario_apply {timing.setup_scenario_apply:.2f}s, "
+        f"apply_disturbance {timing.setup_apply_disturbance:.2f}s, "
+        f"apply_expand_scatter {timing.setup_apply_expand_scatter:.2f}s, "
+        f"apply_state_build {timing.setup_apply_state_build:.2f}s, "
+        f"apply_refresh {timing.setup_apply_refresh:.2f}s, "
         f"scenario_payload {timing.setup_scenario_payload:.2f}s, "
         f"random_disturbance {timing.setup_random_disturbance:.2f}s | "
         f"update {timing.update:.2f}s | "

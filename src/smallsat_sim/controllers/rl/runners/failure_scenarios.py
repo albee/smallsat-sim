@@ -18,6 +18,7 @@ from smallsat_sim.envs.perturbation_state import (
 )
 from smallsat_sim.envs.perturbations_rl import Perturbation
 
+_STRICT_TIMING = bool(int(os.environ.get("SMALLSAT_STRICT_TIMING", "0")))
 
 SPLIT_TRAIN = 0
 SPLIT_SEMANTIC_EVAL = 1
@@ -1815,17 +1816,26 @@ def apply_failure_scenarios(
     selected_envs: jnp.ndarray,
     scenario_indices: jnp.ndarray,
     start_time: float | None,
-) -> None:
+) -> dict[str, float]:
+    timing = {
+        "disturbance": 0.0,
+        "expand_scatter": 0.0,
+        "state_build": 0.0,
+        "refresh": 0.0,
+    }
     if selected_envs.size == 0:
-        return
+        return timing
 
+    timing_start = time.perf_counter()
     _apply_constant_disturbance_scenarios(
         env,
         table,
         selected_envs,
         scenario_indices,
     )
+    timing["disturbance"] = time.perf_counter() - timing_start
 
+    timing_start = time.perf_counter()
     table = _attach_scenario_apply_cache(table)
     selected_envs = jnp.asarray(selected_envs, dtype=jnp.int32)
     scenario_indices = jnp.asarray(scenario_indices, dtype=jnp.int32)
@@ -1840,7 +1850,8 @@ def apply_failure_scenarios(
         if hasattr(env, "_refresh_effect_states"):
             env._refresh_effect_states()
             env._state = env._state.replace(perturbation_states=env.perturbation_states)
-        return
+        timing["refresh"] = time.perf_counter() - timing_start
+        return timing
     env_rows = jnp.broadcast_to(selected_envs[:, None], thrusters.shape)
     safe_envs = jnp.where(valid, env_rows, 0).astype(jnp.int32)
     safe_thrusters = jnp.where(valid, thrusters, 0).astype(jnp.int32)
@@ -1855,7 +1866,11 @@ def apply_failure_scenarios(
     Perturbation.thruster_mask = jnp.where(
         status_updates != 0, status_updates, thruster_mask
     )
+    if _STRICT_TIMING:
+        jax.block_until_ready(Perturbation.thruster_mask)
+    timing["expand_scatter"] = time.perf_counter() - timing_start
 
+    timing_start = time.perf_counter()
     start_time_value = jnp.asarray(
         0.0 if start_time is None else start_time, dtype=jnp.float32
     )
@@ -1921,9 +1936,13 @@ def apply_failure_scenarios(
                 gp_x_samples=gp_x,
                 gp_y_samples=gp_y,
             )
+    timing["state_build"] = time.perf_counter() - timing_start
 
+    timing_start = time.perf_counter()
     env._refresh_effect_states()
     env._state = env._state.replace(perturbation_states=env.perturbation_states)
+    timing["refresh"] = time.perf_counter() - timing_start
+    return timing
 
 
 def apply_sampled_failure_scenario_split(
@@ -1947,6 +1966,12 @@ def apply_sampled_failure_scenario_split(
     sample_duration = 0.0
     apply_duration = 0.0
     payload_duration = 0.0
+    apply_detail = {
+        "disturbance": 0.0,
+        "expand_scatter": 0.0,
+        "state_build": 0.0,
+        "refresh": 0.0,
+    }
     num_perturbed = int(env.num_envs * max(0.0, min(1.0, fraction_perturbed_envs)))
     if num_perturbed <= 0:
         payload = scenario_selection_payload(
@@ -1957,6 +1982,10 @@ def apply_sampled_failure_scenario_split(
         payload["_timing/sample"] = sample_duration
         payload["_timing/apply"] = apply_duration
         payload["_timing/payload"] = payload_duration
+        payload["_timing/apply_disturbance"] = apply_detail["disturbance"]
+        payload["_timing/apply_expand_scatter"] = apply_detail["expand_scatter"]
+        payload["_timing/apply_state_build"] = apply_detail["state_build"]
+        payload["_timing/apply_refresh"] = apply_detail["refresh"]
         if return_selection:
             empty = jnp.empty((0,), dtype=jnp.int32)
             return payload, empty, empty
@@ -1974,7 +2003,8 @@ def apply_sampled_failure_scenario_split(
         num_perturbed,
         [clean_envs, disturbed_only_envs, has_perturbation],
     )
-    jax.block_until_ready(selected_envs)
+    if _STRICT_TIMING:
+        jax.block_until_ready(selected_envs)
     select_duration = time.perf_counter() - timing_start
     timing_start = time.perf_counter()
     if failure_sampling_mix:
@@ -2067,10 +2097,11 @@ def apply_sampled_failure_scenario_split(
             failure_type=failure_type,
             authority_label_any_mask=authority_label_any_mask,
         )
-    jax.block_until_ready(scenario_indices)
+    if _STRICT_TIMING:
+        jax.block_until_ready(scenario_indices)
     sample_duration = time.perf_counter() - timing_start
     timing_start = time.perf_counter()
-    apply_failure_scenarios(
+    apply_detail = apply_failure_scenarios(
         env,
         key=apply_key,
         table=table,
@@ -2078,7 +2109,7 @@ def apply_sampled_failure_scenario_split(
         scenario_indices=scenario_indices,
         start_time=start_time,
     )
-    if Perturbation.thruster_mask is not None:
+    if _STRICT_TIMING and Perturbation.thruster_mask is not None:
         jax.block_until_ready(Perturbation.thruster_mask)
     apply_duration = time.perf_counter() - timing_start
     timing_start = time.perf_counter()
@@ -2088,6 +2119,10 @@ def apply_sampled_failure_scenario_split(
     payload["_timing/sample"] = sample_duration
     payload["_timing/apply"] = apply_duration
     payload["_timing/payload"] = payload_duration
+    payload["_timing/apply_disturbance"] = apply_detail["disturbance"]
+    payload["_timing/apply_expand_scatter"] = apply_detail["expand_scatter"]
+    payload["_timing/apply_state_build"] = apply_detail["state_build"]
+    payload["_timing/apply_refresh"] = apply_detail["refresh"]
     if return_selection:
         return payload, selected_envs, scenario_indices
     return payload
