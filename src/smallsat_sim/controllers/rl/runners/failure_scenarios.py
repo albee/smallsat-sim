@@ -1826,20 +1826,34 @@ def apply_failure_scenarios(
         scenario_indices,
     )
 
-    flat_envs, flat_thrusters, flat_status = _scenario_rows_for_indices(
-        table, selected_envs, scenario_indices
-    )
-    if int(flat_envs.shape[0]) == 0:
+    table = _attach_scenario_apply_cache(table)
+    selected_envs = jnp.asarray(selected_envs, dtype=jnp.int32)
+    scenario_indices = jnp.asarray(scenario_indices, dtype=jnp.int32)
+    thrusters = jnp.asarray(table["thrusters"], dtype=jnp.int32)[scenario_indices]
+    valid = jnp.asarray(table["_apply_failure_valid_mask"], dtype=bool)[
+        scenario_indices
+    ]
+    status = jnp.asarray(table["_apply_failure_status"], dtype=jnp.int32)[
+        scenario_indices
+    ]
+    if not bool(jnp.any(valid)):
         if hasattr(env, "_refresh_effect_states"):
             env._refresh_effect_states()
             env._state = env._state.replace(perturbation_states=env.perturbation_states)
         return
+    env_rows = jnp.broadcast_to(selected_envs[:, None], thrusters.shape)
+    safe_envs = jnp.where(valid, env_rows, 0).astype(jnp.int32)
+    safe_thrusters = jnp.where(valid, thrusters, 0).astype(jnp.int32)
+
     # Update the shared env/thruster failure mask once. This avoids the slow
     # interactive registration path, which grouped scenarios by type/thruster and
     # repeatedly synchronized with the host.
     thruster_mask = jnp.asarray(Perturbation.thruster_mask)
-    Perturbation.thruster_mask = thruster_mask.at[flat_envs, flat_thrusters].set(
-        flat_status
+    status_updates = jnp.zeros_like(thruster_mask).at[
+        safe_envs, safe_thrusters
+    ].max(jnp.where(valid, status, 0))
+    Perturbation.thruster_mask = jnp.where(
+        status_updates != 0, status_updates, thruster_mask
     )
 
     start_time_value = jnp.asarray(
@@ -1849,20 +1863,16 @@ def apply_failure_scenarios(
     perturbations = env.perturbations.perturbations
 
     for failure_type, failure_status in SCENARIO_FAILURE_STATUS.items():
-        type_mask = flat_status == int(SCENARIO_FAILURE_STATUS[failure_type])
-        type_envs = flat_envs[type_mask]
-        type_thrusters = flat_thrusters[type_mask]
+        type_mask = jnp.logical_and(valid, status == int(failure_status))
         perturbation = perturbations[failure_type]
         base_start_times = getattr(
             perturbation,
             "start_times",
             jnp.zeros((env.num_envs, env.act_dim), dtype=jnp.float32),
         )
-        start_times = jnp.zeros_like(base_start_times)
-        if int(type_envs.shape[0]) > 0:
-            start_times = start_times.at[type_envs, type_thrusters].set(
-                start_time_value.astype(start_times.dtype)
-            )
+        start_times = jnp.zeros_like(base_start_times).at[
+            safe_envs, safe_thrusters
+        ].max(jnp.where(type_mask, start_time_value.astype(base_start_times.dtype), 0.0))
 
         perturbation.start_times = start_times
         if failure_type == 0:
@@ -1874,18 +1884,21 @@ def apply_failure_scenarios(
             )
         elif failure_type == 1:
             stuck_force = jnp.asarray(perturbation.stuck_on_force)
-            if int(type_envs.shape[0]) > 0:
-                min_force = perturbation.min_thruster_force[type_thrusters]
-                max_force = perturbation.max_thruster_force[type_thrusters]
-                sampled_force = jax.random.uniform(
-                    subkeys[1],
-                    shape=(type_envs.shape[0],),
-                    minval=min_force,
-                    maxval=max_force,
-                )
-                stuck_force = stuck_force.at[type_envs, type_thrusters].set(
-                    sampled_force
-                )
+            min_force = perturbation.min_thruster_force[safe_thrusters]
+            max_force = perturbation.max_thruster_force[safe_thrusters]
+            sampled_force = jax.random.uniform(
+                subkeys[1],
+                shape=safe_thrusters.shape,
+                minval=min_force,
+                maxval=max_force,
+            )
+            force_mask = jnp.zeros(stuck_force.shape, dtype=bool).at[
+                safe_envs, safe_thrusters
+            ].max(type_mask)
+            force_updates = jnp.zeros_like(stuck_force).at[
+                safe_envs, safe_thrusters
+            ].max(jnp.where(type_mask, sampled_force, 0.0))
+            stuck_force = jnp.where(force_mask, force_updates, stuck_force)
             perturbation.stuck_on_force = stuck_force
             perturbation.state = PerturbationState(
                 rng=perturbation._key,
