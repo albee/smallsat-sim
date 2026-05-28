@@ -24,6 +24,16 @@ def build_checkpoint_file_names(env) -> dict[str, str]:
     """Create checkpoint/data filenames from the active RL configuration."""
     adaptive = "adaptive" if env.use_adaptive_approach else None
     context_mode = env.adaptive_context_mode if env.use_adaptive_approach else None
+    policy_mode = (
+        getattr(env, "adaptive_policy_mode", "direct")
+        if env.use_adaptive_approach
+        else None
+    )
+    context_fusion = (
+        getattr(env, "context_fusion", "concat")
+        if env.use_adaptive_approach
+        else None
+    )
     context_version = (
         "authorityctx"
         if env.use_adaptive_approach and env.adaptive_context_mode == "structured"
@@ -65,6 +75,8 @@ def build_checkpoint_file_names(env) -> dict[str, str]:
             prefix,
             adaptive,
             context_mode,
+            policy_mode,
+            context_fusion,
             context_version,
             pretrained,
             task_tag,

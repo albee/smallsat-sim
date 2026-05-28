@@ -23,10 +23,23 @@ class Actor(nnx.Module):
         act_high: jnp.ndarray,
         initial_log_std: float = -0.5,
         log_std_min: float | None = None,
+        adaptive_policy_mode: str = "direct",
+        context_fusion: str = "concat",
+        residual_scale: float = 1.0,
+        frozen_nominal_actor: bool = True,
     ) -> None:
         super().__init__()
         self.obs_dim = obs_dim
         self.act_dim = act_dim
+        self.res_dim = res_dim
+        self.adaptive_policy_mode = str(adaptive_policy_mode)
+        self.context_fusion = str(context_fusion)
+        self.residual_scale = float(residual_scale)
+        self.frozen_nominal_actor = bool(frozen_nominal_actor)
+        if self.adaptive_policy_mode not in ("direct", "residual"):
+            raise ValueError("adaptive_policy_mode must be 'direct' or 'residual'.")
+        if self.context_fusion not in ("concat", "film"):
+            raise ValueError("context_fusion must be 'concat' or 'film'.")
         self._eps = 1e-6
         self.act_low = jnp.asarray(act_low)
         self.act_high = jnp.asarray(act_high)
@@ -46,19 +59,129 @@ class Actor(nnx.Module):
             hidden_layer_sizes = [hidden_sizes]
         else:
             hidden_layer_sizes = list(hidden_sizes)
-        layer_sizes = [obs_dim + res_dim] + hidden_layer_sizes + [act_dim]
+        layer_sizes_concat = [obs_dim + res_dim] + hidden_layer_sizes + [act_dim]
         self.mu_net = mlp(
-            layer_sizes,
+            layer_sizes_concat, activation, output_activation=None, last_layer_std=0.01
+        )
+        self.state_mu_net = mlp(
+            [obs_dim] + hidden_layer_sizes + [act_dim],
             activation,
             output_activation=None,
             last_layer_std=0.01,
         )
+        self.delta_mu_net = mlp(
+            layer_sizes_concat, activation, output_activation=None, last_layer_std=0.01
+        )
+        self.film_state_net = mlp(
+            [obs_dim] + hidden_layer_sizes,
+            activation,
+            output_activation=None,
+            last_layer_std=1.0,
+        )
+        hidden_dim = int(hidden_layer_sizes[-1]) if hidden_layer_sizes else int(obs_dim)
+        self.film_gamma = nnx.Linear(
+            res_dim,
+            hidden_dim,
+            kernel_init=nnx.initializers.constant(1e-4),
+            bias_init=nnx.initializers.constant(0.0),
+            rngs=nnx.Rngs(params=0),
+        )
+        self.film_beta = nnx.Linear(
+            res_dim,
+            hidden_dim,
+            kernel_init=nnx.initializers.constant(1e-4),
+            bias_init=nnx.initializers.constant(0.0),
+            rngs=nnx.Rngs(params=0),
+        )
+        self.film_out = nnx.Linear(
+            hidden_dim,
+            act_dim,
+            kernel_init=nnx.initializers.constant(0.01),
+            bias_init=nnx.initializers.constant(0.0),
+            rngs=nnx.Rngs(params=0),
+        )
+        self.delta_film_state_net = mlp(
+            [obs_dim] + hidden_layer_sizes,
+            activation,
+            output_activation=None,
+            last_layer_std=1.0,
+        )
+        self.delta_film_gamma = nnx.Linear(
+            res_dim,
+            hidden_dim,
+            kernel_init=nnx.initializers.constant(1e-4),
+            bias_init=nnx.initializers.constant(0.0),
+            rngs=nnx.Rngs(params=0),
+        )
+        self.delta_film_beta = nnx.Linear(
+            res_dim,
+            hidden_dim,
+            kernel_init=nnx.initializers.constant(1e-4),
+            bias_init=nnx.initializers.constant(0.0),
+            rngs=nnx.Rngs(params=0),
+        )
+        self.delta_film_out = nnx.Linear(
+            hidden_dim,
+            act_dim,
+            kernel_init=nnx.initializers.constant(0.01),
+            bias_init=nnx.initializers.constant(0.0),
+            rngs=nnx.Rngs(params=0),
+        )
+
+    def _split_obs_context(self, obs_residuals: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+        if self.res_dim <= 0:
+            return obs_residuals[:, : self.obs_dim], jnp.zeros((obs_residuals.shape[0], 0), dtype=obs_residuals.dtype)
+        return obs_residuals[:, : self.obs_dim], obs_residuals[:, self.obs_dim : self.obs_dim + self.res_dim]
+
+    def _normalize_context(self, z: jnp.ndarray) -> jnp.ndarray:
+        if z.shape[-1] == 0:
+            return z
+        return jnp.clip(z, -10.0, 10.0)
+
+    def _film_pre_action(self, state: jnp.ndarray, z: jnp.ndarray, *, delta: bool) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        z_norm = self._normalize_context(z)
+        if delta:
+            h = self.delta_film_state_net(state)
+            gamma = self.delta_film_gamma(z_norm)
+            beta = self.delta_film_beta(z_norm)
+            h_mod = h * (1.0 + gamma) + beta
+            pre = self.delta_film_out(h_mod)
+            return pre, gamma, beta
+        h = self.film_state_net(state)
+        gamma = self.film_gamma(z_norm)
+        beta = self.film_beta(z_norm)
+        h_mod = h * (1.0 + gamma) + beta
+        pre = self.film_out(h_mod)
+        return pre, gamma, beta
+
+    def pre_action_components(self, obs_residuals: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        state, z = self._split_obs_context(obs_residuals)
+        zeros = jnp.zeros((obs_residuals.shape[0], self.act_dim), dtype=obs_residuals.dtype)
+        gamma = jnp.zeros((obs_residuals.shape[0], 0), dtype=obs_residuals.dtype)
+        beta = jnp.zeros((obs_residuals.shape[0], 0), dtype=obs_residuals.dtype)
+        if self.adaptive_policy_mode == "direct":
+            if self.context_fusion == "concat":
+                return self.mu_net(obs_residuals), zeros, zeros, gamma, beta
+            pre, gamma, beta = self._film_pre_action(state, z, delta=False)
+            return pre, zeros, zeros, gamma, beta
+        nominal_raw = self.state_mu_net(state)
+        nominal = (
+            jax.lax.stop_gradient(nominal_raw)
+            if self.frozen_nominal_actor
+            else nominal_raw
+        )
+        if self.context_fusion == "concat":
+            delta = self.delta_mu_net(obs_residuals)
+        else:
+            delta, gamma, beta = self._film_pre_action(state, z, delta=True)
+        final = nominal + self.residual_scale * delta
+        return final, nominal, delta, gamma, beta
 
     def _distribution(self, obs_residuals: jnp.ndarray):
         """
         Return a Gaussian distribution over actions given observations.
         """
-        mu = self.mu_net(obs_residuals)
+        mu, _, _, _, _ = self.pre_action_components(obs_residuals)
         log_std = self.log_std.value
         if self.log_std_min is not None:
             log_std = jnp.maximum(log_std, self.log_std_min)
@@ -74,7 +197,7 @@ class Actor(nnx.Module):
         PPO rollouts call this for every environment at every step, so avoid
         constructing a Distrax distribution object in the scan hot path.
         """
-        mu = self.mu_net(obs_residuals)
+        mu, _, _, _, _ = self.pre_action_components(obs_residuals)
         log_std = self.log_std.value
         if self.log_std_min is not None:
             log_std = jnp.maximum(log_std, self.log_std_min)
@@ -179,7 +302,8 @@ class Actor(nnx.Module):
         """
         Return the mean action squashed into the thruster range.
         """
-        return self.apply_action_bounds(self.mu_net(obs_residuals))
+        mu, _, _, _, _ = self.pre_action_components(obs_residuals)
+        return self.apply_action_bounds(mu)
 
     def _normalize_actions(self, actions: jnp.ndarray) -> jnp.ndarray:
         """

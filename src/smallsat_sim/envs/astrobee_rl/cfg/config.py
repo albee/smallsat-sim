@@ -78,6 +78,15 @@ class EnvConfig(BaseEnvConfig):
             # residual wrench, persistent bias estimate, task authority errors,
             # compact authority metrics, and wrench-norm tracking proxies.
             adaptive_context_mode = "structured"
+            # Adaptive policy composition:
+            # - direct: actor outputs full action from state+context.
+            # - residual: frozen nominal state-only policy + trainable context delta.
+            adaptive_policy_mode = "direct"  # "direct" | "residual"
+            # Context fusion mechanism inside actor.
+            context_fusion = "film"  # "concat" | "film"
+            residual_scale = 0.25
+            frozen_nominal_actor = True
+            nominal_actor_checkpoint = "pretraining_state_nominal.pkl"
 
             # Adaptation module architecture ("cnn" or "transformer")
             am_architecture = "transformer"

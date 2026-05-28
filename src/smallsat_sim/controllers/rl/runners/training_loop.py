@@ -1161,6 +1161,39 @@ def learn_runner(self) -> None:
                     adaptive_context_payload[
                         "adaptive_context/bias_wrench_norm_mean"
                     ] = float(jnp.linalg.norm(residuals[:, 6:12], axis=1).mean())
+            if (
+                getattr(self.agent.actor, "adaptive_policy_mode", "direct") == "residual"
+                and actions.shape[0] > 0
+            ):
+                policy_input_flat = jnp.concatenate([obs, residuals], axis=1)
+                pre_final, pre_nominal, pre_delta, gamma, beta = (
+                    self.agent.actor.pre_action_components(policy_input_flat)
+                )
+                nominal_actions = self.agent.actor.apply_action_bounds(pre_nominal)
+                delta_actions = self.agent.actor.apply_action_bounds(
+                    pre_nominal + self.agent.actor.residual_scale * pre_delta
+                ) - nominal_actions
+                final_actions = self.agent.actor.apply_action_bounds(pre_final)
+                nominal_norm = jnp.linalg.norm(nominal_actions, axis=1)
+                delta_norm = jnp.linalg.norm(delta_actions, axis=1)
+                final_norm = jnp.linalg.norm(final_actions, axis=1)
+                adaptive_context_payload.update(
+                    {
+                        "adaptive_policy/nominal_action_norm": float(nominal_norm.mean()),
+                        "adaptive_policy/delta_action_norm": float(delta_norm.mean()),
+                        "adaptive_policy/final_action_norm": float(final_norm.mean()),
+                        "adaptive_policy/delta_to_nominal_ratio": float(
+                            (delta_norm / (nominal_norm + 1e-6)).mean()
+                        ),
+                    }
+                )
+                if gamma.shape[-1] > 0:
+                    adaptive_context_payload["adaptive_policy/gamma_norm"] = float(
+                        jnp.linalg.norm(gamma, axis=1).mean()
+                    )
+                    adaptive_context_payload["adaptive_policy/beta_norm"] = float(
+                        jnp.linalg.norm(beta, axis=1).mean()
+                    )
 
             adv_mean_f = float(tdres.mean())
             adv_std_f = float(tdres.std())
@@ -1340,6 +1373,7 @@ def learn_runner(self) -> None:
                 )
                 logger_payload.update(authority_payload)
                 logger_payload.update(active_scenario_payload)
+                logger_payload.update(adaptive_context_payload)
                 self.env.logger.log(
                     self.env.run_id,
                     float(self.env.mjx_batch.time[0]),

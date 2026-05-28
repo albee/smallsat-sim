@@ -25,6 +25,10 @@ class AstrobeeEnvVectorized(VecEnv):
         use_adaptive_approach: bool | None = None,
         am_architecture: str | None = None,
         adaptive_context_mode: str | None = None,
+        adaptive_policy_mode: str | None = None,
+        context_fusion: str | None = None,
+        residual_scale: float | None = None,
+        frozen_nominal_actor: bool | None = None,
         use_task_conditioned_am: bool | None = None,
         am_predict_delta_weight: float | None = None,
         am_predict_tracking_weight: float | None = None,
@@ -53,6 +57,14 @@ class AstrobeeEnvVectorized(VecEnv):
             self.env_cfg.control.RL.am_architecture = am_architecture
         if adaptive_context_mode is not None:
             self.env_cfg.control.RL.adaptive_context_mode = adaptive_context_mode
+        if adaptive_policy_mode is not None:
+            self.env_cfg.control.RL.adaptive_policy_mode = adaptive_policy_mode
+        if context_fusion is not None:
+            self.env_cfg.control.RL.context_fusion = context_fusion
+        if residual_scale is not None:
+            self.env_cfg.control.RL.residual_scale = float(residual_scale)
+        if frozen_nominal_actor is not None:
+            self.env_cfg.control.RL.frozen_nominal_actor = bool(frozen_nominal_actor)
         if use_task_conditioned_am is not None:
             self.env_cfg.control.RL.use_task_conditioned_am = use_task_conditioned_am
         if am_predict_delta_weight is not None:

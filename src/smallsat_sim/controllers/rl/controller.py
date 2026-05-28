@@ -27,6 +27,7 @@ from smallsat_sim.controllers.rl.runners.adaptive_context import (
     summarize_authority_metrics,
 )
 from smallsat_sim.controllers.rl.runners.runner_utils import load_trained_modules
+from smallsat_sim.controllers.rl.runners.runner_setup import build_checkpoint_file_names
 
 _JITTED_VECENV_STEP = jax.jit(vecenv_step, static_argnames=("config",))
 _JITTED_FREEFLYER_STEP = jax.jit(vecenv_step_freeflyer, static_argnames=("config",))
@@ -505,36 +506,13 @@ class RLController(object):
         """
         Get the adaptation module checkpoint.
         """
-        parts = [f"adapt_module_state_{self.env.am_architecture}"]
-        if self.env.use_adaptive_approach:
-            parts.append("adaptive")
-            parts.append(self.env.adaptive_context_mode)
-        predictive_am = (
-            self.env.use_task_conditioned_am
-            or float(self.env.env_cfg.control.RL.am_predict_delta_weight) > 0.0
-            or float(self.env.env_cfg.control.RL.am_predict_tracking_weight) > 0.0
-        )
-        if predictive_am:
-            parts.append("taskpred")
-        if self.env.use_pretrained:
-            parts.append("pretrained")
-        if not self.env.train_with_failures:
-            parts.append("nominal")
-        return "_".join(parts) + ".pkl"
+        return build_checkpoint_file_names(self.env)["adaptation_module_file_name"]
 
     def _get_training_state_file_name(self) -> None:
         """
         Set the checkpoint file name for the training state.
         """
-        parts = ["training_state"]
-
-        if self.env.use_adaptive_approach:
-            parts.append("adaptive")
-            parts.append(self.env.adaptive_context_mode)
-        if self.env.use_pretrained:
-            parts.append("pretrained")
-        if not self.env.train_with_failures:
-            parts.append("nominal")
-
-        self.ckpt_filename = "_".join(parts) + ".pkl"
+        self.ckpt_filename = build_checkpoint_file_names(self.env)[
+            "training_state_file_name"
+        ]
         self.adaptation_module_file_name = self._get_adaptation_module_file_name()

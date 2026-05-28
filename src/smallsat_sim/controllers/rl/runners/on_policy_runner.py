@@ -1,5 +1,6 @@
 import os
 import warnings
+from collections.abc import Mapping
 
 import jax
 import jax.numpy as jnp
@@ -22,6 +23,8 @@ from smallsat_sim.controllers.rl.runners.runner_utils import (
     save_training_data,
     save_trained_modules,
     load_training_data,
+    load_trained_modules,
+    align_checkpoint_state_to_model,
 )
 from smallsat_sim.controllers.rl.runners.evaluation_loop import evaluate_runner
 from smallsat_sim.controllers.rl.runners.training_loop import learn_runner
@@ -100,6 +103,7 @@ class OnPolicyRunner(object):
 
         # Checkpoint file names
         self._create_checkpoint_file_names()
+        self._maybe_initialize_residual_nominal_actor()
 
         # Use Weights and Biases for logging
         if self.env.use_wandb:
@@ -132,6 +136,45 @@ class OnPolicyRunner(object):
         if count == 1:
             return splits[1]
         return splits[1:]
+
+    def _maybe_initialize_residual_nominal_actor(self) -> None:
+        if getattr(self.agent.actor, "adaptive_policy_mode", "direct") != "residual":
+            return
+        ckpt_cfg = getattr(self.rl_cfg, "nominal_actor_checkpoint", None)
+        candidate_names = []
+        if ckpt_cfg:
+            candidate_names.append(str(ckpt_cfg))
+        candidate_names.extend(
+            [
+                "training_state_nominal.pkl",
+                "training_state.pkl",
+                "pretraining_state_nominal.pkl",
+                "pretraining_state.pkl",
+                self.pretraining_state_file_name,
+            ]
+        )
+        chosen = None
+        for name in candidate_names:
+            if os.path.isfile(os.path.join(self.ckpt_dir, name)):
+                chosen = name
+                break
+        if chosen is None:
+            searched = ", ".join(candidate_names)
+            raise FileNotFoundError(
+                "[Residual Policy] residual mode requires a nominal actor checkpoint. "
+                f"Searched: {searched}"
+            )
+        restored = load_trained_modules(self.ckpt_dir, chosen)
+        actor_state = restored.get("actor_model")
+        if actor_state is None:
+            raise KeyError(f"[Residual Policy] actor_model missing in {chosen}.")
+        target_state = nnx.state(self.agent.actor.state_mu_net)
+        source_state = actor_state.get("mu_net", actor_state) if isinstance(
+            actor_state, Mapping
+        ) else actor_state
+        aligned = align_checkpoint_state_to_model(target_state, source_state)
+        nnx.update(self.agent.actor.state_mu_net, aligned)
+        print(f"[Residual Policy] Loaded nominal actor branch from {chosen}.")
 
     def pretrain(self, strategy: str = "supervised_learning") -> None:
         """

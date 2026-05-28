@@ -84,6 +84,14 @@ class BaseAgent(BaseController):
             act_high,
             initial_log_std=initial_log_std,
             log_std_min=log_std_min,
+            adaptive_policy_mode=getattr(
+                self.ctrl_cfg, "adaptive_policy_mode", "direct"
+            ),
+            context_fusion=getattr(self.ctrl_cfg, "context_fusion", "concat"),
+            residual_scale=float(getattr(self.ctrl_cfg, "residual_scale", 1.0)),
+            frozen_nominal_actor=bool(
+                getattr(self.ctrl_cfg, "frozen_nominal_actor", True)
+            ),
         )
         self.critic = Critic(env.obs_dim, hidden_sizes, activation, env.res_dim)
         self.key = rng_key

@@ -672,16 +672,44 @@ class VecEnv(BaseEnv):
             "adaptive_context_mode",
             "residual",
         )
+        self.adaptive_policy_mode = getattr(
+            self.env_cfg.control.RL,
+            "adaptive_policy_mode",
+            "direct",
+        )
+        self.context_fusion = getattr(
+            self.env_cfg.control.RL,
+            "context_fusion",
+            "concat",
+        )
+        self.residual_scale = float(
+            getattr(self.env_cfg.control.RL, "residual_scale", 1.0)
+        )
+        self.frozen_nominal_actor = bool(
+            getattr(self.env_cfg.control.RL, "frozen_nominal_actor", True)
+        )
         valid_context_modes = (
             "residual",
             "residual_effectiveness",
             "residual_controllability",
             "structured",
         )
+        valid_policy_modes = ("direct", "residual")
+        valid_fusion_modes = ("concat", "film")
         if self.adaptive_context_mode not in valid_context_modes:
             raise ValueError(
                 "adaptive_context_mode must be one of: "
                 f"{', '.join(valid_context_modes)}."
+            )
+        if self.adaptive_policy_mode not in valid_policy_modes:
+            raise ValueError(
+                "adaptive_policy_mode must be one of: "
+                f"{', '.join(valid_policy_modes)}."
+            )
+        if self.context_fusion not in valid_fusion_modes:
+            raise ValueError(
+                "context_fusion must be one of: "
+                f"{', '.join(valid_fusion_modes)}."
             )
         if self.use_adaptive_approach is True:
             if self.adaptive_context_mode == "residual":
