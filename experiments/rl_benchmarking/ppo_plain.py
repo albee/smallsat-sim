@@ -14,9 +14,6 @@ benchmarker.train_and_evaluate(
     use_adaptive_approach=False,
     adaptive_policy_mode="direct",
     context_fusion="film",
-    nominal_ckpt_export_name=os.environ.get(
-        "SMALLSAT_NOMINAL_CKPT_ALIAS", "nominal_actor_baseline.pkl"
-    ),
 )
 
 benchmarker.deploy_and_test(

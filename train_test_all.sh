@@ -65,12 +65,12 @@ for file in "${scripts[@]}"; do
   if [ "$file" = "experiments/rl_benchmarking/ppo_adaptive_transformer_residual.py" ]; then
     needs_nominal=1
   fi
-  if [ "$file" = "experiments/rl_benchmarking/ppo_plain.py" ]; then
+  if [ "$file" = "experiments/rl_benchmarking/ppo_nominal.py" ]; then
     has_nominal=1
   fi
 done
 if [ "$needs_nominal" = "1" ] && [ "$has_nominal" = "0" ]; then
-  scripts=("experiments/rl_benchmarking/ppo_plain.py" "${scripts[@]}")
+  scripts=("experiments/rl_benchmarking/ppo_nominal.py" "${scripts[@]}")
 fi
 
 # Ensure repository root is on PYTHONPATH so `experiments` can be imported
