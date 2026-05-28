@@ -4,6 +4,10 @@ import os
 os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True "
 
 from experiments.rl_benchmarking.rl_benchmarker import Benchmarker
+from smallsat_sim.envs.astrobee_rl.cfg import config as rl_config
+
+
+rl_config.EnvConfig.control.RL.PPO.epochs = 600
 
 
 benchmarker = Benchmarker(run_name="ppo_nominal")

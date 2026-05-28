@@ -157,10 +157,11 @@ def build_authority_regime_curriculum_v2(
     """
     del nominal_epochs, phase_epochs, failure_fraction, disturbance_fraction
     if not train_with_failures:
+        nominal_total_epochs = max(1, int(fallback_epochs))
         phases = [
             {
                 "name": "nominal_only",
-                "epochs": 1000,
+                "epochs": nominal_total_epochs,
                 "active_failures": [],
                 "failure_fraction": 0.0,
                 "disturbance_fraction": 0.0,
@@ -171,7 +172,7 @@ def build_authority_regime_curriculum_v2(
                 "authority_label_any_mask": None,
             }
         ]
-        return phases, 1000
+        return phases, nominal_total_epochs
 
     total_epochs = max(int(fallback_epochs), 1501)
     phases: list[dict] = [
@@ -236,10 +237,11 @@ def build_residual_policy_curriculum(
     actor baseline. Failure data appears early (no 0->50% long ramp).
     """
     if not train_with_failures:
+        nominal_total_epochs = max(1, int(fallback_epochs))
         phases = [
             {
                 "name": "nominal_only",
-                "epochs": 1000,
+                "epochs": nominal_total_epochs,
                 "active_failures": [],
                 "failure_fraction": 0.0,
                 "disturbance_fraction": 0.0,
@@ -250,7 +252,7 @@ def build_residual_policy_curriculum(
                 "authority_label_any_mask": None,
             }
         ]
-        return phases, 1000
+        return phases, nominal_total_epochs
 
     phase1_epochs = 100
     phase2_epochs = 200

@@ -73,7 +73,7 @@ def test_authority_curriculum_v2_nominal_only_unchanged() -> None:
     assert phases == [
         {
             "name": "nominal_only",
-            "epochs": 1000,
+            "epochs": 900,
             "active_failures": [],
             "failure_fraction": 0.0,
             "disturbance_fraction": 0.0,
@@ -84,7 +84,7 @@ def test_authority_curriculum_v2_nominal_only_unchanged() -> None:
             "authority_label_any_mask": None,
         }
     ]
-    assert total_epochs == 1000
+    assert total_epochs == 900
 
 
 def test_residual_policy_curriculum_default_phases() -> None:
@@ -130,7 +130,7 @@ def test_residual_policy_curriculum_nominal_only_unchanged() -> None:
     assert phases == [
         {
             "name": "nominal_only",
-            "epochs": 1000,
+            "epochs": 123,
             "active_failures": [],
             "failure_fraction": 0.0,
             "disturbance_fraction": 0.0,
@@ -141,4 +141,4 @@ def test_residual_policy_curriculum_nominal_only_unchanged() -> None:
             "authority_label_any_mask": None,
         }
     ]
-    assert total_epochs == 1000
+    assert total_epochs == 123
