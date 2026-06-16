@@ -346,6 +346,8 @@ def learn_runner(self) -> None:
         self.agent.epochs = total_epochs
 
     global_epoch = 0
+    residual_delta_ratio_history: list[float] = []
+    failed_success_rate_history: list[float] = []
     # Convenience distribution for nominal-only evaluation.
     zeros_dist = jnp.zeros((5,), dtype=jnp.float32)
 
@@ -1202,6 +1204,12 @@ def learn_runner(self) -> None:
                     adaptive_context_payload["adaptive_policy/beta_norm"] = float(
                         jnp.linalg.norm(beta, axis=1).mean()
                     )
+                delta_ratio_value = adaptive_context_payload.get(
+                    "adaptive_policy/delta_to_nominal_ratio"
+                )
+                if delta_ratio_value is not None:
+                    residual_delta_ratio_history.append(float(delta_ratio_value))
+            failed_success_rate_history.append(float(failed_success_rate_epoch))
 
             adv_mean_f = float(tdres.mean())
             adv_std_f = float(tdres.std())
@@ -1486,3 +1494,53 @@ def learn_runner(self) -> None:
                     timing=epoch_timing,
                 )
             )
+
+    if self.env.use_wandb and residual_delta_ratio_history:
+        delta_ratio_arr = jnp.asarray(residual_delta_ratio_history, dtype=jnp.float32)
+        failed_success_arr = jnp.asarray(failed_success_rate_history, dtype=jnp.float32)
+        summary_payload = {
+            "residual_summary/delta_to_nominal_ratio_mean": float(
+                delta_ratio_arr.mean()
+            ),
+            "residual_summary/delta_to_nominal_ratio_median": float(
+                jnp.median(delta_ratio_arr)
+            ),
+            "residual_summary/delta_to_nominal_ratio_p90": float(
+                jnp.quantile(delta_ratio_arr, 0.9)
+            ),
+            "residual_summary/failed_success_rate_mean": float(
+                failed_success_arr.mean()
+            ),
+            "residual_summary/failed_success_rate_median": float(
+                jnp.median(failed_success_arr)
+            ),
+            "residual_summary/failed_success_rate_p90": float(
+                jnp.quantile(failed_success_arr, 0.9)
+            ),
+        }
+        wandb.log(summary_payload, step=int(global_epoch))
+
+    if self.agent.has_logger and residual_delta_ratio_history:
+        delta_ratio_arr = jnp.asarray(residual_delta_ratio_history, dtype=jnp.float32)
+        failed_success_arr = jnp.asarray(failed_success_rate_history, dtype=jnp.float32)
+        self.env.logger.log(
+            self.env.run_id,
+            float(self.env.mjx_batch.time[0]),
+            step=int(global_epoch),
+            run_name=self.env.run_name,
+            stage="policy_training_summary",
+            residual_summary_delta_to_nominal_ratio_mean=float(delta_ratio_arr.mean()),
+            residual_summary_delta_to_nominal_ratio_median=float(
+                jnp.median(delta_ratio_arr)
+            ),
+            residual_summary_delta_to_nominal_ratio_p90=float(
+                jnp.quantile(delta_ratio_arr, 0.9)
+            ),
+            residual_summary_failed_success_rate_mean=float(failed_success_arr.mean()),
+            residual_summary_failed_success_rate_median=float(
+                jnp.median(failed_success_arr)
+            ),
+            residual_summary_failed_success_rate_p90=float(
+                jnp.quantile(failed_success_arr, 0.9)
+            ),
+        )

@@ -261,7 +261,9 @@ class OnPolicyRunner(object):
                 key=split_key,
             )
 
-            num_epochs = 80
+            num_epochs = int(
+                getattr(self.env.env_cfg.control.RL, "pretraining_epochs", 80)
+            )
             num_batches = 256
             batch_size = int(jnp.ceil(obs.shape[0] / num_batches))
             num_train_samples = X_train.shape[0]

@@ -280,7 +280,7 @@ def _actor_epochs_jit(
     return last_loss, last_kl, mean_kl, mean_clip, state
 
 
-@partial(jax.jit, static_argnums=(6, 7, 8, 9))
+@partial(jax.jit, static_argnums=(6, 7, 8, 9, 10))
 def _critic_epochs_jit(
     graphdef,
     state,
@@ -356,7 +356,7 @@ def _critic_epochs_jit(
     return last_loss, state
 
 
-@partial(jax.jit, static_argnums=(14, 15, 16, 17, 18, 19))
+@partial(jax.jit, static_argnums=(14, 15, 16, 17, 18))
 def _actor_critic_epochs_jit(
     graphdef,
     state,
@@ -546,10 +546,12 @@ def _actor_critic_epochs_jit(
                     critic_loss, critic_grads = nnx.value_and_grad(
                         critic_loss_local
                     )(critic)
-                    if critic_grad_scale != 1.0:
-                        critic_grads = jax.tree_util.tree_map(
-                            lambda g: g * critic_grad_scale, critic_grads
-                        )
+                    critic_grad_scale_f = jnp.asarray(
+                        critic_grad_scale, dtype=critic_loss.dtype
+                    )
+                    critic_grads = jax.tree_util.tree_map(
+                        lambda g: g * critic_grad_scale_f, critic_grads
+                    )
                     critic_opt.update(critic_grads)
 
                     pi_new = actor._distribution(obs_mb)

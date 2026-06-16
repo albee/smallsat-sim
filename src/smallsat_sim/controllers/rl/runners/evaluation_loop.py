@@ -80,14 +80,16 @@ def evaluate_runner(
         else:
             nnx.update(runner.agent.critic.v_net, critic_state.v_net)
         if runner.env.use_adaptive_approach and phase == 2:
-            adapt_module_state = load_trained_modules(
-                runner.ckpt_dir, runner.adaptation_module_file_name
-            )
-            am_state = adapt_module_state["am_model"]
-            if isinstance(am_state, dict):
-                nnx.update(runner.am, am_state)
-            else:
-                nnx.update(runner.am, am_state)
+            adapt_path = os.path.join(runner.ckpt_dir, runner.adaptation_module_file_name)
+            if os.path.isfile(adapt_path):
+                adapt_module_state = load_trained_modules(
+                    runner.ckpt_dir, runner.adaptation_module_file_name
+                )
+                am_state = adapt_module_state["am_model"]
+                if isinstance(am_state, dict):
+                    nnx.update(runner.am, am_state)
+                else:
+                    nnx.update(runner.am, am_state)
     else:
         raise Exception("Not all necessary modules have been trained yet.\n")
 
